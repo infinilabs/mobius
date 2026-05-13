@@ -14,18 +14,30 @@ export interface ElasticsearchConfig {
   url: string;
 }
 
+export interface VertexAIConfig {
+  llm_model_id: string;
+  llm_location: string;
+  img_model_id: string;
+  img_location: string;
+  video_model_id: string;
+  video_location: string;
+}
+
 export interface BigQueryConfig {
-  project_id: string;
   dataset: string;
+}
+
+export interface GoogleCloudConfig {
+  project_id: string;
   credentials_path: string;
-  model_id: string;
-  location: string;
+  bigquery: BigQueryConfig;
+  vertex_ai: VertexAIConfig;
 }
 
 export interface SettingsData {
   postgres: PostgresConfig;
   elasticsearch: ElasticsearchConfig;
-  bigquery: BigQueryConfig;
+  google_cloud: GoogleCloudConfig;
 }
 
 export interface FileRef {

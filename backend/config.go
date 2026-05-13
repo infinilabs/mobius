@@ -19,12 +19,24 @@ type ElasticsearchConfig struct {
 	URL string `yaml:"url" json:"url"`
 }
 
+type VertexAIConfig struct {
+	LLMModelID    string `yaml:"llm_model_id" json:"llm_model_id"`
+	LLMLocation   string `yaml:"llm_location" json:"llm_location"`
+	ImgModelID    string `yaml:"img_model_id" json:"img_model_id"`
+	ImgLocation   string `yaml:"img_location" json:"img_location"`
+	VideoModelID  string `yaml:"video_model_id" json:"video_model_id"`
+	VideoLocation string `yaml:"video_location" json:"video_location"`
+}
+
 type BigQueryConfig struct {
-	ProjectID       string `yaml:"project_id" json:"project_id"`
-	Dataset         string `yaml:"dataset" json:"dataset"`
-	CredentialsPath string `yaml:"credentials_path" json:"credentials_path"`
-	ModelID         string `yaml:"model_id" json:"model_id"`
-	Location        string `yaml:"location" json:"location"`
+	Dataset string `yaml:"dataset" json:"dataset"`
+}
+
+type GoogleCloudConfig struct {
+	ProjectID       string         `yaml:"project_id" json:"project_id"`
+	CredentialsPath string         `yaml:"credentials_path" json:"credentials_path"`
+	BigQuery        BigQueryConfig `yaml:"bigquery" json:"bigquery"`
+	VertexAI        VertexAIConfig `yaml:"vertex_ai" json:"vertex_ai"`
 }
 
 type Config struct {
@@ -40,13 +52,13 @@ type Config struct {
 
 	Postgres      PostgresConfig      `yaml:"postgres" json:"postgres"`
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch" json:"elasticsearch"`
-	BigQuery      BigQueryConfig      `yaml:"bigquery" json:"bigquery"`
+	GoogleCloud   GoogleCloudConfig   `yaml:"google_cloud" json:"google_cloud"`
 }
 
 type SettingsData struct {
 	Postgres      PostgresConfig      `json:"postgres"`
 	Elasticsearch ElasticsearchConfig `json:"elasticsearch"`
-	BigQuery      BigQueryConfig      `json:"bigquery"`
+	GoogleCloud   GoogleCloudConfig   `json:"google_cloud"`
 }
 
 func (c *Config) GetSettings() SettingsData {
@@ -55,7 +67,7 @@ func (c *Config) GetSettings() SettingsData {
 	return SettingsData{
 		Postgres:      c.Postgres,
 		Elasticsearch: c.Elasticsearch,
-		BigQuery:      c.BigQuery,
+		GoogleCloud:   c.GoogleCloud,
 	}
 }
 
@@ -64,7 +76,7 @@ func (c *Config) ApplySettings(s SettingsData) {
 	defer c.mu.Unlock()
 	c.Postgres = s.Postgres
 	c.Elasticsearch = s.Elasticsearch
-	c.BigQuery = s.BigQuery
+	c.GoogleCloud = s.GoogleCloud
 }
 
 func LoadConfig(path string) (*Config, error) {

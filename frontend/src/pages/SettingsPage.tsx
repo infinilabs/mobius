@@ -26,7 +26,11 @@ export default function SettingsPage() {
       .catch(() => setSettings({
         postgres: { host: 'localhost', port: 5432, user: 'mobius', password: 'mobius', dbname: 'mobius' },
         elasticsearch: { url: 'http://localhost:9200' },
-        bigquery: { project_id: '', dataset: 'mobius', credentials_path: '', model_id: 'gemini-3.1-pro-preview', location: 'global' },
+        google_cloud: {
+          project_id: '', credentials_path: '',
+          bigquery: { dataset: 'mobius' },
+          vertex_ai: { llm_model_id: 'gemini-3.1-pro-preview', llm_location: 'global', img_model_id: '', img_location: 'us-central1', video_model_id: '', video_location: 'us-central1' },
+        },
       }))
       .finally(() => setLoading(false));
   }, []);
@@ -117,23 +121,47 @@ export default function SettingsPage() {
           placeholder="http://localhost:9200" />
       </ConfigSection>
 
-      {/* BigQuery */}
-      <ConfigSection icon={<Cloud size={16} />} title="BigQuery" desc="Analytical data — reporting and metrics" color="#fbbf24">
+      {/* Google Cloud */}
+      <ConfigSection icon={<Cloud size={16} />} title="Google Cloud" desc="GCP project, credentials, BigQuery & Vertex AI" color="#fbbf24">
         <div className="grid grid-cols-2 gap-3">
-          <ConfigInput label="Project ID" value={settings.bigquery.project_id}
-            onChange={v => setSettings({ ...settings, bigquery: { ...settings.bigquery, project_id: v } })}
+          <ConfigInput label="Project ID" value={settings.google_cloud.project_id}
+            onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, project_id: v } })}
             placeholder="your-gcp-project-id" />
-          <ConfigInput label="Dataset" value={settings.bigquery.dataset}
-            onChange={v => setSettings({ ...settings, bigquery: { ...settings.bigquery, dataset: v } })} />
-          <ConfigInput label="Model ID" value={settings.bigquery.model_id}
-            onChange={v => setSettings({ ...settings, bigquery: { ...settings.bigquery, model_id: v } })}
-            placeholder="gemini-3.1-pro-preview" />
-          <ConfigInput label="Location" value={settings.bigquery.location}
-            onChange={v => setSettings({ ...settings, bigquery: { ...settings.bigquery, location: v } })}
-            placeholder="global" />
-          <ConfigInput label="Credentials Path" value={settings.bigquery.credentials_path} className="col-span-2"
-            onChange={v => setSettings({ ...settings, bigquery: { ...settings.bigquery, credentials_path: v } })}
+          <ConfigInput label="Credentials Path" value={settings.google_cloud.credentials_path}
+            onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, credentials_path: v } })}
             placeholder="Leave empty to use ADC" />
+        </div>
+
+        {/* BigQuery subsection */}
+        <div className="mt-5 pt-4 border-t border-zinc-800/40">
+          <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">BigQuery</p>
+          <ConfigInput label="Dataset" value={settings.google_cloud.bigquery.dataset}
+            onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, bigquery: { ...settings.google_cloud.bigquery, dataset: v } } })} />
+        </div>
+
+        {/* Vertex AI subsection */}
+        <div className="mt-5 pt-4 border-t border-zinc-800/40">
+          <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">Vertex AI</p>
+          <div className="grid grid-cols-2 gap-3">
+            <ConfigInput label="LLM Model ID" value={settings.google_cloud.vertex_ai.llm_model_id}
+              onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, vertex_ai: { ...settings.google_cloud.vertex_ai, llm_model_id: v } } })}
+              placeholder="gemini-3.1-pro-preview" />
+            <ConfigInput label="LLM Location" value={settings.google_cloud.vertex_ai.llm_location}
+              onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, vertex_ai: { ...settings.google_cloud.vertex_ai, llm_location: v } } })}
+              placeholder="global" />
+            <ConfigInput label="Image Model ID" value={settings.google_cloud.vertex_ai.img_model_id}
+              onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, vertex_ai: { ...settings.google_cloud.vertex_ai, img_model_id: v } } })}
+              placeholder="imagen-4.0-generate-preview-06-03" />
+            <ConfigInput label="Image Location" value={settings.google_cloud.vertex_ai.img_location}
+              onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, vertex_ai: { ...settings.google_cloud.vertex_ai, img_location: v } } })}
+              placeholder="us-central1" />
+            <ConfigInput label="Video Model ID" value={settings.google_cloud.vertex_ai.video_model_id}
+              onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, vertex_ai: { ...settings.google_cloud.vertex_ai, video_model_id: v } } })}
+              placeholder="veo-2.0-generate-001" />
+            <ConfigInput label="Video Location" value={settings.google_cloud.vertex_ai.video_location}
+              onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, vertex_ai: { ...settings.google_cloud.vertex_ai, video_location: v } } })}
+              placeholder="us-central1" />
+          </div>
         </div>
       </ConfigSection>
 

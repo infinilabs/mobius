@@ -49,7 +49,7 @@ func (h *APIHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 func (h *APIHandler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	settings := h.config.GetSettings()
 	writeJSON(w, map[string]string{
-		"project_id": settings.BigQuery.ProjectID,
+		"project_id": settings.GoogleCloud.ProjectID,
 	})
 }
 

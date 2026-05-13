@@ -17,7 +17,7 @@ export async function fetchHealth(): Promise<{ status: string }> {
 export async function fetchSettings(): Promise<SettingsData> {
   log.debug('api', 'fetchSettings');
   const { data } = await axios.get('/api/settings');
-  log.info('api', 'settings loaded', { model: data.bigquery?.model_id });
+  log.info('api', 'settings loaded', { model: data.google_cloud?.vertex_ai?.llm_model_id });
   return data;
 }
 

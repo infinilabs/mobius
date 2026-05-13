@@ -15,9 +15,15 @@ postgres:
 elasticsearch:
   url: "http://localhost:9200"
 
-bigquery:
+google_cloud:
   project_id: "your-gcp-project-id"
-  dataset: "mobius"
   credentials_path: "" # leave empty to use ADC
-  model_id: "gemini-3.1-pro-preview"
-  location: "global"
+  bigquery:
+    dataset: "mobius"
+  vertex_ai:
+    llm_model_id: "gemini-3.1-pro-preview"
+    llm_location: "global"
+    img_model_id: ""
+    img_location: "us-central1"
+    video_model_id: ""
+    video_location: "us-central1"

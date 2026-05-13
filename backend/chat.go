@@ -20,21 +20,19 @@ type ChatRequest struct {
 
 func NewGenAIClient(ctx context.Context, cfg *Config) (*genai.Client, error) {
 	settings := cfg.GetSettings()
-	bq := settings.BigQuery
+	gc := settings.GoogleCloud
 
-	location := bq.Location
+	location := gc.VertexAI.LLMLocation
 	if location == "" {
 		location = "global"
 	}
 
-	// If credentials_path is set in conf.yaml, use it.
-	// Otherwise the SDK uses ADC: $GOOGLE_APPLICATION_CREDENTIALS → gcloud default → metadata server.
-	if bq.CredentialsPath != "" {
-		os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", bq.CredentialsPath)
+	if gc.CredentialsPath != "" {
+		os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", gc.CredentialsPath)
 	}
 
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		Project:  bq.ProjectID,
+		Project:  gc.ProjectID,
 		Location: location,
 		Backend:  genai.BackendVertexAI,
 	})
@@ -78,7 +76,7 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	settings := h.config.GetSettings()
-	modelID := settings.BigQuery.ModelID
+	modelID := settings.GoogleCloud.VertexAI.LLMModelID
 	if modelID == "" {
 		modelID = "gemini-3.1-pro-preview"
 	}
