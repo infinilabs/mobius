@@ -20,6 +20,10 @@ google_cloud:
   credentials_path: "" # leave empty to use ADC
   bigquery:
     dataset: "mobius"
+  gcs:
+    bucket: "mobius"
+    location: "us-central1"
+    public_access_prevention: true
   vertex_ai:
     llm_model_id: "gemini-3.1-pro-preview"
     llm_location: "global"

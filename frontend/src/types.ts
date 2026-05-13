@@ -27,10 +27,17 @@ export interface BigQueryConfig {
   dataset: string;
 }
 
+export interface GCSConfig {
+  bucket: string;
+  location: string;
+  public_access_prevention: boolean;
+}
+
 export interface GoogleCloudConfig {
   project_id: string;
   credentials_path: string;
   bigquery: BigQueryConfig;
+  gcs: GCSConfig;
   vertex_ai: VertexAIConfig;
 }
 

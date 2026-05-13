@@ -29,6 +29,7 @@ export default function SettingsPage() {
         google_cloud: {
           project_id: '', credentials_path: '',
           bigquery: { dataset: 'mobius' },
+          gcs: { bucket: '', location: 'us-central1', public_access_prevention: true },
           vertex_ai: { llm_model_id: 'gemini-3.1-pro-preview', llm_location: 'global', img_model_id: '', img_location: 'us-central1', video_model_id: '', video_location: 'us-central1' },
         },
       }))
@@ -139,6 +140,22 @@ export default function SettingsPage() {
             onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, bigquery: { ...settings.google_cloud.bigquery, dataset: v } } })} />
         </div>
 
+        {/* Cloud Storage subsection */}
+        <div className="mt-5 pt-4 border-t border-zinc-800/40">
+          <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">Cloud Storage</p>
+          <div className="grid grid-cols-2 gap-3">
+            <ConfigInput label="Bucket" value={settings.google_cloud.gcs.bucket}
+              onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, gcs: { ...settings.google_cloud.gcs, bucket: v } } })}
+              placeholder="my-mobius-bucket" />
+            <ConfigInput label="Location" value={settings.google_cloud.gcs.location}
+              onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, gcs: { ...settings.google_cloud.gcs, location: v } } })}
+              placeholder="us-central1" />
+            <ConfigToggle label="Public Access Prevention" checked={settings.google_cloud.gcs.public_access_prevention}
+              onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, gcs: { ...settings.google_cloud.gcs, public_access_prevention: v } } })}
+              className="col-span-2" />
+          </div>
+        </div>
+
         {/* Vertex AI subsection */}
         <div className="mt-5 pt-4 border-t border-zinc-800/40">
           <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">Vertex AI</p>
@@ -233,6 +250,30 @@ function ConfigInput({ label, value, onChange, placeholder, type = 'text', class
         className="w-full text-xs text-zinc-300 rounded-lg px-3 py-2.5 outline-none border border-zinc-800/50 transition-colors focus:border-cyan-500/30 placeholder:text-zinc-700 font-mono"
         style={{ background: '#09090b' }}
       />
+    </div>
+  );
+}
+
+function ConfigToggle({ label, checked, onChange, className = '' }: {
+  label: string; checked: boolean; onChange: (v: boolean) => void; className?: string;
+}) {
+  return (
+    <div className={`flex items-center justify-between py-1 ${className}`}>
+      <label className="text-[10px] font-mono text-zinc-600 uppercase px-0.5">{label}</label>
+      <button
+        type="button"
+        onClick={() => onChange(!checked)}
+        className="relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border border-zinc-700/50 transition-colors"
+        style={{ background: checked ? '#0e7490' : '#27272a' }}
+      >
+        <span
+          className="pointer-events-none inline-block h-4 w-4 rounded-full shadow-sm transition-transform"
+          style={{
+            background: checked ? '#e0f2fe' : '#71717a',
+            transform: checked ? 'translateX(16px)' : 'translateX(0)',
+          }}
+        />
+      </button>
     </div>
   );
 }

@@ -32,10 +32,17 @@ type BigQueryConfig struct {
 	Dataset string `yaml:"dataset" json:"dataset"`
 }
 
+type GCSConfig struct {
+	Bucket                 string `yaml:"bucket" json:"bucket"`
+	Location               string `yaml:"location" json:"location"`
+	PublicAccessPrevention bool   `yaml:"public_access_prevention" json:"public_access_prevention"`
+}
+
 type GoogleCloudConfig struct {
 	ProjectID       string         `yaml:"project_id" json:"project_id"`
 	CredentialsPath string         `yaml:"credentials_path" json:"credentials_path"`
 	BigQuery        BigQueryConfig `yaml:"bigquery" json:"bigquery"`
+	GCS             GCSConfig      `yaml:"gcs" json:"gcs"`
 	VertexAI        VertexAIConfig `yaml:"vertex_ai" json:"vertex_ai"`
 }
 
