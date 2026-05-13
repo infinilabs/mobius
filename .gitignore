@@ -1,0 +1,56 @@
+# Build output
+bin/
+backend/static/
+frontend/dist/
+*.tsbuildinfo
+
+# Dependencies
+node_modules/
+
+# Runtime
+logs/
+*.log
+
+# Docker data volumes
+data/rdb/
+data/es/
+
+# File uploads
+tmp/
+
+# Config with credentials (template is tracked, actual config is not)
+conf.yaml
+
+# Credentials & secrets
+*.pem
+*.key
+*.p12
+*.jks
+.env
+.env.*
+service-account*.json
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.iml
+
+# Claude
+CLAUDE.md
+ERROR.md
+plan-claude.md

@@ -1,0 +1,23 @@
+server:
+  port: 1983
+  mode: "debug" # or "release"
+  log_max_size_mb: 32 # log file rollover size in MB
+  log_max_backups: 5  # number of old log files to keep
+  log_max_age_days: 30 # days to retain old log files
+
+postgres:
+  host: "localhost"
+  port: 5432
+  user: "mobius"
+  password: "mobius"
+  dbname: "mobius"
+
+elasticsearch:
+  url: "http://localhost:9200"
+
+bigquery:
+  project_id: "your-gcp-project-id"
+  dataset: "mobius"
+  credentials_path: "" # leave empty to use ADC
+  model_id: "gemini-3.1-pro-preview"
+  location: "global"

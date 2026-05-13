@@ -1,0 +1,74 @@
+[
+  {
+    "name": "postback_date",
+    "type": "DATE",
+    "mode": "REQUIRED",
+    "description": "MMP 收到回传的日期（建议作为 BQ 分区键）"
+  },
+  {
+    "name": "media_source",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "归因媒体渠道（同媒体表对齐，或者记录 'restricted' / 'organic'）"
+  },
+  {
+    "name": "network_campaign_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "媒体渠道侧的 Campaign ID（用于与 Media 表 JOIN 关联）"
+  },
+  {
+    "name": "app_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "包名或 Bundle ID (如 com.example.game)"
+  },
+  {
+    "name": "os",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "操作系统 ('ios', 'android')"
+  },
+  {
+    "name": "country_code",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "国家/地区代码 (ISO 3166-1 alpha-2, 如 'US', 'JP')"
+  },
+  {
+    "name": "installs",
+    "type": "INTEGER",
+    "mode": "NULLABLE",
+    "description": "归因安装量（确定性归因+概率归因总和）"
+  },
+  {
+    "name": "purchases",
+    "type": "INTEGER",
+    "mode": "NULLABLE",
+    "description": "归因的购买事件数"
+  },
+  {
+    "name": "revenue_usd",
+    "type": "FLOAT",
+    "mode": "NULLABLE",
+    "description": "归因带来的内购或广告收入总计 (LTV的早期表现)"
+  },
+  {
+    "name": "skan_conversion_value",
+    "type": "INTEGER",
+    "mode": "NULLABLE",
+    "description": "仅限 iOS：SKAN 传回的转化值 (0-63)，如果没有则为 NULL"
+  },
+  {
+    "name": "skan_postback_index",
+    "type": "INTEGER",
+    "mode": "NULLABLE",
+    "description": "仅限 iOS：针对 SKAN 4.0，标识是第几个回传窗 (0, 1, 2)"
+  },
+  {
+    "name": "skan_coarse_value",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "仅限 iOS：针对 SKAN 4.0 的粗略转化值 ('low', 'medium', 'high')"
+  }
+]

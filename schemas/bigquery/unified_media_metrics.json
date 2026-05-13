@@ -1,0 +1,86 @@
+[
+  {
+    "name": "report_date",
+    "type": "DATE",
+    "mode": "REQUIRED",
+    "description": "报表日期（建议作为 BQ 分区键）"
+  },
+  {
+    "name": "media_source",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "媒体渠道，例如：'meta', 'google_ads', 'tiktok'"
+  },
+  {
+    "name": "account_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "广告主账户 ID"
+  },
+  {
+    "name": "campaign_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "广告计划 ID (Campaign)"
+  },
+  {
+    "name": "campaign_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "广告计划名称"
+  },
+  {
+    "name": "adset_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "广告组 ID (Ad Set / Ad Group)"
+  },
+  {
+    "name": "adset_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "广告组名称"
+  },
+  {
+    "name": "ad_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "广告/素材 ID (Ad / Creative)"
+  },
+  {
+    "name": "ad_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "广告/素材名称"
+  },
+  {
+    "name": "spend",
+    "type": "FLOAT",
+    "mode": "NULLABLE",
+    "description": "消耗金额"
+  },
+  {
+    "name": "currency",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "消耗币种"
+  },
+  {
+    "name": "impressions",
+    "type": "INTEGER",
+    "mode": "NULLABLE",
+    "description": "展现量"
+  },
+  {
+    "name": "clicks",
+    "type": "INTEGER",
+    "mode": "NULLABLE",
+    "description": "点击量"
+  },
+  {
+    "name": "platform",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "定向平台（如 'ios', 'android', 'web'）"
+  }
+]

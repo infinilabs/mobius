@@ -1,0 +1,247 @@
+package main
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"sort"
+	"sync"
+	"time"
+)
+
+type Message struct {
+	ID         string    `json:"id"`
+	Role       string    `json:"role"`
+	Content    string    `json:"content"`
+	Timestamp  int64     `json:"timestamp"`
+	TokenCount int       `json:"token_count,omitempty"`
+	Files      []FileRef `json:"files,omitempty"`
+}
+
+type FileRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type Conversation struct {
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	Messages  []Message `json:"messages"`
+	CreatedAt int64     `json:"created_at"`
+	UpdatedAt int64     `json:"updated_at"`
+}
+
+type ConversationSummary struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+type ConversationStore struct {
+	mu    sync.RWMutex
+	convs map[string]*Conversation
+}
+
+func NewConversationStore() *ConversationStore {
+	return &ConversationStore{convs: make(map[string]*Conversation)}
+}
+
+func generateID() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func (s *ConversationStore) Create() *Conversation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UnixMilli()
+	c := &Conversation{
+		ID:        generateID(),
+		Title:     "New Chat",
+		Messages:  []Message{},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	s.convs[c.ID] = c
+	return c
+}
+
+func (s *ConversationStore) Get(id string) *Conversation {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.convs[id]
+}
+
+func (s *ConversationStore) List() []ConversationSummary {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]ConversationSummary, 0, len(s.convs))
+	for _, c := range s.convs {
+		out = append(out, ConversationSummary{
+			ID:        c.ID,
+			Title:     c.Title,
+			UpdatedAt: c.UpdatedAt,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].UpdatedAt > out[j].UpdatedAt
+	})
+	return out
+}
+
+func (s *ConversationStore) AddMessage(id string, msg Message) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c, ok := s.convs[id]
+	if !ok {
+		return
+	}
+	if msg.ID == "" {
+		msg.ID = generateID()
+	}
+	c.Messages = append(c.Messages, msg)
+	c.UpdatedAt = time.Now().UnixMilli()
+
+	if msg.Role == "user" && c.Title == "New Chat" {
+		title := msg.Content
+		if len(title) > 40 {
+			title = title[:40] + "..."
+		}
+		c.Title = title
+	}
+}
+
+func (s *ConversationStore) TruncateAt(id string, keepCount int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c, ok := s.convs[id]
+	if !ok {
+		return false
+	}
+	if keepCount < 0 {
+		keepCount = 0
+	}
+	if keepCount < len(c.Messages) {
+		c.Messages = c.Messages[:keepCount]
+		c.UpdatedAt = time.Now().UnixMilli()
+	}
+	return true
+}
+
+func (s *ConversationStore) Rename(id, title string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c, ok := s.convs[id]
+	if !ok {
+		return false
+	}
+	c.Title = title
+	c.UpdatedAt = time.Now().UnixMilli()
+	return true
+}
+
+func (s *ConversationStore) Delete(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.convs[id]; !ok {
+		return false
+	}
+	delete(s.convs, id)
+	return true
+}
+
+// HTTP handlers
+
+func (h *APIHandler) ListConversations(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, h.conversations.List())
+}
+
+func (h *APIHandler) GetConversation(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	c := h.conversations.Get(id)
+	if c == nil {
+		writeError(w, "conversation not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, c)
+}
+
+func (h *APIHandler) CreateConversation(w http.ResponseWriter, r *http.Request) {
+	c := h.conversations.Create()
+	slog.Info("conversation created", "id", c.ID)
+
+	if h.esClient != nil {
+		if err := h.esClient.IndexConversation(r.Context(), c); err != nil {
+			slog.Error("ES index conversation failed", "id", c.ID, "error", err)
+		}
+	}
+
+	writeJSON(w, c)
+}
+
+func (h *APIHandler) RenameConversation(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Title == "" {
+		writeError(w, "title is required", http.StatusBadRequest)
+		return
+	}
+	if !h.conversations.Rename(id, body.Title) {
+		writeError(w, "conversation not found", http.StatusNotFound)
+		return
+	}
+
+	if h.esClient != nil {
+		if err := h.esClient.UpdateConversationTitle(r.Context(), id, body.Title); err != nil {
+			slog.Error("ES rename conversation failed", "id", id, "error", err)
+		}
+	}
+
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (h *APIHandler) TruncateConversation(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		KeepCount int `json:"keep_count"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if !h.conversations.TruncateAt(id, body.KeepCount) {
+		writeError(w, "conversation not found", http.StatusNotFound)
+		return
+	}
+	slog.Info("conversation truncated", "id", id, "keep_count", body.KeepCount)
+	c := h.conversations.Get(id)
+	writeJSON(w, c)
+}
+
+func (h *APIHandler) DeleteConversation(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !h.conversations.Delete(id) {
+		writeError(w, "conversation not found", http.StatusNotFound)
+		return
+	}
+
+	if h.esClient != nil {
+		if err := h.esClient.DeleteConversation(r.Context(), id); err != nil {
+			slog.Error("ES delete conversation failed", "id", id, "error", err)
+		}
+	}
+
+	slog.Info("conversation deleted", "id", id)
+	writeJSON(w, map[string]string{"status": "ok"})
+}

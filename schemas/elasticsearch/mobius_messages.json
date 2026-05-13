@@ -1,0 +1,87 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0
+  },
+  "mappings": {
+    "properties": {
+      "id": {
+        "type": "keyword"
+      },
+      "conversation_id": {
+        "type": "keyword"
+      },
+      "user_id": {
+        "type": "keyword"
+      },
+      "role": {
+        "type": "keyword"
+      },
+      "content": {
+        "type": "text",
+        "analyzer": "standard",
+        "fields": {
+          "keyword": { "type": "keyword", "ignore_above": 512 }
+        }
+      },
+      "content_vector": {
+        "type": "dense_vector",
+        "dims": 768,
+        "index": true,
+        "similarity": "cosine",
+        "index_options": {
+          "type": "bbq_hnsw",
+          "m": 16,
+          "ef_construction": 100
+        }
+      },
+      "timestamp": {
+        "type": "date"
+      },
+      "turn_number": {
+        "type": "integer"
+      },
+      "token_count": {
+        "type": "integer"
+      },
+      "summarized": {
+        "type": "boolean"
+      },
+      "feedback": {
+        "type": "keyword"
+      },
+      "feedback_text": {
+        "type": "text",
+        "analyzer": "standard"
+      },
+      "feedback_at": {
+        "type": "date"
+      },
+      "model_id": {
+        "type": "keyword"
+      },
+      "latency_ms": {
+        "type": "integer"
+      },
+      "tags": {
+        "type": "keyword"
+      },
+      "metadata": {
+        "type": "object",
+        "enabled": false
+      },
+      "files": {
+        "type": "nested",
+        "properties": {
+          "id": { "type": "keyword" },
+          "name": {
+            "type": "text",
+            "fields": {
+              "keyword": { "type": "keyword" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
