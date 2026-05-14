@@ -27,7 +27,7 @@ google_cloud:
   vertex_ai:
     llm_model_id: "gemini-3.1-pro-preview"
     llm_location: "global"
-    img_model_id: ""
-    img_location: "us-central1"
-    video_model_id: ""
-    video_location: "us-central1"
+    img_model_id: "gemini-3.1-flash-image-preview"
+    img_location: "global"
+    video_model_id: "veo-3.1-generate-001"
+    video_location: "global"
