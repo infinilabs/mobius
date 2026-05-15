@@ -9,7 +9,17 @@ export async function fetchConfig(): Promise<{ project_id: string }> {
   return data;
 }
 
-export async function fetchHealth(): Promise<{ status: string }> {
+export interface ServiceStatus {
+  status: string;
+  error?: string;
+}
+
+export interface HealthData {
+  status: string;
+  services: Record<string, ServiceStatus>;
+}
+
+export async function fetchHealth(): Promise<HealthData> {
   const { data } = await axios.get('/api/health');
   return data;
 }
@@ -80,15 +90,16 @@ export async function sendChatMessage(
   onChunk: (text: string) => void,
   onDone: () => void,
   onError: (error: string) => void,
+  files?: FileRef[],
 ): Promise<void> {
-  log.info('chat', 'sending message', { conversationId, length: message.length });
+  log.info('chat', 'sending message', { conversationId, length: message.length, files: files?.length ?? 0 });
 
   let response: Response;
   try {
     response = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ conversation_id: conversationId, message }),
+      body: JSON.stringify({ conversation_id: conversationId, message, files: files?.length ? files : undefined }),
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Network error';

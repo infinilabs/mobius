@@ -50,6 +50,9 @@ export interface SettingsData {
 export interface FileRef {
   id: string;
   name: string;
+  gcs_uri: string;
+  mime_type: string;
+  size: number;
 }
 
 export interface ChatMessage {

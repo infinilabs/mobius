@@ -91,7 +91,17 @@ func main() {
 		esClient = nil
 	}
 
-	api := NewAPIHandler(cfg, configPath, genaiClient, esClient)
+	var gcsClient *GCSClient
+	if cfg.GoogleCloud.GCS.Bucket != "" {
+		gcsClient, err = NewGCSClient(ctx, cfg)
+		if err != nil {
+			slog.Error("failed to init GCS client", "error", err)
+			slog.Warn("GCS uploads unavailable, falling back to local disk")
+			gcsClient = nil
+		}
+	}
+
+	api := NewAPIHandler(cfg, configPath, genaiClient, esClient, gcsClient)
 
 	mux := http.NewServeMux()
 

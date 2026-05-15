@@ -21,8 +21,11 @@ type Message struct {
 }
 
 type FileRef struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	GCSURI   string `json:"gcs_uri,omitempty"`
+	MIMEType string `json:"mime_type,omitempty"`
+	Size     int64  `json:"size,omitempty"`
 }
 
 type Conversation struct {
@@ -231,6 +234,18 @@ func (h *APIHandler) TruncateConversation(w http.ResponseWriter, r *http.Request
 
 func (h *APIHandler) DeleteConversation(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+
+	conv := h.conversations.Get(id)
+	if conv == nil {
+		writeError(w, "conversation not found", http.StatusNotFound)
+		return
+	}
+
+	var files []FileRef
+	for _, msg := range conv.Messages {
+		files = append(files, msg.Files...)
+	}
+
 	if !h.conversations.Delete(id) {
 		writeError(w, "conversation not found", http.StatusNotFound)
 		return
@@ -242,6 +257,14 @@ func (h *APIHandler) DeleteConversation(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	slog.Info("conversation deleted", "id", id)
+	for _, f := range files {
+		if f.GCSURI != "" && h.gcsClient != nil {
+			if err := h.gcsClient.Delete(r.Context(), f.GCSURI); err != nil {
+				slog.Error("GCS delete file failed", "id", f.ID, "uri", f.GCSURI, "error", err)
+			}
+		}
+	}
+
+	slog.Info("conversation deleted", "id", id, "files_cleaned", len(files))
 	writeJSON(w, map[string]string{"status": "ok"})
 }

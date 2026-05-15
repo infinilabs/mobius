@@ -79,7 +79,10 @@
             "fields": {
               "keyword": { "type": "keyword" }
             }
-          }
+          },
+          "gcs_uri": { "type": "keyword" },
+          "mime_type": { "type": "keyword" },
+          "size": { "type": "long" }
         }
       }
     }

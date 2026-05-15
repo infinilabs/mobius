@@ -75,6 +75,8 @@ export default function NewTaskPage({ conversationId, onConversationCreated }: P
     setThinking(true);
     streamingRef.current = true;
 
+    const filesToSend = attachedFiles.length > 0 ? [...attachedFiles] : undefined;
+
     await sendChatMessage(
       convId,
       msg,
@@ -112,6 +114,7 @@ export default function NewTaskPage({ conversationId, onConversationCreated }: P
         setThinking(false);
         streamingRef.current = false;
       },
+      filesToSend,
     );
   }, [input, conversationId, attachedFiles, onConversationCreated, thinking]);
 

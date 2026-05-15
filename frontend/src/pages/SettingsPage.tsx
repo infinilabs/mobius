@@ -3,8 +3,9 @@ import {
   Settings, Database, Search, Cloud, Link2,
   Save, Check, AlertCircle, Loader2,
 } from 'lucide-react';
-import { fetchSettings, updateSettings } from '../api';
+import { fetchSettings, updateSettings, fetchHealth } from '../api';
 import type { SettingsData } from '../types';
+import type { ServiceStatus } from '../api';
 
 const AD_PLATFORMS = [
   { name: 'Google Ads', desc: 'Search, Display, YouTube campaigns' },
@@ -19,6 +20,7 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [errorMsg, setErrorMsg] = useState('');
+  const [health, setHealth] = useState<Record<string, ServiceStatus>>({});
 
   useEffect(() => {
     fetchSettings()
@@ -34,6 +36,11 @@ export default function SettingsPage() {
         },
       }))
       .finally(() => setLoading(false));
+    fetchHealth().then(h => setHealth(h.services || {})).catch(() => {});
+    const interval = setInterval(() => {
+      fetchHealth().then(h => setHealth(h.services || {})).catch(() => {});
+    }, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   const handleSave = async () => {
@@ -100,7 +107,7 @@ export default function SettingsPage() {
       )}
 
       {/* PostgreSQL */}
-      <ConfigSection icon={<Database size={16} />} title="PostgreSQL" desc="Business data — ad accounts, tasks, campaigns" color="#38bdf8">
+      <ConfigSection icon={<Database size={16} />} title="PostgreSQL" desc="Business data — ad accounts, tasks, campaigns" color="#38bdf8" status={health.postgres}>
         <div className="grid grid-cols-2 gap-3">
           <ConfigInput label="Host" value={settings.postgres.host}
             onChange={v => setSettings({ ...settings, postgres: { ...settings.postgres, host: v } })} />
@@ -116,14 +123,14 @@ export default function SettingsPage() {
       </ConfigSection>
 
       {/* Elasticsearch */}
-      <ConfigSection icon={<Search size={16} />} title="Elasticsearch" desc="Creatives index and search" color="#c084fc">
+      <ConfigSection icon={<Search size={16} />} title="Elasticsearch" desc="Creatives index and search" color="#c084fc" status={health.elasticsearch}>
         <ConfigInput label="URL" value={settings.elasticsearch.url}
           onChange={v => setSettings({ ...settings, elasticsearch: { ...settings.elasticsearch, url: v } })}
           placeholder="http://localhost:9200" />
       </ConfigSection>
 
       {/* Google Cloud */}
-      <ConfigSection icon={<Cloud size={16} />} title="Google Cloud" desc="GCP project, credentials, BigQuery & Vertex AI" color="#fbbf24">
+      <ConfigSection icon={<Cloud size={16} />} title="Google Cloud" desc="GCP project, credentials, BigQuery & Vertex AI" color="#fbbf24" status={health.gcs}>
         <div className="grid grid-cols-2 gap-3">
           <ConfigInput label="Project ID" value={settings.google_cloud.project_id}
             onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, project_id: v } })}
@@ -135,14 +142,14 @@ export default function SettingsPage() {
 
         {/* BigQuery subsection */}
         <div className="mt-5 pt-4 border-t border-zinc-800/40">
-          <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">BigQuery</p>
+          <SubsectionHeader label="BigQuery" status={health.bigquery} />
           <ConfigInput label="Dataset" value={settings.google_cloud.bigquery.dataset}
             onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, bigquery: { ...settings.google_cloud.bigquery, dataset: v } } })} />
         </div>
 
         {/* Cloud Storage subsection */}
         <div className="mt-5 pt-4 border-t border-zinc-800/40">
-          <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">Cloud Storage</p>
+          <SubsectionHeader label="Cloud Storage" status={health.gcs} />
           <div className="grid grid-cols-2 gap-3">
             <ConfigInput label="Bucket" value={settings.google_cloud.gcs.bucket}
               onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, gcs: { ...settings.google_cloud.gcs, bucket: v } } })}
@@ -158,21 +165,21 @@ export default function SettingsPage() {
 
         {/* Vertex AI subsection */}
         <div className="mt-5 pt-4 border-t border-zinc-800/40">
-          <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">Vertex AI</p>
+          <SubsectionHeader label="Vertex AI" status={health.llm} />
           <div className="grid grid-cols-2 gap-3">
-            <ConfigInput label="LLM Model ID" value={settings.google_cloud.vertex_ai.llm_model_id}
+            <ConfigInput label="LLM Model ID" value={settings.google_cloud.vertex_ai.llm_model_id} status={health.llm}
               onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, vertex_ai: { ...settings.google_cloud.vertex_ai, llm_model_id: v } } })}
               placeholder="gemini-3.1-pro-preview" />
             <ConfigInput label="LLM Location" value={settings.google_cloud.vertex_ai.llm_location}
               onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, vertex_ai: { ...settings.google_cloud.vertex_ai, llm_location: v } } })}
               placeholder="global" />
-            <ConfigInput label="Image Model ID" value={settings.google_cloud.vertex_ai.img_model_id}
+            <ConfigInput label="Image Model ID" value={settings.google_cloud.vertex_ai.img_model_id} status={health.img_model}
               onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, vertex_ai: { ...settings.google_cloud.vertex_ai, img_model_id: v } } })}
               placeholder="imagen-4.0-generate-preview-06-03" />
             <ConfigInput label="Image Location" value={settings.google_cloud.vertex_ai.img_location}
               onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, vertex_ai: { ...settings.google_cloud.vertex_ai, img_location: v } } })}
               placeholder="us-central1" />
-            <ConfigInput label="Video Model ID" value={settings.google_cloud.vertex_ai.video_model_id}
+            <ConfigInput label="Video Model ID" value={settings.google_cloud.vertex_ai.video_model_id} status={health.video_model}
               onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, vertex_ai: { ...settings.google_cloud.vertex_ai, video_model_id: v } } })}
               placeholder="veo-2.0-generate-001" />
             <ConfigInput label="Video Location" value={settings.google_cloud.vertex_ai.video_location}
@@ -214,8 +221,27 @@ export default function SettingsPage() {
   );
 }
 
-function ConfigSection({ icon, title, desc, color, children }: {
-  icon: React.ReactNode; title: string; desc: string; color: string; children: React.ReactNode;
+function StatusDot({ status }: { status?: ServiceStatus }) {
+  if (!status) return <span className="block w-2 h-2 rounded-full bg-zinc-700" title="Unknown" />;
+  if (status.status === 'ok') return <span className="block w-2 h-2 rounded-full bg-emerald-400" title="Connected" />;
+  if (status.status === 'unconfigured') return <span className="block w-2 h-2 rounded-full bg-amber-400" title={status.error || 'Not configured'} />;
+  return <span className="block w-2 h-2 rounded-full bg-red-400" title={status.error || 'Unavailable'} />;
+}
+
+function SubsectionHeader({ label, status }: { label: string; status?: ServiceStatus }) {
+  return (
+    <div className="flex items-center gap-2 mb-3">
+      <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">{label}</p>
+      <StatusDot status={status} />
+      {status?.error && status.status !== 'ok' && (
+        <span className="text-[9px] text-zinc-600">{status.error}</span>
+      )}
+    </div>
+  );
+}
+
+function ConfigSection({ icon, title, desc, color, children, status }: {
+  icon: React.ReactNode; title: string; desc: string; color: string; children: React.ReactNode; status?: ServiceStatus;
 }) {
   return (
     <section className="mb-8">
@@ -223,8 +249,14 @@ function ConfigSection({ icon, title, desc, color, children }: {
         <div className="p-1.5 rounded-lg border border-zinc-800/50" style={{ background: '#18181b' }}>
           <span style={{ color }}>{icon}</span>
         </div>
-        <div>
-          <h3 className="text-sm font-semibold text-zinc-300">{title}</h3>
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold text-zinc-300">{title}</h3>
+            <StatusDot status={status} />
+            {status?.error && status.status !== 'ok' && (
+              <span className="text-[9px] text-zinc-600">{status.error}</span>
+            )}
+          </div>
           <p className="text-[10px] text-zinc-600">{desc}</p>
         </div>
       </div>
@@ -235,13 +267,16 @@ function ConfigSection({ icon, title, desc, color, children }: {
   );
 }
 
-function ConfigInput({ label, value, onChange, placeholder, type = 'text', className = '' }: {
+function ConfigInput({ label, value, onChange, placeholder, type = 'text', className = '', status }: {
   label: string; value: string; onChange: (v: string) => void;
-  placeholder?: string; type?: string; className?: string;
+  placeholder?: string; type?: string; className?: string; status?: ServiceStatus;
 }) {
   return (
     <div className={className}>
-      <label className="text-[10px] font-mono text-zinc-600 uppercase block mb-1.5 px-0.5">{label}</label>
+      <div className="flex items-center gap-1.5 mb-1.5 px-0.5">
+        <label className="text-[10px] font-mono text-zinc-600 uppercase">{label}</label>
+        {status && <StatusDot status={status} />}
+      </div>
       <input
         type={type}
         value={value}

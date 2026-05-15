@@ -47,6 +47,18 @@ func NewESClient(url string) (*ESClient, error) {
 	return &ESClient{client: client}, nil
 }
 
+func (es *ESClient) Ping(ctx context.Context) error {
+	res, err := es.client.Info(es.client.Info.WithContext(ctx))
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("ES ping error: %s", res.Status())
+	}
+	return nil
+}
+
 func (es *ESClient) IndexConversation(ctx context.Context, conv *Conversation) error {
 	doc := map[string]any{
 		"id":         conv.ID,

@@ -13,9 +13,9 @@ import (
 )
 
 type ChatRequest struct {
-	ConversationID string   `json:"conversation_id"`
-	Message        string   `json:"message"`
-	Files          []string `json:"files,omitempty"`
+	ConversationID string    `json:"conversation_id"`
+	Message        string    `json:"message"`
+	Files          []FileRef `json:"files,omitempty"`
 }
 
 func NewGenAIClient(ctx context.Context, cfg *Config) (*genai.Client, error) {
@@ -65,6 +65,7 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 		Role:      "user",
 		Content:   req.Message,
 		Timestamp: time.Now().UnixMilli(),
+		Files:     req.Files,
 	}
 	h.conversations.AddMessage(req.ConversationID, userMsg)
 
@@ -94,13 +95,15 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 
 	conv = h.conversations.Get(req.ConversationID)
 	for _, msg := range conv.Messages {
-		role := msg.Role
-		if role == "model" {
-			role = "model"
+		parts := []*genai.Part{{Text: msg.Content}}
+		for _, f := range msg.Files {
+			if f.GCSURI != "" {
+				parts = append(parts, genai.NewPartFromURI(f.GCSURI, f.MIMEType))
+			}
 		}
 		contents = append(contents, &genai.Content{
-			Role:  role,
-			Parts: []*genai.Part{{Text: msg.Content}},
+			Role:  msg.Role,
+			Parts: parts,
 		})
 	}
 
