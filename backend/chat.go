@@ -16,6 +16,8 @@ type ChatRequest struct {
 	ConversationID string    `json:"conversation_id"`
 	Message        string    `json:"message"`
 	Files          []FileRef `json:"files,omitempty"`
+	AgentID        string    `json:"agent_id,omitempty"`
+	ModelID        string    `json:"model_id,omitempty"`
 }
 
 func NewGenAIClient(ctx context.Context, cfg *Config) (*genai.Client, error) {
@@ -85,15 +87,45 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 		modelID = "gemini-3.1-pro-preview"
 	}
 
+	systemPrompt := "You are Mobius, an AI growth partner for advertising, marketing, and business optimization. Help users with ad performance analysis, campaign strategy, creative production, and growth planning."
+	systemAck := "Understood. I'm Mobius, your AI growth partner. How can I help you today?"
+
+	if req.AgentID != "" && h.pgClient != nil {
+		agent, err := h.pgClient.GetEmployee(r.Context(), req.AgentID)
+		if err == nil {
+			systemPrompt = fmt.Sprintf("You are %s, %s. %s", agent.Name, agent.Title, agent.Backstory)
+			if len(agent.Skills) > 0 {
+				systemPrompt += "\n\nYour skills include: "
+				for i, s := range agent.Skills {
+					if i > 0 {
+						systemPrompt += ", "
+					}
+					systemPrompt += s.Skill
+				}
+				systemPrompt += "."
+			}
+			systemAck = fmt.Sprintf("I'm %s, %s. How can I help you?", agent.Name, agent.Title)
+
+			for _, m := range agent.Models {
+				if m.Purpose == "primary_llm" && m.ModelID != "" {
+					modelID = m.ModelID
+					break
+				}
+			}
+		}
+	} else if req.ModelID != "" {
+		modelID = req.ModelID
+	}
+
 	var contents []*genai.Content
 
 	contents = append(contents, &genai.Content{
 		Role:  "user",
-		Parts: []*genai.Part{{Text: "You are Mobius, an AI growth partner for advertising, marketing, and business optimization. Help users with ad performance analysis, campaign strategy, creative production, and growth planning."}},
+		Parts: []*genai.Part{{Text: systemPrompt}},
 	})
 	contents = append(contents, &genai.Content{
 		Role:  "model",
-		Parts: []*genai.Part{{Text: "Understood. I'm Mobius, your AI growth partner. How can I help you today?"}},
+		Parts: []*genai.Part{{Text: systemAck}},
 	})
 
 	conv = h.conversations.Get(req.ConversationID)

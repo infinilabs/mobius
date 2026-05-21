@@ -4,8 +4,12 @@ import {
   Rocket, Target, Zap, Paperclip, X, Bot, User, Loader2,
   Copy, Pencil, Check, ThumbsUp, ThumbsDown, RefreshCw, Printer,
 } from 'lucide-react';
-import { createConversation, getConversation, sendChatMessage, uploadFile, truncateConversation } from '../api';
-import type { ChatMessage, FileRef } from '../types';
+import { createConversation, getConversation, sendChatMessage, uploadFile, truncateConversation, listEmployees, listModels } from '../api';
+import type { ChatMessage, FileRef, Employee, VertexModel } from '../types';
+
+export type ChatTarget =
+  | { kind: 'agent'; agent: Employee }
+  | { kind: 'model'; model: VertexModel };
 import { log } from '../logger';
 
 const QUICK_ACTIONS = [
@@ -29,9 +33,21 @@ export default function NewTaskPage({ conversationId, onConversationCreated }: P
   const [thinking, setThinking] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<FileRef[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [agents, setAgents] = useState<Employee[]>([]);
+  const [registeredModels, setRegisteredModels] = useState<VertexModel[]>([]);
+  const [chatTarget, setChatTarget] = useState<ChatTarget | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const streamingRef = useRef(false);
+
+  useEffect(() => {
+    listEmployees().then(emps => {
+      setAgents(emps);
+      const ceo = emps.find(e => e.role === 'CEO');
+      if (ceo) setChatTarget({ kind: 'agent', agent: ceo });
+    }).catch(() => {});
+    listModels().then(setRegisteredModels).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (streamingRef.current) return;
@@ -115,8 +131,10 @@ export default function NewTaskPage({ conversationId, onConversationCreated }: P
         streamingRef.current = false;
       },
       filesToSend,
+      chatTarget?.kind === 'agent' ? chatTarget.agent.id : undefined,
+      chatTarget?.kind === 'model' ? chatTarget.model.model_id : undefined,
     );
-  }, [input, conversationId, attachedFiles, onConversationCreated, thinking]);
+  }, [input, conversationId, attachedFiles, onConversationCreated, thinking, chatTarget]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -187,6 +205,10 @@ export default function NewTaskPage({ conversationId, onConversationCreated }: P
           uploading={uploading}
           onFileUpload={handleFileUpload}
           fileInputRef={fileInputRef}
+          agents={agents}
+          registeredModels={registeredModels}
+          chatTarget={chatTarget}
+          onSelectTarget={setChatTarget}
         />
 
         <div className="flex items-center gap-3 w-full my-6">
@@ -254,6 +276,10 @@ export default function NewTaskPage({ conversationId, onConversationCreated }: P
             onFileUpload={handleFileUpload}
             fileInputRef={fileInputRef}
             placeholder="Continue or ask something new..."
+            agents={agents}
+            registeredModels={registeredModels}
+            chatTarget={chatTarget}
+            onSelectTarget={setChatTarget}
           />
         </div>
       </div>
@@ -465,7 +491,38 @@ function MessageBubble({ message, isStreaming, onEdit, onRegenerate }: {
   );
 }
 
-function ChatInput({ input, setInput, onSend, streaming, attachedFiles, setAttachedFiles, uploading, onFileUpload, fileInputRef, placeholder }: {
+const ROLE_COLORS: Record<string, string> = {
+  CEO: '#38bdf8', PM: '#c084fc', Engineer: '#4ade80',
+  QA: '#fbbf24', Designer: '#fb7185', Custom: '#a1a1aa',
+};
+
+const MODEL_TYPE_COLORS: Record<string, string> = {
+  llm: '#38bdf8', image: '#c084fc', video: '#fbbf24',
+};
+
+function getTargetDisplay(target: ChatTarget | null): { label: string; initial: string; color: string } {
+  if (!target) return { label: 'Select', initial: '?', color: '#a1a1aa' };
+  if (target.kind === 'agent') {
+    return {
+      label: target.agent.name,
+      initial: target.agent.name[0],
+      color: ROLE_COLORS[target.agent.role] || ROLE_COLORS.Custom,
+    };
+  }
+  return {
+    label: target.model.name || target.model.model_id,
+    initial: target.model.name?.[0]?.toUpperCase() || 'M',
+    color: MODEL_TYPE_COLORS[target.model.type] || '#a1a1aa',
+  };
+}
+
+function getPlaceholder(target: ChatTarget | null, fallback?: string): string {
+  if (!target) return fallback || 'Describe your product, goal, or paste a URL...';
+  if (target.kind === 'agent') return `Talk to ${target.agent.name} (${target.agent.title})...`;
+  return `Chat with ${target.model.name || target.model.model_id}...`;
+}
+
+function ChatInput({ input, setInput, onSend, streaming, attachedFiles, setAttachedFiles, uploading, onFileUpload, fileInputRef, placeholder, agents, registeredModels, chatTarget, onSelectTarget }: {
   input: string;
   setInput: (v: string) => void;
   onSend: () => void;
@@ -476,7 +533,25 @@ function ChatInput({ input, setInput, onSend, streaming, attachedFiles, setAttac
   onFileUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   placeholder?: string;
+  agents: Employee[];
+  registeredModels: VertexModel[];
+  chatTarget: ChatTarget | null;
+  onSelectTarget: (t: ChatTarget) => void;
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const display = getTargetDisplay(chatTarget);
+  const hasItems = agents.length > 0 || registeredModels.length > 0;
+
   return (
     <div
       className="w-full rounded-2xl border border-zinc-800/60 p-4 transition-colors focus-within:border-cyan-500/30"
@@ -499,12 +574,112 @@ function ChatInput({ input, setInput, onSend, streaming, attachedFiles, setAttac
         value={input}
         onChange={e => setInput(e.target.value)}
         onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSend(); } }}
-        placeholder={placeholder || "Describe your product, goal, or paste a URL..."}
+        placeholder={getPlaceholder(chatTarget, placeholder)}
         disabled={streaming}
         className="w-full bg-transparent text-sm text-zinc-200 outline-none placeholder:text-zinc-600 mb-3 disabled:opacity-50"
       />
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
+          {/* Target Selector */}
+          {hasItems && (
+            <div className="relative" ref={menuRef}>
+              <button
+                onClick={() => setMenuOpen(!menuOpen)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border border-zinc-800/50 hover:border-zinc-700/60 transition-colors cursor-pointer"
+                style={{ background: '#09090b' }}
+              >
+                <div className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0"
+                  style={{ background: `${display.color}25`, color: display.color, border: `1.5px solid ${display.color}40` }}>
+                  {display.initial}
+                </div>
+                <span className="text-zinc-300 max-w-[100px] truncate">{display.label}</span>
+                <svg width="8" height="8" viewBox="0 0 8 8" className="text-zinc-600 shrink-0">
+                  <path d="M1 3L4 6L7 3" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
+                </svg>
+              </button>
+
+              {menuOpen && (
+                <div className="absolute bottom-full left-0 mb-2 z-50 rounded-xl border border-zinc-800/60 shadow-xl overflow-hidden min-w-[220px] max-h-[360px] overflow-y-auto"
+                  style={{ background: '#0a0a0d' }}>
+
+                  {/* Employees section */}
+                  {agents.length > 0 && (
+                    <>
+                      <div className="px-3 py-2 border-b border-zinc-800/40">
+                        <p className="text-[9px] font-semibold text-zinc-600 uppercase tracking-wider">Employees</p>
+                      </div>
+                      <div className="py-1">
+                        {agents.map(agent => {
+                          const color = ROLE_COLORS[agent.role] || ROLE_COLORS.Custom;
+                          const isActive = chatTarget?.kind === 'agent' && chatTarget.agent.id === agent.id;
+                          return (
+                            <button
+                              key={agent.id}
+                              onClick={() => { onSelectTarget({ kind: 'agent', agent }); setMenuOpen(false); }}
+                              className={`w-full flex items-center gap-2.5 px-3 py-2 text-left cursor-pointer transition-colors ${
+                                isActive ? 'bg-zinc-800/50' : 'hover:bg-zinc-800/30'
+                              }`}
+                            >
+                              <div className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0"
+                                style={{ background: `${color}20`, color, border: `1.5px solid ${color}40` }}>
+                                {agent.name[0]}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className={`text-xs font-medium truncate ${isActive ? 'text-white' : 'text-zinc-300'}`}>{agent.name}</p>
+                                <p className="text-[10px] text-zinc-600 truncate">{agent.title}</p>
+                              </div>
+                              <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase shrink-0"
+                                style={{ color, background: `${color}12`, border: `1px solid ${color}25` }}>
+                                {agent.role}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+
+                  {/* Models section */}
+                  {registeredModels.length > 0 && (
+                    <>
+                      <div className={`px-3 py-2 border-b border-zinc-800/40 ${agents.length > 0 ? 'border-t' : ''}`}>
+                        <p className="text-[9px] font-semibold text-zinc-600 uppercase tracking-wider">Models (Direct)</p>
+                      </div>
+                      <div className="py-1">
+                        {registeredModels.map(model => {
+                          const color = MODEL_TYPE_COLORS[model.type] || '#a1a1aa';
+                          const isActive = chatTarget?.kind === 'model' && chatTarget.model.id === model.id;
+                          return (
+                            <button
+                              key={model.id}
+                              onClick={() => { onSelectTarget({ kind: 'model', model }); setMenuOpen(false); }}
+                              className={`w-full flex items-center gap-2.5 px-3 py-2 text-left cursor-pointer transition-colors ${
+                                isActive ? 'bg-zinc-800/50' : 'hover:bg-zinc-800/30'
+                              }`}
+                            >
+                              <div className="w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-bold shrink-0"
+                                style={{ background: `${color}15`, color, border: `1.5px solid ${color}30` }}>
+                                {(model.name || model.model_id)[0].toUpperCase()}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className={`text-xs font-medium truncate ${isActive ? 'text-white' : 'text-zinc-300'}`}>{model.name || model.model_id}</p>
+                                <p className="text-[10px] text-zinc-600 truncate font-mono">{model.model_id}</p>
+                              </div>
+                              <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase shrink-0"
+                                style={{ color, background: `${color}12`, border: `1px solid ${color}25` }}>
+                                {model.type}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           <input type="file" ref={fileInputRef} onChange={onFileUpload} className="hidden" multiple />
           <button
             onClick={() => fileInputRef.current?.click()}

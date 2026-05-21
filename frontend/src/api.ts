@@ -153,15 +153,23 @@ export async function sendChatMessage(
   onDone: () => void,
   onError: (error: string) => void,
   files?: FileRef[],
+  agentId?: string,
+  modelId?: string,
 ): Promise<void> {
-  log.info('chat', 'sending message', { conversationId, length: message.length, files: files?.length ?? 0 });
+  log.info('chat', 'sending message', { conversationId, length: message.length, files: files?.length ?? 0, agentId, modelId });
 
   let response: Response;
   try {
     response = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ conversation_id: conversationId, message, files: files?.length ? files : undefined }),
+      body: JSON.stringify({
+        conversation_id: conversationId,
+        message,
+        files: files?.length ? files : undefined,
+        agent_id: agentId || undefined,
+        model_id: modelId || undefined,
+      }),
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Network error';
