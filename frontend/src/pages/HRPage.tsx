@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Users, Plus, Trash2, X, Pencil, ChevronDown, ChevronRight,
-  Brain, Wrench, UserCog,
+  Brain, Wrench, UserCog, Tag, Filter,
 } from 'lucide-react';
 import { listEmployees, createEmployee, updateEmployee, deleteEmployee, setEmployeeManager, listModels } from '../api';
 import type { Employee, EmployeeModel, EmployeeSkill, VertexModel } from '../types';
@@ -40,6 +40,7 @@ export default function HRPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [editTarget, setEditTarget] = useState<Employee | null>(null);
   const [models, setModels] = useState<VertexModel[]>([]);
+  const [filterTag, setFilterTag] = useState<string>('');
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -75,8 +76,24 @@ export default function HRPage() {
 
   const tree = buildTree(employees);
 
+  const allTags = Array.from(new Set(employees.flatMap(e => e.tags))).sort();
+  const highlightIds = new Set(
+    filterTag ? employees.filter(e => e.tags.includes(filterTag)).map(e => e.id) : []
+  );
+
   return (
     <div className="p-8 max-w-[1400px] mx-auto">
+      <style>{`
+        @keyframes breathe {
+          0%, 100% { box-shadow: 0 0 8px 2px rgba(56, 189, 248, 0.3), 0 0 20px 4px rgba(56, 189, 248, 0.15); }
+          50% { box-shadow: 0 0 16px 6px rgba(56, 189, 248, 0.6), 0 0 40px 12px rgba(56, 189, 248, 0.25); }
+        }
+        .glow-breathe {
+          animation: breathe 2s ease-in-out infinite;
+          border-color: rgba(56, 189, 248, 0.5) !important;
+        }
+      `}</style>
+
       <header className="flex items-center justify-between mb-6">
         <div>
           <div className="flex items-center gap-2.5 mb-1">
@@ -85,13 +102,31 @@ export default function HRPage() {
           </div>
           <p className="text-xs text-zinc-600 mt-1">Manage AI agents, roles, and reporting structure</p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium text-white transition-colors cursor-pointer"
-          style={{ background: 'linear-gradient(135deg, #0e7490, #164e63)', border: '1px solid #0e749050' }}
-        >
-          <Plus size={14} /> New Employee
-        </button>
+        <div className="flex items-center gap-3">
+          {allTags.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              <Filter size={13} className="text-zinc-600" />
+              <select
+                value={filterTag}
+                onChange={e => setFilterTag(e.target.value)}
+                className="text-xs text-zinc-300 rounded-lg px-3 py-2 outline-none border border-zinc-800/50 focus:border-cyan-500/30 cursor-pointer"
+                style={{ background: '#111114' }}
+              >
+                <option value="">All employees</option>
+                {allTags.map(tag => (
+                  <option key={tag} value={tag}>{tag}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          <button
+            onClick={() => setShowCreate(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium text-white transition-colors cursor-pointer"
+            style={{ background: 'linear-gradient(135deg, #0e7490, #164e63)', border: '1px solid #0e749050' }}
+          >
+            <Plus size={14} /> New Employee
+          </button>
+        </div>
       </header>
 
       {showCreate && (
@@ -137,6 +172,7 @@ export default function HRPage() {
                       node={root}
                       selected={selected}
                       onSelect={setSelected}
+                      highlightIds={highlightIds}
                     />
                   ))}
                 </div>
@@ -161,14 +197,16 @@ export default function HRPage() {
   );
 }
 
-function OrgTreeNode({ node, selected, onSelect }: {
+function OrgTreeNode({ node, selected, onSelect, highlightIds }: {
   node: TreeNode;
   selected: Employee | null;
   onSelect: (e: Employee) => void;
+  highlightIds: Set<string>;
 }) {
   const emp = node.employee;
   const color = ROLE_COLORS[emp.role] || ROLE_COLORS.Custom;
   const isSelected = selected?.id === emp.id;
+  const isHighlighted = highlightIds.has(emp.id);
 
   return (
     <div className="flex flex-col items-center">
@@ -176,6 +214,7 @@ function OrgTreeNode({ node, selected, onSelect }: {
       <button
         onClick={() => onSelect(emp)}
         className={`flex items-center gap-2.5 px-4 py-3 rounded-xl border cursor-pointer transition-all ${
+          isHighlighted ? 'glow-breathe' :
           isSelected ? 'border-cyan-500/40 shadow-lg' : 'border-zinc-800/40 hover:border-zinc-700/60'
         }`}
         style={{ background: isSelected ? '#0e749015' : '#0a0a0d', minWidth: 160 }}
@@ -195,28 +234,23 @@ function OrgTreeNode({ node, selected, onSelect }: {
       {/* Children */}
       {node.children.length > 0 && (
         <div className="flex flex-col items-center">
-          {/* Vertical line down from parent */}
           <div className="w-px h-6" style={{ background: '#3f3f46' }} />
 
           {node.children.length === 1 ? (
-            <OrgTreeNode node={node.children[0]} selected={selected} onSelect={onSelect} />
+            <OrgTreeNode node={node.children[0]} selected={selected} onSelect={onSelect} highlightIds={highlightIds} />
           ) : (
-            <>
-              {/* Horizontal connector bar */}
-              <div className="flex items-start">
-                {node.children.map((child, i) => (
-                  <div key={child.employee.id} className="flex flex-col items-center" style={{ margin: '0 12px' }}>
-                    {/* Horizontal + vertical lines */}
-                    <div className="flex items-start w-full">
-                      <div className={`h-px flex-1 ${i === 0 ? 'bg-transparent' : ''}`} style={i > 0 ? { background: '#3f3f46' } : undefined} />
-                      <div className="w-px h-6" style={{ background: '#3f3f46' }} />
-                      <div className={`h-px flex-1 ${i === node.children.length - 1 ? 'bg-transparent' : ''}`} style={i < node.children.length - 1 ? { background: '#3f3f46' } : undefined} />
-                    </div>
-                    <OrgTreeNode node={child} selected={selected} onSelect={onSelect} />
+            <div className="flex items-start">
+              {node.children.map((child, i) => (
+                <div key={child.employee.id} className="flex flex-col items-center" style={{ margin: '0 12px' }}>
+                  <div className="flex items-start w-full">
+                    <div className={`h-px flex-1 ${i === 0 ? 'bg-transparent' : ''}`} style={i > 0 ? { background: '#3f3f46' } : undefined} />
+                    <div className="w-px h-6" style={{ background: '#3f3f46' }} />
+                    <div className={`h-px flex-1 ${i === node.children.length - 1 ? 'bg-transparent' : ''}`} style={i < node.children.length - 1 ? { background: '#3f3f46' } : undefined} />
                   </div>
-                ))}
-              </div>
-            </>
+                  <OrgTreeNode node={child} selected={selected} onSelect={onSelect} highlightIds={highlightIds} />
+                </div>
+              ))}
+            </div>
           )}
         </div>
       )}
@@ -304,6 +338,23 @@ function DetailPanel({ employee, employees, onEdit, onDelete, onReassign, onClos
           </div>
         )}
 
+        {employee.tags.length > 0 && (
+          <div>
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <Tag size={11} className="text-zinc-600" />
+              <p className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wider">Tags</p>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {employee.tags.map(tag => (
+                <span key={tag} className="px-2 py-0.5 rounded text-[10px] font-medium text-cyan-400"
+                  style={{ background: '#0e749015', border: '1px solid #0e749030' }}>
+                  {tag}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Reassign Manager */}
         <div>
           <div className="flex items-center gap-1.5 mb-1.5">
@@ -369,6 +420,8 @@ function EmployeeModal({ employee, employees, models, onClose, onSaved }: {
   const [managerId, setManagerId] = useState(employee?.manager_id || '');
   const [empModels, setEmpModels] = useState<EmployeeModel[]>(employee?.models || []);
   const [skills, setSkills] = useState<EmployeeSkill[]>(employee?.skills || []);
+  const [tags, setTags] = useState<string[]>(employee?.tags || []);
+  const [tagInput, setTagInput] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -380,6 +433,12 @@ function EmployeeModal({ employee, employees, models, onClose, onSaved }: {
     const next = [...skills];
     next[i] = { ...next[i], [field]: value };
     setSkills(next);
+  };
+
+  const addTags = () => {
+    const newTags = tagInput.split(',').map(t => t.trim().toLowerCase()).filter(t => t && !tags.includes(t));
+    if (newTags.length) setTags([...tags, ...newTags]);
+    setTagInput('');
   };
 
   const setModelForPurpose = (purpose: string, modelId: string) => {
@@ -400,6 +459,7 @@ function EmployeeModal({ employee, employees, models, onClose, onSaved }: {
         backstory: backstory.trim(),
         models: empModels,
         skills: skills.filter(s => s.skill.trim()),
+        tags,
         manager_id: managerId || undefined,
       };
       if (isEdit) {
@@ -527,6 +587,32 @@ function EmployeeModal({ employee, employees, models, onClose, onSaved }: {
                 <button onClick={addSkill} className="flex items-center gap-1 text-[10px] text-cyan-400 hover:text-cyan-300 cursor-pointer transition-colors">
                   <Plus size={10} /> Add Skill
                 </button>
+              </div>
+            )}
+          </div>
+
+          {/* Tags */}
+          <div>
+            <label className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wider mb-1.5 block">Tags</label>
+            <div className="flex items-center gap-2">
+              <input value={tagInput} onChange={e => setTagInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addTags(); } }}
+                onBlur={addTags}
+                placeholder="Type tags separated by commas, press Enter"
+                className="flex-1 text-xs text-zinc-300 rounded-lg px-2.5 py-2 outline-none border border-zinc-800/50 focus:border-cyan-500/30 placeholder:text-zinc-700"
+                style={{ background: '#111114' }} />
+            </div>
+            {tags.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {tags.map(tag => (
+                  <span key={tag} className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium text-cyan-400"
+                    style={{ background: '#0e749015', border: '1px solid #0e749030' }}>
+                    {tag}
+                    <button onClick={() => setTags(tags.filter(t => t !== tag))} className="text-cyan-600 hover:text-cyan-300 cursor-pointer">
+                      <X size={10} />
+                    </button>
+                  </span>
+                ))}
               </div>
             )}
           </div>

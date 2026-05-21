@@ -20,6 +20,7 @@ type Employee struct {
 	AvatarURL string          `json:"avatar_url"`
 	Models    []EmployeeModel `json:"models"`
 	Skills    []EmployeeSkill `json:"skills"`
+	Tags      []string        `json:"tags"`
 	ManagerID *string         `json:"manager_id"`
 	Reports   []EmployeeBrief `json:"reports"`
 	CreatedAt time.Time       `json:"created_at"`
@@ -68,6 +69,7 @@ func (pg *PGClient) ListEmployees(ctx context.Context) ([]Employee, error) {
 		}
 		emp.Models = []EmployeeModel{}
 		emp.Skills = []EmployeeSkill{}
+		emp.Tags = []string{}
 		emp.Reports = []EmployeeBrief{}
 		employees = append(employees, emp)
 		ids = append(ids, emp.ID)
@@ -85,6 +87,10 @@ func (pg *PGClient) ListEmployees(ctx context.Context) ([]Employee, error) {
 	if err != nil {
 		return nil, err
 	}
+	tagsMap, err := pg.batchLoadTags(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
 
 	empIndex := make(map[string]int, len(employees))
 	for i := range employees {
@@ -94,6 +100,9 @@ func (pg *PGClient) ListEmployees(ctx context.Context) ([]Employee, error) {
 		}
 		if s, ok := skillsMap[employees[i].ID]; ok {
 			employees[i].Skills = s
+		}
+		if t, ok := tagsMap[employees[i].ID]; ok {
+			employees[i].Tags = t
 		}
 	}
 
@@ -128,6 +137,26 @@ func (pg *PGClient) batchLoadModels(ctx context.Context, ids []string) (map[stri
 			return nil, fmt.Errorf("scan model: %w", err)
 		}
 		result[empID] = append(result[empID], m)
+	}
+	return result, nil
+}
+
+func (pg *PGClient) batchLoadTags(ctx context.Context, ids []string) (map[string][]string, error) {
+	rows, err := pg.pool.Query(ctx,
+		"SELECT employee_id, tag FROM employee_tags WHERE employee_id = ANY($1) ORDER BY tag",
+		ids)
+	if err != nil {
+		return nil, fmt.Errorf("batch load tags: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string][]string)
+	for rows.Next() {
+		var empID, tag string
+		if err := rows.Scan(&empID, &tag); err != nil {
+			return nil, fmt.Errorf("scan tag: %w", err)
+		}
+		result[empID] = append(result[empID], tag)
 	}
 	return result, nil
 }
@@ -169,6 +198,7 @@ func (pg *PGClient) GetEmployee(ctx context.Context, id string) (*Employee, erro
 
 	emp.Models = []EmployeeModel{}
 	emp.Skills = []EmployeeSkill{}
+	emp.Tags = []string{}
 	emp.Reports = []EmployeeBrief{}
 
 	modelsMap, _ := pg.batchLoadModels(ctx, []string{id})
@@ -179,6 +209,11 @@ func (pg *PGClient) GetEmployee(ctx context.Context, id string) (*Employee, erro
 	skillsMap, _ := pg.batchLoadSkills(ctx, []string{id})
 	if s, ok := skillsMap[id]; ok {
 		emp.Skills = s
+	}
+
+	tagsMap, _ := pg.batchLoadTags(ctx, []string{id})
+	if t, ok := tagsMap[id]; ok {
+		emp.Tags = t
 	}
 
 	reportRows, err := pg.pool.Query(ctx, `
@@ -217,7 +252,7 @@ func (pg *PGClient) CreateEmployee(ctx context.Context, emp *Employee) error {
 		return fmt.Errorf("insert employee: %w", err)
 	}
 
-	if err := pg.insertModelsAndSkills(ctx, tx, emp.ID, emp.Models, emp.Skills); err != nil {
+	if err := pg.insertRelated(ctx, tx, emp.ID, emp.Models, emp.Skills, emp.Tags); err != nil {
 		return err
 	}
 
@@ -232,7 +267,7 @@ func (pg *PGClient) CreateEmployee(ctx context.Context, emp *Employee) error {
 	return tx.Commit(ctx)
 }
 
-func (pg *PGClient) insertModelsAndSkills(ctx context.Context, tx pgx.Tx, empID string, models []EmployeeModel, skills []EmployeeSkill) error {
+func (pg *PGClient) insertRelated(ctx context.Context, tx pgx.Tx, empID string, models []EmployeeModel, skills []EmployeeSkill, tags []string) error {
 	for _, m := range models {
 		if _, err := tx.Exec(ctx,
 			"INSERT INTO employee_models (employee_id, model_id, purpose) VALUES ($1, $2, $3)",
@@ -245,6 +280,13 @@ func (pg *PGClient) insertModelsAndSkills(ctx context.Context, tx pgx.Tx, empID 
 			"INSERT INTO employee_skills (employee_id, skill, description) VALUES ($1, $2, $3)",
 			empID, s.Skill, s.Description); err != nil {
 			return fmt.Errorf("insert skill: %w", err)
+		}
+	}
+	for _, t := range tags {
+		if _, err := tx.Exec(ctx,
+			"INSERT INTO employee_tags (employee_id, tag) VALUES ($1, $2)",
+			empID, t); err != nil {
+			return fmt.Errorf("insert tag: %w", err)
 		}
 	}
 	return nil
@@ -268,8 +310,9 @@ func (pg *PGClient) UpdateEmployee(ctx context.Context, id string, emp *Employee
 
 	tx.Exec(ctx, "DELETE FROM employee_models WHERE employee_id=$1", id)
 	tx.Exec(ctx, "DELETE FROM employee_skills WHERE employee_id=$1", id)
+	tx.Exec(ctx, "DELETE FROM employee_tags WHERE employee_id=$1", id)
 
-	if err := pg.insertModelsAndSkills(ctx, tx, id, emp.Models, emp.Skills); err != nil {
+	if err := pg.insertRelated(ctx, tx, id, emp.Models, emp.Skills, emp.Tags); err != nil {
 		return err
 	}
 
@@ -348,12 +391,32 @@ func (pg *PGClient) CountEmployees(ctx context.Context) (int, error) {
 	return count, err
 }
 
+func (pg *PGClient) backfillDefaultTags(ctx context.Context) {
+	defaults := map[string]string{
+		"Elong": "executive",
+		"Steve": "manager",
+		"Linas": "manager",
+		"Allen": "manager",
+	}
+	for name, tag := range defaults {
+		var id string
+		err := pg.pool.QueryRow(ctx, "SELECT id FROM employees WHERE name=$1", name).Scan(&id)
+		if err != nil {
+			continue
+		}
+		pg.pool.Exec(ctx,
+			"INSERT INTO employee_tags (employee_id, tag) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+			id, tag)
+	}
+}
+
 func (pg *PGClient) SeedDefaultEmployees(ctx context.Context) error {
 	count, err := pg.CountEmployees(ctx)
 	if err != nil {
 		return fmt.Errorf("count employees: %w", err)
 	}
 	if count > 0 {
+		pg.backfillDefaultTags(ctx)
 		return nil
 	}
 
@@ -363,6 +426,7 @@ func (pg *PGClient) SeedDefaultEmployees(ctx context.Context) error {
 		Role      string
 		Backstory string
 		Skills    []EmployeeSkill
+		Tags      []string
 	}
 
 	defaults := []seed{
@@ -380,6 +444,7 @@ func (pg *PGClient) SeedDefaultEmployees(ctx context.Context) error {
 				{"Team Leadership", "Coordinate cross-functional teams effectively"},
 				{"Executive Review", "Synthesize outputs into delivery packages"},
 			},
+			Tags: []string{"executive"},
 		},
 		{
 			Name:  "Steve",
@@ -394,6 +459,7 @@ func (pg *PGClient) SeedDefaultEmployees(ctx context.Context) error {
 				{"Roadmap Planning", "Prioritize features by impact and feasibility"},
 				{"Specification Writing", "Create detailed product blueprints"},
 			},
+			Tags: []string{"manager"},
 		},
 		{
 			Name:  "Linas",
@@ -408,6 +474,7 @@ func (pg *PGClient) SeedDefaultEmployees(ctx context.Context) error {
 				{"Code Review", "Ensure code quality and performance standards"},
 				{"Performance Optimization", "Eliminate bottlenecks and reduce latency"},
 			},
+			Tags: []string{"manager"},
 		},
 		{
 			Name:  "Allen",
@@ -422,6 +489,7 @@ func (pg *PGClient) SeedDefaultEmployees(ctx context.Context) error {
 				{"Quality Metrics", "Track and report on code health and coverage"},
 				{"Automated Testing", "Design and maintain automated test frameworks"},
 			},
+			Tags: []string{"manager"},
 		},
 	}
 
@@ -449,6 +517,13 @@ func (pg *PGClient) SeedDefaultEmployees(ctx context.Context) error {
 				"INSERT INTO employee_skills (employee_id, skill, description) VALUES ($1, $2, $3)",
 				id, s.Skill, s.Description); err != nil {
 				return fmt.Errorf("seed skill for %s: %w", d.Name, err)
+			}
+		}
+		for _, t := range d.Tags {
+			if _, err := tx.Exec(ctx,
+				"INSERT INTO employee_tags (employee_id, tag) VALUES ($1, $2)",
+				id, t); err != nil {
+				return fmt.Errorf("seed tag for %s: %w", d.Name, err)
 			}
 		}
 	}
@@ -522,6 +597,9 @@ func (h *APIHandler) CreateEmployee(w http.ResponseWriter, r *http.Request) {
 	if emp.Skills == nil {
 		emp.Skills = []EmployeeSkill{}
 	}
+	if emp.Tags == nil {
+		emp.Tags = []string{}
+	}
 
 	if err := h.pgClient.CreateEmployee(r.Context(), &emp); err != nil {
 		writeError(w, "failed to create employee: "+err.Error(), http.StatusInternalServerError)
@@ -549,6 +627,9 @@ func (h *APIHandler) UpdateEmployee(w http.ResponseWriter, r *http.Request) {
 	}
 	if emp.Skills == nil {
 		emp.Skills = []EmployeeSkill{}
+	}
+	if emp.Tags == nil {
+		emp.Tags = []string{}
 	}
 
 	if err := h.pgClient.UpdateEmployee(r.Context(), id, &emp); err != nil {

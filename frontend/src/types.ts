@@ -120,6 +120,7 @@ export interface Employee {
   avatar_url: string;
   models: EmployeeModel[];
   skills: EmployeeSkill[];
+  tags: string[];
   manager_id?: string | null;
   reports: EmployeeBrief[];
   created_at: string;
