@@ -96,6 +96,36 @@ func (h *APIHandler) registerProbes() {
 	})
 }
 
+func (h *APIHandler) Shutdown(ctx context.Context) {
+	if h.esClient != nil {
+		h.syncAllConversations(ctx)
+		if err := h.esClient.Refresh(ctx, IdxConversations, IdxMessages); err != nil {
+			slog.Error("ES refresh on shutdown failed", "error", err)
+		}
+	}
+
+	if h.gcsClient != nil {
+		if err := h.gcsClient.Close(); err != nil {
+			slog.Error("GCS client close failed", "error", err)
+		}
+	}
+
+	slog.Info("APIHandler shutdown complete")
+}
+
+func (h *APIHandler) syncAllConversations(ctx context.Context) {
+	all := h.conversations.All()
+	synced := 0
+	for _, c := range all {
+		if err := h.esClient.IndexConversation(ctx, c); err != nil {
+			slog.Error("shutdown sync conversation failed", "id", c.ID, "error", err)
+			continue
+		}
+		synced++
+	}
+	slog.Info("shutdown conversation sync complete", "synced", synced, "total", len(all))
+}
+
 func writeJSON(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(data)

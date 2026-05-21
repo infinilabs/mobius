@@ -68,11 +68,14 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 		Files:     req.Files,
 	}
 	h.conversations.AddMessage(req.ConversationID, userMsg)
+	conv = h.conversations.Get(req.ConversationID)
 
 	if h.esClient != nil {
-		conv = h.conversations.Get(req.ConversationID)
 		if err := h.esClient.IndexMessage(r.Context(), req.ConversationID, &userMsg, len(conv.Messages)); err != nil {
 			slog.Error("ES index user message failed", "error", err)
+		}
+		if err := h.esClient.IndexConversation(r.Context(), conv); err != nil {
+			slog.Error("ES index conversation failed", "error", err)
 		}
 	}
 

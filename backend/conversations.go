@@ -57,6 +57,24 @@ func generateID() string {
 	return hex.EncodeToString(b)
 }
 
+func (s *ConversationStore) Hydrate(convs map[string]*Conversation) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, c := range convs {
+		s.convs[id] = c
+	}
+}
+
+func (s *ConversationStore) All() []*Conversation {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*Conversation, 0, len(s.convs))
+	for _, c := range s.convs {
+		out = append(out, c)
+	}
+	return out
+}
+
 func (s *ConversationStore) Create() *Conversation {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -227,8 +245,19 @@ func (h *APIHandler) TruncateConversation(w http.ResponseWriter, r *http.Request
 		writeError(w, "conversation not found", http.StatusNotFound)
 		return
 	}
-	slog.Info("conversation truncated", "id", id, "keep_count", body.KeepCount)
+
 	c := h.conversations.Get(id)
+
+	if h.esClient != nil {
+		if err := h.esClient.DeleteMessagesBeyond(r.Context(), id, body.KeepCount); err != nil {
+			slog.Error("ES truncate messages failed", "id", id, "error", err)
+		}
+		if err := h.esClient.IndexConversation(r.Context(), c); err != nil {
+			slog.Error("ES update conversation after truncate failed", "id", id, "error", err)
+		}
+	}
+
+	slog.Info("conversation truncated", "id", id, "keep_count", body.KeepCount)
 	writeJSON(w, c)
 }
 

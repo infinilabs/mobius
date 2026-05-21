@@ -103,6 +103,12 @@ func main() {
 
 	api := NewAPIHandler(cfg, configPath, genaiClient, esClient, gcsClient)
 
+	if esClient != nil {
+		if err := hydrateConversations(ctx, esClient, api.conversations); err != nil {
+			slog.Error("failed to hydrate conversations from ES", "error", err)
+		}
+	}
+
 	mux := http.NewServeMux()
 
 	logMW := func(next http.Handler) http.Handler {
@@ -204,10 +210,35 @@ func main() {
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		slog.Error("Forced shutdown", "error", err)
-	} else {
-		slog.Info("Server stopped gracefully")
+		slog.Error("HTTP server forced shutdown", "error", err)
 	}
+
+	api.Shutdown(shutdownCtx)
+
+	slog.Info("Server stopped gracefully")
+}
+
+func hydrateConversations(ctx context.Context, es *ESClient, store *ConversationStore) error {
+	convList, err := es.ListAllConversations(ctx)
+	if err != nil {
+		return fmt.Errorf("list conversations: %w", err)
+	}
+
+	convMap := make(map[string]*Conversation, len(convList))
+	for i := range convList {
+		c := &convList[i]
+		msgs, err := es.ListMessages(ctx, c.ID)
+		if err != nil {
+			slog.Error("failed to load messages for conversation", "id", c.ID, "error", err)
+			msgs = []Message{}
+		}
+		c.Messages = msgs
+		convMap[c.ID] = c
+	}
+
+	store.Hydrate(convMap)
+	slog.Info("conversations hydrated from ES", "count", len(convMap))
+	return nil
 }
 
 type statusWriter struct {
