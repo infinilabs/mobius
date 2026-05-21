@@ -107,6 +107,16 @@ func main() {
 		if err := hydrateConversations(ctx, esClient, api.conversations); err != nil {
 			slog.Error("failed to hydrate conversations from ES", "error", err)
 		}
+
+		promptsDir := "prompts"
+		if _, err := os.Stat(promptsDir); os.IsNotExist(err) {
+			promptsDir = "../prompts"
+		}
+		if _, err := os.Stat(promptsDir); err == nil {
+			if err := seedPrompts(ctx, esClient, promptsDir); err != nil {
+				slog.Error("failed to seed prompts", "error", err)
+			}
+		}
 	}
 
 	mux := http.NewServeMux()

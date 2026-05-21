@@ -3,10 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -71,11 +76,20 @@ func (es *ESClient) SearchPrompts(ctx context.Context, query string) ([]Prompt, 
 			"size":  200,
 		}
 	} else {
+		words := strings.Fields(query)
+		wildcards := make([]string, len(words))
+		for i, w := range words {
+			wildcards[i] = "*" + w + "*"
+		}
+		qs := strings.Join(wildcards, " AND ")
+
 		body = map[string]any{
 			"query": map[string]any{
-				"multi_match": map[string]any{
-					"query":  query,
-					"fields": []string{"title^2", "content", "tags"},
+				"query_string": map[string]any{
+					"query":            qs,
+					"fields":           []string{"title^2", "content", "tags"},
+					"default_operator": "AND",
+					"analyze_wildcard": true,
 				},
 			},
 			"size": 200,
@@ -245,6 +259,58 @@ func (h *APIHandler) UpdatePrompt(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("prompt updated", "id", id)
 	writeJSON(w, existing)
+}
+
+func seedPrompts(ctx context.Context, es *ESClient, dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("read prompts dir: %w", err)
+	}
+
+	seeded := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+
+		content, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			slog.Error("failed to read prompt file", "file", entry.Name(), "error", err)
+			continue
+		}
+
+		name := strings.TrimSuffix(entry.Name(), ".md")
+		hash := sha256.Sum256([]byte(name))
+		id := hex.EncodeToString(hash[:8])
+
+		_, err = es.GetPrompt(ctx, id)
+		if err == nil {
+			continue
+		}
+
+		title := strings.ReplaceAll(name, "_", " ")
+		now := time.Now().UnixMilli()
+		p := &Prompt{
+			ID:        id,
+			Title:     title,
+			Content:   string(content),
+			Tags:      []string{"template"},
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+
+		if err := es.IndexPrompt(ctx, p); err != nil {
+			slog.Error("failed to seed prompt", "file", entry.Name(), "error", err)
+			continue
+		}
+		seeded++
+		slog.Info("prompt seeded", "id", id, "title", title)
+	}
+
+	if seeded > 0 {
+		slog.Info("prompt seeding complete", "seeded", seeded)
+	}
+	return nil
 }
 
 func (h *APIHandler) DeletePrompt(w http.ResponseWriter, r *http.Request) {

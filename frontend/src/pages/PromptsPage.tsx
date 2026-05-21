@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Search, Plus, Trash2, X, Tag, Copy, Check } from 'lucide-react';
 import { listPrompts, createPrompt, deletePrompt } from '../api';
 import type { Prompt } from '../types';
@@ -19,13 +19,17 @@ export default function PromptsPage() {
       .finally(() => setLoading(false));
   }, []);
 
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
+
   useEffect(() => { refresh(); }, [refresh]);
 
-  const handleSearch = () => { refresh(search || undefined); };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') handleSearch();
-  };
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      refresh(search || undefined);
+    }, 250);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [search, refresh]);
 
   const handleDelete = async (id: string) => {
     await deletePrompt(id);
@@ -59,21 +63,19 @@ export default function PromptsPage() {
             type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            onKeyDown={handleKeyDown}
             placeholder="Search prompts by title, content, or tag..."
-            className="w-full text-xs text-zinc-300 rounded-lg pl-9 pr-3 py-2.5 outline-none border border-zinc-800/50 transition-colors focus:border-cyan-500/30 placeholder:text-zinc-700"
+            className="w-full text-xs text-zinc-300 rounded-lg pl-9 pr-8 py-2.5 outline-none border border-zinc-800/50 transition-colors focus:border-cyan-500/30 placeholder:text-zinc-700"
             style={{ background: '#111114' }}
           />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-600 hover:text-zinc-300 cursor-pointer transition-colors"
+            >
+              <X size={12} />
+            </button>
+          )}
         </div>
-
-        <button
-          onClick={handleSearch}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium border border-zinc-800/50 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700/60 transition-colors cursor-pointer"
-          style={{ background: '#111114' }}
-        >
-          <Search size={14} />
-          Search
-        </button>
 
         <div className="flex-1" />
 
