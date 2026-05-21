@@ -19,13 +19,57 @@ type ElasticsearchConfig struct {
 	URL string `yaml:"url" json:"url"`
 }
 
+type VertexModel struct {
+	ID       string `yaml:"id" json:"id"`
+	Name     string `yaml:"name" json:"name"`
+	ModelID  string `yaml:"model_id" json:"model_id"`
+	Location string `yaml:"location" json:"location"`
+	Type     string `yaml:"type" json:"type"`
+}
+
 type VertexAIConfig struct {
-	LLMModelID    string `yaml:"llm_model_id" json:"llm_model_id"`
-	LLMLocation   string `yaml:"llm_location" json:"llm_location"`
-	ImgModelID    string `yaml:"img_model_id" json:"img_model_id"`
-	ImgLocation   string `yaml:"img_location" json:"img_location"`
-	VideoModelID  string `yaml:"video_model_id" json:"video_model_id"`
-	VideoLocation string `yaml:"video_location" json:"video_location"`
+	LLMModelID    string `yaml:"llm_model_id,omitempty" json:"llm_model_id,omitempty"`
+	LLMLocation   string `yaml:"llm_location,omitempty" json:"llm_location,omitempty"`
+	ImgModelID    string `yaml:"img_model_id,omitempty" json:"img_model_id,omitempty"`
+	ImgLocation   string `yaml:"img_location,omitempty" json:"img_location,omitempty"`
+	VideoModelID  string `yaml:"video_model_id,omitempty" json:"video_model_id,omitempty"`
+	VideoLocation string `yaml:"video_location,omitempty" json:"video_location,omitempty"`
+	Models        []VertexModel `yaml:"models,omitempty" json:"models,omitempty"`
+}
+
+func (v *VertexAIConfig) GetModels() []VertexModel {
+	if len(v.Models) > 0 {
+		return v.Models
+	}
+	var models []VertexModel
+	if v.LLMModelID != "" {
+		models = append(models, VertexModel{
+			ID: v.LLMModelID, Name: v.LLMModelID,
+			ModelID: v.LLMModelID, Location: v.LLMLocation, Type: "llm",
+		})
+	}
+	if v.ImgModelID != "" {
+		models = append(models, VertexModel{
+			ID: v.ImgModelID, Name: v.ImgModelID,
+			ModelID: v.ImgModelID, Location: v.ImgLocation, Type: "image",
+		})
+	}
+	if v.VideoModelID != "" {
+		models = append(models, VertexModel{
+			ID: v.VideoModelID, Name: v.VideoModelID,
+			ModelID: v.VideoModelID, Location: v.VideoLocation, Type: "video",
+		})
+	}
+	return models
+}
+
+func (v *VertexAIConfig) DefaultLLM() (modelID, location string) {
+	for _, m := range v.GetModels() {
+		if m.Type == "llm" {
+			return m.ModelID, m.Location
+		}
+	}
+	return v.LLMModelID, v.LLMLocation
 }
 
 type BigQueryConfig struct {

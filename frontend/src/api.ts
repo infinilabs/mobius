@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { SettingsData, Conversation, ConversationSummary, FileRef, Prompt } from './types';
+import type { SettingsData, Conversation, ConversationSummary, FileRef, Prompt, VertexModel, Employee } from './types';
 import { log } from './logger';
 
 export async function fetchConfig(): Promise<{ project_id: string }> {
@@ -102,6 +102,48 @@ export async function updatePrompt(id: string, prompt: { title?: string; content
 
 export async function deletePrompt(id: string): Promise<void> {
   await axios.delete(`/api/prompts/${id}`);
+}
+
+export async function listModels(): Promise<VertexModel[]> {
+  const { data } = await axios.get('/api/models');
+  return data;
+}
+
+export async function addModel(model: Omit<VertexModel, 'name'> & { name?: string }): Promise<VertexModel> {
+  const { data } = await axios.post('/api/models', model);
+  return data;
+}
+
+export async function removeModel(id: string): Promise<void> {
+  await axios.delete(`/api/models/${id}`);
+}
+
+export async function listEmployees(): Promise<Employee[]> {
+  const { data } = await axios.get('/api/employees');
+  return data;
+}
+
+export async function getEmployee(id: string): Promise<Employee> {
+  const { data } = await axios.get(`/api/employees/${id}`);
+  return data;
+}
+
+export async function createEmployee(emp: Partial<Employee>): Promise<Employee> {
+  const { data } = await axios.post('/api/employees', emp);
+  return data;
+}
+
+export async function updateEmployee(id: string, emp: Partial<Employee>): Promise<Employee> {
+  const { data } = await axios.put(`/api/employees/${id}`, emp);
+  return data;
+}
+
+export async function deleteEmployee(id: string): Promise<void> {
+  await axios.delete(`/api/employees/${id}`);
+}
+
+export async function setEmployeeManager(id: string, managerId: string): Promise<void> {
+  await axios.put(`/api/employees/${id}/manager`, { manager_id: managerId });
 }
 
 export async function sendChatMessage(

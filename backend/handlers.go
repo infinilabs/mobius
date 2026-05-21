@@ -21,10 +21,11 @@ type APIHandler struct {
 	genaiClient   *genai.Client
 	esClient      *ESClient
 	gcsClient     *GCSClient
+	pgClient      *PGClient
 	health        *HealthChecker
 }
 
-func NewAPIHandler(cfg *Config, configPath string, genaiClient *genai.Client, esClient *ESClient, gcsClient *GCSClient) *APIHandler {
+func NewAPIHandler(cfg *Config, configPath string, genaiClient *genai.Client, esClient *ESClient, gcsClient *GCSClient, pgClient *PGClient) *APIHandler {
 	h := &APIHandler{
 		config:        cfg,
 		configPath:    configPath,
@@ -33,6 +34,7 @@ func NewAPIHandler(cfg *Config, configPath string, genaiClient *genai.Client, es
 		genaiClient:   genaiClient,
 		esClient:      esClient,
 		gcsClient:     gcsClient,
+		pgClient:      pgClient,
 		health:        NewHealthChecker(5 * time.Second),
 	}
 	h.registerProbes()
@@ -41,7 +43,13 @@ func NewAPIHandler(cfg *Config, configPath string, genaiClient *genai.Client, es
 
 func (h *APIHandler) registerProbes() {
 	h.health.Register("postgres", func(ctx context.Context) ServiceStatus {
-		return StatusUnconfigured("Not connected yet")
+		if h.pgClient == nil {
+			return StatusUnconfigured("Client not initialized")
+		}
+		if err := h.pgClient.Ping(ctx); err != nil {
+			return StatusUnavailable(err.Error())
+		}
+		return StatusOK()
 	})
 
 	h.health.Register("elasticsearch", func(ctx context.Context) ServiceStatus {
@@ -75,24 +83,29 @@ func (h *APIHandler) registerProbes() {
 		if h.genaiClient == nil {
 			return StatusUnavailable("Vertex AI client not initialized")
 		}
-		if h.config.GoogleCloud.VertexAI.LLMModelID == "" {
+		modelID, _ := h.config.GoogleCloud.VertexAI.DefaultLLM()
+		if modelID == "" {
 			return StatusUnconfigured("LLM model not set")
 		}
 		return StatusOK()
 	})
 
 	h.health.Register("img_model", func(ctx context.Context) ServiceStatus {
-		if h.config.GoogleCloud.VertexAI.ImgModelID == "" {
-			return StatusUnconfigured("Image model not set")
+		for _, m := range h.config.GoogleCloud.VertexAI.GetModels() {
+			if m.Type == "image" {
+				return StatusOK()
+			}
 		}
-		return StatusOK()
+		return StatusUnconfigured("Image model not set")
 	})
 
 	h.health.Register("video_model", func(ctx context.Context) ServiceStatus {
-		if h.config.GoogleCloud.VertexAI.VideoModelID == "" {
-			return StatusUnconfigured("Video model not set")
+		for _, m := range h.config.GoogleCloud.VertexAI.GetModels() {
+			if m.Type == "video" {
+				return StatusOK()
+			}
 		}
-		return StatusOK()
+		return StatusUnconfigured("Video model not set")
 	})
 }
 
@@ -108,6 +121,10 @@ func (h *APIHandler) Shutdown(ctx context.Context) {
 		if err := h.gcsClient.Close(); err != nil {
 			slog.Error("GCS client close failed", "error", err)
 		}
+	}
+
+	if h.pgClient != nil {
+		h.pgClient.Close()
 	}
 
 	slog.Info("APIHandler shutdown complete")
@@ -168,6 +185,70 @@ func (h *APIHandler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("settings updated and saved", "path", h.configPath)
 	writeJSON(w, h.config.GetSettings())
+}
+
+func (h *APIHandler) ListModels(w http.ResponseWriter, r *http.Request) {
+	settings := h.config.GetSettings()
+	writeJSON(w, settings.GoogleCloud.VertexAI.GetModels())
+}
+
+func (h *APIHandler) AddModel(w http.ResponseWriter, r *http.Request) {
+	var model VertexModel
+	if err := json.NewDecoder(r.Body).Decode(&model); err != nil {
+		writeError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if model.ID == "" || model.ModelID == "" || model.Type == "" {
+		writeError(w, "id, model_id, and type are required", http.StatusBadRequest)
+		return
+	}
+	if model.Name == "" {
+		model.Name = model.ModelID
+	}
+	if model.Location == "" {
+		model.Location = "global"
+	}
+
+	h.config.mu.Lock()
+	h.config.GoogleCloud.VertexAI.Models = append(h.config.GoogleCloud.VertexAI.Models, model)
+	h.config.mu.Unlock()
+
+	if err := SaveConfig(h.configPath, h.config); err != nil {
+		writeError(w, "failed to save config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("model registered", "id", model.ID, "type", model.Type)
+	writeJSON(w, model)
+}
+
+func (h *APIHandler) RemoveModel(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	h.config.mu.Lock()
+	models := h.config.GoogleCloud.VertexAI.Models
+	found := false
+	for i, m := range models {
+		if m.ID == id {
+			h.config.GoogleCloud.VertexAI.Models = append(models[:i], models[i+1:]...)
+			found = true
+			break
+		}
+	}
+	h.config.mu.Unlock()
+
+	if !found {
+		writeError(w, "model not found", http.StatusNotFound)
+		return
+	}
+
+	if err := SaveConfig(h.configPath, h.config); err != nil {
+		writeError(w, "failed to save config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("model removed", "id", id)
+	writeJSON(w, map[string]string{"status": "ok"})
 }
 
 func (h *APIHandler) UploadFile(w http.ResponseWriter, r *http.Request) {

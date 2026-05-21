@@ -101,7 +101,25 @@ func main() {
 		}
 	}
 
-	api := NewAPIHandler(cfg, configPath, genaiClient, esClient, gcsClient)
+	var pgClient *PGClient
+	pgClient, err = NewPGClient(ctx, cfg.Postgres)
+	if err != nil {
+		slog.Error("failed to init PostgreSQL client", "error", err)
+		slog.Warn("PostgreSQL features will be unavailable")
+		pgClient = nil
+	}
+
+	if pgClient != nil {
+		migrationsDir := "schemas/postgres"
+		if _, err := os.Stat(migrationsDir); os.IsNotExist(err) {
+			migrationsDir = "../schemas/postgres"
+		}
+		if err := pgClient.RunMigrations(ctx, migrationsDir); err != nil {
+			slog.Error("failed to run PG migrations", "error", err)
+		}
+	}
+
+	api := NewAPIHandler(cfg, configPath, genaiClient, esClient, gcsClient, pgClient)
 
 	if esClient != nil {
 		if err := hydrateConversations(ctx, esClient, api.conversations); err != nil {
@@ -116,6 +134,12 @@ func main() {
 			if err := seedPrompts(ctx, esClient, promptsDir); err != nil {
 				slog.Error("failed to seed prompts", "error", err)
 			}
+		}
+	}
+
+	if pgClient != nil {
+		if err := pgClient.SeedDefaultEmployees(ctx); err != nil {
+			slog.Error("failed to seed default employees", "error", err)
 		}
 	}
 
@@ -169,6 +193,19 @@ func main() {
 	mux.Handle("GET /api/prompts/{id}", h(api.GetPrompt))
 	mux.Handle("PUT /api/prompts/{id}", h(api.UpdatePrompt))
 	mux.Handle("DELETE /api/prompts/{id}", h(api.DeletePrompt))
+
+	// Employees
+	mux.Handle("GET /api/employees", h(api.ListEmployees))
+	mux.Handle("POST /api/employees", h(api.CreateEmployee))
+	mux.Handle("GET /api/employees/{id}", h(api.GetEmployee))
+	mux.Handle("PUT /api/employees/{id}", h(api.UpdateEmployee))
+	mux.Handle("DELETE /api/employees/{id}", h(api.DeleteEmployee))
+	mux.Handle("PUT /api/employees/{id}/manager", h(api.SetEmployeeManager))
+
+	// Models
+	mux.Handle("GET /api/models", h(api.ListModels))
+	mux.Handle("POST /api/models", h(api.AddModel))
+	mux.Handle("DELETE /api/models/{id}", h(api.RemoveModel))
 
 	// Chat
 	mux.Handle("POST /api/chat", h(api.Chat))

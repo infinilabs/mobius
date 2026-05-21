@@ -14,13 +14,22 @@ export interface ElasticsearchConfig {
   url: string;
 }
 
+export interface VertexModel {
+  id: string;
+  name: string;
+  model_id: string;
+  location: string;
+  type: 'llm' | 'image' | 'video';
+}
+
 export interface VertexAIConfig {
-  llm_model_id: string;
-  llm_location: string;
-  img_model_id: string;
-  img_location: string;
-  video_model_id: string;
-  video_location: string;
+  llm_model_id?: string;
+  llm_location?: string;
+  img_model_id?: string;
+  img_location?: string;
+  video_model_id?: string;
+  video_location?: string;
+  models?: VertexModel[];
 }
 
 export interface BigQueryConfig {
@@ -83,4 +92,36 @@ export interface Prompt {
   tags: string[];
   created_at: number;
   updated_at: number;
+}
+
+export interface EmployeeModel {
+  model_id: string;
+  purpose: string;
+}
+
+export interface EmployeeSkill {
+  skill: string;
+  description: string;
+}
+
+export interface EmployeeBrief {
+  id: string;
+  name: string;
+  title: string;
+  role: string;
+}
+
+export interface Employee {
+  id: string;
+  name: string;
+  title: string;
+  role: string;
+  backstory: string;
+  avatar_url: string;
+  models: EmployeeModel[];
+  skills: EmployeeSkill[];
+  manager_id?: string | null;
+  reports: EmployeeBrief[];
+  created_at: string;
+  updated_at: string;
 }

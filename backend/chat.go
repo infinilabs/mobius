@@ -22,7 +22,7 @@ func NewGenAIClient(ctx context.Context, cfg *Config) (*genai.Client, error) {
 	settings := cfg.GetSettings()
 	gc := settings.GoogleCloud
 
-	location := gc.VertexAI.LLMLocation
+	_, location := gc.VertexAI.DefaultLLM()
 	if location == "" {
 		location = "global"
 	}
@@ -80,7 +80,7 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	settings := h.config.GetSettings()
-	modelID := settings.GoogleCloud.VertexAI.LLMModelID
+	modelID, _ := settings.GoogleCloud.VertexAI.DefaultLLM()
 	if modelID == "" {
 		modelID = "gemini-3.1-pro-preview"
 	}

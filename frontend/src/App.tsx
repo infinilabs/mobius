@@ -3,7 +3,7 @@ import {
   PenLine, Gauge, Bot, Palette, Radio, Settings,
   ChevronLeft, ChevronRight, Server, Layers,
   MessageSquare, MoreHorizontal, Pencil, Trash2, Check, X,
-  FileText,
+  FileText, Users,
 } from 'lucide-react';
 import { fetchConfig, listConversations, renameConversation, deleteConversation } from './api';
 import type { ConversationSummary } from './types';
@@ -14,13 +14,15 @@ import AgentWorkspacePage from './pages/AgentWorkspacePage';
 import CreativesPage from './pages/CreativesPage';
 import AutopilotPage from './pages/AutopilotPage';
 import PromptsPage from './pages/PromptsPage';
+import HRPage from './pages/HRPage';
 import SettingsPage from './pages/SettingsPage';
 
-type Page = 'new-task' | 'cockpit' | 'agent-workspace' | 'creatives' | 'prompts' | 'autopilot' | 'settings';
+type Page = 'new-task' | 'cockpit' | 'hr' | 'agent-workspace' | 'creatives' | 'prompts' | 'autopilot' | 'settings';
 
 const NAV_ITEMS: { id: Page; label: string; icon: React.ReactNode }[] = [
   { id: 'new-task',         label: 'New Task',          icon: <PenLine size={18} /> },
   { id: 'cockpit',          label: 'Cockpit',           icon: <Gauge size={18} /> },
+  { id: 'hr',               label: 'HR',                icon: <Users size={18} /> },
   { id: 'agent-workspace',  label: 'Agent Workspace',   icon: <Bot size={18} /> },
   { id: 'creatives',        label: 'Creatives',         icon: <Palette size={18} /> },
   { id: 'prompts',          label: 'Prompts',           icon: <FileText size={18} /> },
@@ -248,6 +250,7 @@ function App() {
             />
           )}
           {activePage === 'cockpit' && <div className="overflow-y-auto h-full"><CockpitPage /></div>}
+          {activePage === 'hr' && <div className="overflow-y-auto h-full"><HRPage /></div>}
           {activePage === 'agent-workspace' && <div className="overflow-y-auto h-full"><AgentWorkspacePage /></div>}
           {activePage === 'creatives' && <div className="overflow-y-auto h-full"><CreativesPage /></div>}
           {activePage === 'prompts' && <div className="overflow-y-auto h-full"><PromptsPage /></div>}

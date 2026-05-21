@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
 import {
   Settings, Database, Search, Cloud, Link2,
-  Save, Check, AlertCircle, Loader2,
+  Save, Check, AlertCircle, Loader2, Plus, Trash2,
 } from 'lucide-react';
-import { fetchSettings, updateSettings, fetchHealth } from '../api';
-import type { SettingsData } from '../types';
+import { fetchSettings, updateSettings, fetchHealth, listModels, addModel, removeModel } from '../api';
+import type { SettingsData, VertexModel } from '../types';
 import type { ServiceStatus } from '../api';
 
 const AD_PLATFORMS = [
@@ -165,27 +165,8 @@ export default function SettingsPage() {
 
         {/* Vertex AI subsection */}
         <div className="mt-5 pt-4 border-t border-zinc-800/40">
-          <SubsectionHeader label="Vertex AI" status={health.llm} />
-          <div className="grid grid-cols-2 gap-3">
-            <ConfigInput label="LLM Model ID" value={settings.google_cloud.vertex_ai.llm_model_id} status={health.llm}
-              onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, vertex_ai: { ...settings.google_cloud.vertex_ai, llm_model_id: v } } })}
-              placeholder="gemini-3.1-pro-preview" />
-            <ConfigInput label="LLM Location" value={settings.google_cloud.vertex_ai.llm_location}
-              onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, vertex_ai: { ...settings.google_cloud.vertex_ai, llm_location: v } } })}
-              placeholder="global" />
-            <ConfigInput label="Image Model ID" value={settings.google_cloud.vertex_ai.img_model_id} status={health.img_model}
-              onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, vertex_ai: { ...settings.google_cloud.vertex_ai, img_model_id: v } } })}
-              placeholder="imagen-4.0-generate-preview-06-03" />
-            <ConfigInput label="Image Location" value={settings.google_cloud.vertex_ai.img_location}
-              onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, vertex_ai: { ...settings.google_cloud.vertex_ai, img_location: v } } })}
-              placeholder="us-central1" />
-            <ConfigInput label="Video Model ID" value={settings.google_cloud.vertex_ai.video_model_id} status={health.video_model}
-              onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, vertex_ai: { ...settings.google_cloud.vertex_ai, video_model_id: v } } })}
-              placeholder="veo-2.0-generate-001" />
-            <ConfigInput label="Video Location" value={settings.google_cloud.vertex_ai.video_location}
-              onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, vertex_ai: { ...settings.google_cloud.vertex_ai, video_location: v } } })}
-              placeholder="us-central1" />
-          </div>
+          <SubsectionHeader label="Vertex AI Models" status={health.llm} />
+          <ModelRegistry />
         </div>
       </ConfigSection>
 
@@ -309,6 +290,86 @@ function ConfigToggle({ label, checked, onChange, className = '' }: {
           }}
         />
       </button>
+    </div>
+  );
+}
+
+const MODEL_TYPES = ['llm', 'image', 'video'] as const;
+const TYPE_COLORS: Record<string, string> = { llm: '#38bdf8', image: '#c084fc', video: '#fbbf24' };
+
+function ModelRegistry() {
+  const [models, setModels] = useState<VertexModel[]>([]);
+  const [showAdd, setShowAdd] = useState(false);
+  const [newModel, setNewModel] = useState({ id: '', name: '', model_id: '', location: 'global', type: 'llm' as string });
+
+  useEffect(() => { listModels().then(setModels).catch(() => {}); }, []);
+
+  const handleAdd = async () => {
+    if (!newModel.id || !newModel.model_id || !newModel.type) return;
+    const m = await addModel(newModel as VertexModel);
+    setModels(prev => [...prev, m]);
+    setNewModel({ id: '', name: '', model_id: '', location: 'global', type: 'llm' });
+    setShowAdd(false);
+  };
+
+  const handleRemove = async (id: string) => {
+    await removeModel(id);
+    setModels(prev => prev.filter(m => m.id !== id));
+  };
+
+  return (
+    <div>
+      {models.length === 0 ? (
+        <p className="text-xs text-zinc-600 py-2">No models registered.</p>
+      ) : (
+        <div className="space-y-1.5 mb-3">
+          {models.map(m => (
+            <div key={m.id} className="flex items-center gap-3 px-3 py-2 rounded-lg border border-zinc-800/40" style={{ background: '#09090b' }}>
+              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase" style={{ color: TYPE_COLORS[m.type] || '#a1a1aa', background: `${TYPE_COLORS[m.type] || '#a1a1aa'}15`, border: `1px solid ${TYPE_COLORS[m.type] || '#a1a1aa'}30` }}>
+                {m.type}
+              </span>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-zinc-300 truncate">{m.name || m.model_id}</p>
+                <p className="text-[10px] text-zinc-600 truncate">{m.model_id} · {m.location}</p>
+              </div>
+              <button onClick={() => handleRemove(m.id)} className="p-1 rounded text-zinc-700 hover:text-red-400 hover:bg-red-500/10 cursor-pointer transition-colors">
+                <Trash2 size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showAdd ? (
+        <div className="rounded-lg border border-zinc-800/40 p-3 space-y-2" style={{ background: '#09090b' }}>
+          <div className="grid grid-cols-2 gap-2">
+            <input value={newModel.id} onChange={e => setNewModel({ ...newModel, id: e.target.value })}
+              placeholder="Unique ID (e.g. gemini-pro)" className="text-xs text-zinc-300 rounded-lg px-2.5 py-2 outline-none border border-zinc-800/50 focus:border-cyan-500/30 placeholder:text-zinc-700 font-mono" style={{ background: '#111114' }} />
+            <input value={newModel.name} onChange={e => setNewModel({ ...newModel, name: e.target.value })}
+              placeholder="Display name" className="text-xs text-zinc-300 rounded-lg px-2.5 py-2 outline-none border border-zinc-800/50 focus:border-cyan-500/30 placeholder:text-zinc-700" style={{ background: '#111114' }} />
+            <input value={newModel.model_id} onChange={e => setNewModel({ ...newModel, model_id: e.target.value })}
+              placeholder="Model ID (e.g. gemini-3.1-pro-preview)" className="text-xs text-zinc-300 rounded-lg px-2.5 py-2 outline-none border border-zinc-800/50 focus:border-cyan-500/30 placeholder:text-zinc-700 font-mono" style={{ background: '#111114' }} />
+            <input value={newModel.location} onChange={e => setNewModel({ ...newModel, location: e.target.value })}
+              placeholder="Location" className="text-xs text-zinc-300 rounded-lg px-2.5 py-2 outline-none border border-zinc-800/50 focus:border-cyan-500/30 placeholder:text-zinc-700" style={{ background: '#111114' }} />
+          </div>
+          <div className="flex items-center gap-2">
+            <select value={newModel.type} onChange={e => setNewModel({ ...newModel, type: e.target.value })}
+              className="text-xs text-zinc-300 rounded-lg px-2.5 py-2 outline-none border border-zinc-800/50 focus:border-cyan-500/30 cursor-pointer" style={{ background: '#111114' }}>
+              {MODEL_TYPES.map(t => <option key={t} value={t}>{t.toUpperCase()}</option>)}
+            </select>
+            <div className="flex-1" />
+            <button onClick={() => setShowAdd(false)} className="px-3 py-1.5 rounded-lg text-xs text-zinc-500 hover:text-zinc-300 cursor-pointer transition-colors">Cancel</button>
+            <button onClick={handleAdd} disabled={!newModel.id || !newModel.model_id}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium text-white cursor-pointer disabled:opacity-40 transition-colors"
+              style={{ background: 'linear-gradient(135deg, #0e7490, #164e63)' }}>Add</button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => setShowAdd(true)}
+          className="flex items-center gap-1.5 text-xs text-cyan-400 hover:text-cyan-300 cursor-pointer transition-colors">
+          <Plus size={12} /> Register Model
+        </button>
+      )}
     </div>
   );
 }
