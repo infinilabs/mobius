@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { SettingsData, Conversation, ConversationSummary, FileRef } from './types';
+import type { SettingsData, Conversation, ConversationSummary, FileRef, Prompt } from './types';
 import { log } from './logger';
 
 export async function fetchConfig(): Promise<{ project_id: string }> {
@@ -82,6 +82,26 @@ export async function uploadFile(file: File): Promise<FileRef> {
   const { data } = await axios.post('/api/upload', form);
   log.info('api', 'file uploaded', { id: data.id, name: data.name });
   return data;
+}
+
+export async function listPrompts(query?: string): Promise<Prompt[]> {
+  const params = query ? `?q=${encodeURIComponent(query)}` : '';
+  const { data } = await axios.get(`/api/prompts${params}`);
+  return data;
+}
+
+export async function createPrompt(prompt: { title: string; content: string; tags: string[] }): Promise<Prompt> {
+  const { data } = await axios.post('/api/prompts', prompt);
+  return data;
+}
+
+export async function updatePrompt(id: string, prompt: { title?: string; content?: string; tags?: string[] }): Promise<Prompt> {
+  const { data } = await axios.put(`/api/prompts/${id}`, prompt);
+  return data;
+}
+
+export async function deletePrompt(id: string): Promise<void> {
+  await axios.delete(`/api/prompts/${id}`);
 }
 
 export async function sendChatMessage(

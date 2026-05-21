@@ -75,3 +75,12 @@ export interface ConversationSummary {
   title: string;
   updated_at: number;
 }
+
+export interface Prompt {
+  id: string;
+  title: string;
+  content: string;
+  tags: string[];
+  created_at: number;
+  updated_at: number;
+}

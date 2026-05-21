@@ -147,6 +147,13 @@ func main() {
 	mux.Handle("DELETE /api/conversations/{id}", h(api.DeleteConversation))
 	mux.Handle("POST /api/conversations/{id}/truncate", h(api.TruncateConversation))
 
+	// Prompts
+	mux.Handle("GET /api/prompts", h(api.ListPrompts))
+	mux.Handle("POST /api/prompts", h(api.CreatePrompt))
+	mux.Handle("GET /api/prompts/{id}", h(api.GetPrompt))
+	mux.Handle("PUT /api/prompts/{id}", h(api.UpdatePrompt))
+	mux.Handle("DELETE /api/prompts/{id}", h(api.DeletePrompt))
+
 	// Chat
 	mux.Handle("POST /api/chat", h(api.Chat))
 
