@@ -243,8 +243,24 @@ export default function NewTaskPage({ conversationId, onConversationCreated }: P
     );
   }
 
+  const showMissingModelWarning = chatTarget?.kind === 'agent'
+    && !chatTarget.agent.models?.some(m => m.purpose === 'primary_llm');
+
   return (
     <div className="flex flex-col h-full">
+      {/* Missing LLM warning */}
+      {showMissingModelWarning && (
+        <div className="shrink-0 px-8 pt-3">
+          <div className="max-w-[800px] mx-auto flex items-center gap-2 px-4 py-2 rounded-lg border border-amber-500/20 text-xs text-amber-400"
+            style={{ background: '#78350f15' }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+            <span><strong>{chatTarget.agent.name}</strong> has no LLM model assigned — using the default model. Assign one in HR Management.</span>
+          </div>
+        </div>
+      )}
+
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-8 pt-6 pb-4">
         <div className="max-w-[800px] mx-auto space-y-4">
