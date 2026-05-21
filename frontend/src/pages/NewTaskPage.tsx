@@ -161,7 +161,8 @@ export default function NewTaskPage({ conversationId, onConversationCreated }: P
 
   if (isEmptyState) {
     return (
-      <div className="flex flex-col items-center pt-16 px-8 max-w-[820px] mx-auto">
+      <div className="h-full overflow-y-auto">
+      <div className="flex flex-col items-center pt-16 px-8 pb-12 max-w-[820px] mx-auto">
         <div className="mb-8 text-center">
           <div className="flex items-center justify-center gap-2 mb-6">
             <div className="p-3 rounded-2xl" style={{ background: 'linear-gradient(135deg, #0e7490, #164e63)' }}>
@@ -215,6 +216,7 @@ export default function NewTaskPage({ conversationId, onConversationCreated }: P
             </button>
           ))}
         </div>
+      </div>
       </div>
     );
   }
