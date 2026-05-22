@@ -119,7 +119,21 @@ func main() {
 		}
 	}
 
-	api := NewAPIHandler(cfg, configPath, genaiClient, esClient, gcsClient, pgClient)
+	skillsDir := "skills"
+	if _, err := os.Stat(skillsDir); os.IsNotExist(err) {
+		skillsDir = "../skills"
+	}
+
+	api := NewAPIHandler(cfg, configPath, genaiClient, esClient, gcsClient, pgClient, skillsDir)
+
+	hermesPath := cfg.SkillSync.HermesPath
+	if hermesPath == "" {
+		hermesPath = "../hermes-agent"
+	}
+	if _, err := os.Stat(hermesPath); err == nil {
+		api.syncSources = append(api.syncSources, NewHermesSource(hermesPath))
+		slog.Info("hermes skill sync source configured", "path", hermesPath)
+	}
 
 	if esClient != nil {
 		if err := hydrateConversations(ctx, esClient, api.conversations); err != nil {
@@ -136,13 +150,12 @@ func main() {
 			}
 		}
 
-		skillsDir := "skills"
-		if _, err := os.Stat(skillsDir); os.IsNotExist(err) {
-			skillsDir = "../skills"
-		}
 		if _, err := os.Stat(skillsDir); err == nil {
-			if err := seedSkills(ctx, esClient, skillsDir); err != nil {
-				slog.Error("failed to seed skills", "error", err)
+			added, updated, syncErr := syncSkillsFromDisk(ctx, esClient, skillsDir)
+			if syncErr != nil {
+				slog.Error("failed to sync skills from disk", "error", syncErr)
+			} else if added+updated > 0 {
+				slog.Info("skills synced from disk", "added", added, "updated", updated)
 			}
 		}
 	}
@@ -212,6 +225,8 @@ func main() {
 	// Skills
 	mux.Handle("GET /api/skills", h(api.ListSkills))
 	mux.Handle("POST /api/skills", h(api.CreateSkill))
+	mux.Handle("POST /api/skills/sync", h(api.SyncSkills))
+	mux.Handle("GET /api/skills/sync/status", h(api.GetSyncStatus))
 	mux.Handle("GET /api/skills/{id}", h(api.GetSkill))
 	mux.Handle("PUT /api/skills/{id}", h(api.UpdateSkill))
 	mux.Handle("DELETE /api/skills/{id}", h(api.DeleteSkill))
@@ -265,6 +280,50 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 
+	syncCtx, syncCancel := context.WithCancel(context.Background())
+
+	// Periodic disk→ES sync (every 60s)
+	if esClient != nil {
+		go func() {
+			ticker := time.NewTicker(60 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					added, updated, err := syncSkillsFromDisk(syncCtx, esClient, skillsDir)
+					if err != nil {
+						slog.Error("disk sync failed", "error", err)
+					} else if added+updated > 0 {
+						slog.Info("disk sync", "added", added, "updated", updated)
+					}
+				case <-syncCtx.Done():
+					return
+				}
+			}
+		}()
+
+		// Daily upstream sync at 2am
+		go func() {
+			for {
+				now := time.Now()
+				next := time.Date(now.Year(), now.Month(), now.Day(), 2, 0, 0, 0, now.Location())
+				if now.After(next) {
+					next = next.Add(24 * time.Hour)
+				}
+				slog.Info("next upstream skill sync scheduled", "at", next.Format(time.RFC3339))
+				timer := time.NewTimer(time.Until(next))
+				select {
+				case <-timer.C:
+					slog.Info("running scheduled upstream skill sync")
+					api.runFullSync(syncCtx)
+				case <-syncCtx.Done():
+					timer.Stop()
+					return
+				}
+			}
+		}()
+	}
+
 	shutdownCh := make(chan os.Signal, 1)
 	signal.Notify(shutdownCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -277,6 +336,8 @@ func main() {
 
 	sig := <-shutdownCh
 	slog.Info("Shutdown signal received", "signal", sig.String())
+
+	syncCancel()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

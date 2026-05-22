@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"google.golang.org/genai"
@@ -23,9 +24,14 @@ type APIHandler struct {
 	gcsClient     *GCSClient
 	pgClient      *PGClient
 	health        *HealthChecker
+	skillsDir     string
+	syncSources   []SkillSyncSource
+	lastSyncMu    sync.RWMutex
+	lastSyncTime  time.Time
+	lastSyncResult *SyncResult
 }
 
-func NewAPIHandler(cfg *Config, configPath string, genaiClient *genai.Client, esClient *ESClient, gcsClient *GCSClient, pgClient *PGClient) *APIHandler {
+func NewAPIHandler(cfg *Config, configPath string, genaiClient *genai.Client, esClient *ESClient, gcsClient *GCSClient, pgClient *PGClient, skillsDir string) *APIHandler {
 	h := &APIHandler{
 		config:        cfg,
 		configPath:    configPath,
@@ -36,6 +42,7 @@ func NewAPIHandler(cfg *Config, configPath string, genaiClient *genai.Client, es
 		gcsClient:     gcsClient,
 		pgClient:      pgClient,
 		health:        NewHealthChecker(5 * time.Second),
+		skillsDir:     skillsDir,
 	}
 	h.registerProbes()
 	return h

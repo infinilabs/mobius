@@ -144,6 +144,17 @@ export async function deleteSkill(id: string): Promise<void> {
   await axios.delete(`/api/skills/${id}`);
 }
 
+export interface SyncResult {
+  sources: Array<{ name: string; added: number; updated: number; error: string }>;
+  disk_sync: { added: number; updated: number };
+  synced_at: string;
+}
+
+export async function syncSkills(): Promise<SyncResult> {
+  const { data } = await axios.post('/api/skills/sync');
+  return data;
+}
+
 export async function listEmployeeSkills(employeeId: string): Promise<Skill[]> {
   const { data } = await axios.get(`/api/employees/${employeeId}/skills`);
   return data;

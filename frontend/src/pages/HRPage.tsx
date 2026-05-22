@@ -3,8 +3,8 @@ import {
   Users, Plus, Trash2, X, Pencil, ChevronDown, ChevronRight,
   Brain, Wrench, UserCog, Tag, Filter,
 } from 'lucide-react';
-import { listEmployees, createEmployee, updateEmployee, deleteEmployee, setEmployeeManager, listModels } from '../api';
-import type { Employee, EmployeeModel, EmployeeSkill, VertexModel } from '../types';
+import { listEmployees, createEmployee, updateEmployee, deleteEmployee, setEmployeeManager, listModels, listEmployeeSkills } from '../api';
+import type { Employee, EmployeeModel, VertexModel, Skill } from '../types';
 
 const ROLE_COLORS: Record<string, string> = {
   CEO: '#38bdf8', PM: '#c084fc', Engineer: '#4ade80',
@@ -268,6 +268,11 @@ function DetailPanel({ employee, employees, onEdit, onDelete, onReassign, onClos
 }) {
   const color = ROLE_COLORS[employee.role] || ROLE_COLORS.Custom;
   const [showReassign, setShowReassign] = useState(false);
+  const [assignedSkills, setAssignedSkills] = useState<Skill[]>([]);
+
+  useEffect(() => {
+    listEmployeeSkills(employee.id).then(setAssignedSkills).catch(() => setAssignedSkills([]));
+  }, [employee.id]);
 
   return (
     <div className="w-[340px] shrink-0 rounded-xl border border-zinc-800/40 overflow-hidden" style={{ background: '#111114' }}>
@@ -321,22 +326,28 @@ function DetailPanel({ employee, employees, onEdit, onDelete, onReassign, onClos
           </div>
         )}
 
-        {employee.skills.length > 0 && (
-          <div>
-            <div className="flex items-center gap-1.5 mb-1.5">
-              <Wrench size={11} className="text-zinc-600" />
-              <p className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wider">Skills</p>
-            </div>
+        <div>
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <Wrench size={11} className="text-zinc-600" />
+            <p className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wider">Assigned Skills ({assignedSkills.length})</p>
+          </div>
+          {assignedSkills.length > 0 ? (
             <div className="space-y-1">
-              {employee.skills.map(s => (
-                <div key={s.skill} className="px-2.5 py-1.5 rounded-lg border border-zinc-800/30" style={{ background: '#09090b' }}>
-                  <p className="text-[10px] font-medium text-zinc-300">{s.skill}</p>
-                  {s.description && <p className="text-[9px] text-zinc-600 mt-0.5">{s.description}</p>}
+              {assignedSkills.map(s => (
+                <div key={s.id} className="px-2.5 py-1.5 rounded-lg border border-zinc-800/30" style={{ background: '#09090b' }}>
+                  <div className="flex items-center gap-1.5">
+                    <p className="text-[10px] font-medium text-zinc-300">{s.name}</p>
+                    <span className="px-1 py-0.5 text-[8px] rounded bg-zinc-800 text-zinc-500 border border-zinc-700">{s.category}</span>
+                  </div>
+                  {s.description && <p className="text-[9px] text-zinc-600 mt-0.5 truncate">{s.description}</p>}
                 </div>
               ))}
             </div>
-          </div>
-        )}
+          ) : (
+            <p className="text-[10px] text-zinc-600">No skills assigned</p>
+          )}
+          <p className="text-[9px] text-zinc-700 mt-2">Manage assignments in Skills page</p>
+        </div>
 
         {employee.tags.length > 0 && (
           <div>
@@ -419,7 +430,7 @@ function EmployeeModal({ employee, employees, models, onClose, onSaved }: {
   const [backstory, setBackstory] = useState(employee?.backstory || '');
   const [managerId, setManagerId] = useState(employee?.manager_id || '');
   const [empModels, setEmpModels] = useState<EmployeeModel[]>(employee?.models || []);
-  const [skills, setSkills] = useState<EmployeeSkill[]>(employee?.skills || []);
+  const [assignedSkills, setAssignedSkills] = useState<Skill[]>([]);
   const [tags, setTags] = useState<string[]>(employee?.tags || []);
   const [tagInput, setTagInput] = useState('');
   const [saving, setSaving] = useState(false);
@@ -427,13 +438,11 @@ function EmployeeModal({ employee, employees, models, onClose, onSaved }: {
 
   const [expandedSections, setExpandedSections] = useState({ models: isEdit, skills: isEdit });
 
-  const addSkill = () => setSkills([...skills, { skill: '', description: '' }]);
-  const removeSkill = (i: number) => setSkills(skills.filter((_, idx) => idx !== i));
-  const updateSkill = (i: number, field: keyof EmployeeSkill, value: string) => {
-    const next = [...skills];
-    next[i] = { ...next[i], [field]: value };
-    setSkills(next);
-  };
+  useEffect(() => {
+    if (employee) {
+      listEmployeeSkills(employee.id).then(setAssignedSkills).catch(() => setAssignedSkills([]));
+    }
+  }, [employee]);
 
   const addTags = () => {
     const newTags = tagInput.split(',').map(t => t.trim().toLowerCase()).filter(t => t && !tags.includes(t));
@@ -458,7 +467,7 @@ function EmployeeModal({ employee, employees, models, onClose, onSaved }: {
         role,
         backstory: backstory.trim(),
         models: empModels,
-        skills: skills.filter(s => s.skill.trim()),
+        skills: [],
         tags,
         manager_id: managerId || undefined,
       };
@@ -562,31 +571,26 @@ function EmployeeModal({ employee, employees, models, onClose, onSaved }: {
             )}
           </div>
 
-          {/* Skills */}
+          {/* Skills (read-only, managed from Skills page) */}
           <div>
             <button onClick={() => setExpandedSections(s => ({ ...s, skills: !s.skills }))}
               className="flex items-center gap-1.5 text-[10px] font-semibold text-zinc-600 uppercase tracking-wider cursor-pointer hover:text-zinc-400 transition-colors">
               {expandedSections.skills ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
-              Skills ({skills.length})
+              Assigned Skills ({assignedSkills.length})
             </button>
             {expandedSections.skills && (
               <div className="mt-2 space-y-1.5">
-                {skills.map((s, i) => (
-                  <div key={i} className="flex items-start gap-2">
-                    <input value={s.skill} onChange={e => updateSkill(i, 'skill', e.target.value)}
-                      placeholder="Skill name"
-                      className="w-32 text-xs text-zinc-300 rounded-lg px-2.5 py-1.5 outline-none border border-zinc-800/50 focus:border-cyan-500/30 placeholder:text-zinc-700" style={{ background: '#111114' }} />
-                    <input value={s.description} onChange={e => updateSkill(i, 'description', e.target.value)}
-                      placeholder="Description"
-                      className="flex-1 text-xs text-zinc-300 rounded-lg px-2.5 py-1.5 outline-none border border-zinc-800/50 focus:border-cyan-500/30 placeholder:text-zinc-700" style={{ background: '#111114' }} />
-                    <button onClick={() => removeSkill(i)} className="p-1 text-zinc-700 hover:text-red-400 cursor-pointer transition-colors shrink-0 mt-0.5">
-                      <Trash2 size={11} />
-                    </button>
+                {assignedSkills.length > 0 ? assignedSkills.map(s => (
+                  <div key={s.id} className="px-2.5 py-1.5 rounded-lg border border-zinc-800/30" style={{ background: '#09090b' }}>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] font-medium text-zinc-300">{s.name}</span>
+                      <span className="px-1 py-0.5 text-[8px] rounded bg-zinc-800 text-zinc-500 border border-zinc-700">{s.category}</span>
+                    </div>
                   </div>
-                ))}
-                <button onClick={addSkill} className="flex items-center gap-1 text-[10px] text-cyan-400 hover:text-cyan-300 cursor-pointer transition-colors">
-                  <Plus size={10} /> Add Skill
-                </button>
+                )) : (
+                  <p className="text-[10px] text-zinc-600">No skills assigned</p>
+                )}
+                <p className="text-[9px] text-zinc-700 mt-1">Manage skill assignments in the Skills page</p>
               </div>
             )}
           </div>

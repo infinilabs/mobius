@@ -104,6 +104,10 @@ type Config struct {
 	Postgres      PostgresConfig      `yaml:"postgres" json:"postgres"`
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch" json:"elasticsearch"`
 	GoogleCloud   GoogleCloudConfig   `yaml:"google_cloud" json:"google_cloud"`
+
+	SkillSync struct {
+		HermesPath string `yaml:"hermes_path,omitempty" json:"hermes_path,omitempty"`
+	} `yaml:"skill_sync,omitempty" json:"skill_sync,omitempty"`
 }
 
 type SettingsData struct {

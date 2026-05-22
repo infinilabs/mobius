@@ -1,12 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Search, Plus, Trash2, X, BookOpen, Users, ChevronDown } from 'lucide-react';
+import { Search, Plus, Trash2, X, BookOpen, Users, ChevronDown, RefreshCw } from 'lucide-react';
 import {
-  listSkills, createSkill, updateSkill, deleteSkill,
+  listSkills, createSkill, updateSkill, deleteSkill, syncSkills,
   listEmployees, listEmployeeSkills, assignSkillToEmployee, unassignSkillFromEmployee,
 } from '../api';
 import type { Skill, Employee } from '../types';
-
-const CATEGORIES = ['software-development', 'devops', 'research', 'creative', 'productivity', 'general'];
 
 const CATEGORY_COLORS: Record<string, string> = {
   'software-development': 'bg-green-900/40 text-green-400 border-green-700/50',
@@ -31,6 +29,8 @@ export default function SkillsPage() {
   const [tagFilter, setTagFilter] = useState<string | null>(null);
 
   const [assignedMap, setAssignedMap] = useState<Record<string, string[]>>({});
+  const [syncing, setSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
   const refresh = useCallback((query?: string) => {
     setLoading(true);
@@ -96,6 +96,25 @@ export default function SkillsPage() {
     }));
   };
 
+  const handleSync = async () => {
+    setSyncing(true);
+    setSyncMessage(null);
+    try {
+      const result = await syncSkills();
+      const total = result.disk_sync.added + result.disk_sync.updated;
+      const srcInfo = result.sources.map(s => `${s.name}: +${s.added} ~${s.updated}${s.error ? ' (!)' : ''}`).join(', ');
+      setSyncMessage(`Synced — disk: +${result.disk_sync.added} ~${result.disk_sync.updated}${srcInfo ? ` | ${srcInfo}` : ''}`);
+      if (total > 0) refresh();
+    } catch {
+      setSyncMessage('Sync failed');
+    } finally {
+      setSyncing(false);
+      setTimeout(() => setSyncMessage(null), 6000);
+    }
+  };
+
+  const dynamicCategories = [...new Set(skills.map(s => s.category))].sort();
+
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
@@ -117,6 +136,13 @@ export default function SkillsPage() {
             />
           </div>
           <button
+            onClick={handleSync}
+            disabled={syncing}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition-colors disabled:opacity-50"
+          >
+            <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} /> Sync
+          </button>
+          <button
             onClick={() => setShowCreate(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-500 text-white text-sm rounded-lg transition-colors"
           >
@@ -124,6 +150,13 @@ export default function SkillsPage() {
           </button>
         </div>
       </div>
+
+      {/* Sync status toast */}
+      {syncMessage && (
+        <div className="px-6 py-2 bg-blue-900/30 border-b border-blue-800/50">
+          <span className="text-xs text-blue-300">{syncMessage}</span>
+        </div>
+      )}
 
       {/* Tag filter bar */}
       {allTags.length > 0 && (
@@ -175,6 +208,7 @@ export default function SkillsPage() {
           skill={selectedSkill}
           employees={employees}
           assignedEmployeeIds={assignedMap[selectedSkill.id] || []}
+          categories={dynamicCategories}
           onClose={() => setSelectedSkill(null)}
           onSave={async (updated) => {
             const saved = await updateSkill(selectedSkill.id, updated);
@@ -189,6 +223,7 @@ export default function SkillsPage() {
       {/* Create Modal */}
       {showCreate && (
         <CreateSkillModal
+          categories={dynamicCategories}
           onClose={() => setShowCreate(false)}
           onCreated={(s) => { setSkills(prev => [s, ...prev]); setShowCreate(false); }}
         />
@@ -271,10 +306,11 @@ function SkillCard({ skill, assignedEmployeeIds, employees, onSelect, onDelete }
   );
 }
 
-function SkillDetailModal({ skill, employees, assignedEmployeeIds, onClose, onSave, onAssign, onUnassign }: {
+function SkillDetailModal({ skill, employees, assignedEmployeeIds, categories, onClose, onSave, onAssign, onUnassign }: {
   skill: Skill;
   employees: Employee[];
   assignedEmployeeIds: string[];
+  categories: string[];
   onClose: () => void;
   onSave: (data: { name?: string; description?: string; category?: string; content?: string; tags?: string[]; version?: string }) => Promise<void>;
   onAssign: (empId: string) => Promise<void>;
@@ -356,7 +392,7 @@ function SkillDetailModal({ skill, employees, assignedEmployeeIds, onClose, onSa
                   <label className="block text-xs text-zinc-400 mb-1">Category</label>
                   <select value={category} onChange={e => setCategory(e.target.value)}
                     className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-200 focus:outline-none">
-                    {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                    {categories.map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </div>
                 <div>
@@ -450,7 +486,7 @@ function SkillDetailModal({ skill, employees, assignedEmployeeIds, onClose, onSa
   );
 }
 
-function CreateSkillModal({ onClose, onCreated }: { onClose: () => void; onCreated: (s: Skill) => void }) {
+function CreateSkillModal({ categories, onClose, onCreated }: { categories: string[]; onClose: () => void; onCreated: (s: Skill) => void }) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState('software-development');
@@ -498,7 +534,7 @@ function CreateSkillModal({ onClose, onCreated }: { onClose: () => void; onCreat
               <label className="block text-xs text-zinc-400 mb-1">Category</label>
               <select value={category} onChange={e => setCategory(e.target.value)}
                 className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-200 focus:outline-none">
-                {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                {categories.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
             <div>

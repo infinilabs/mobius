@@ -27,11 +27,13 @@ type Skill struct {
 	Content     string   `json:"content"`
 	Tags        []string `json:"tags"`
 	Version     string   `json:"version"`
+	ContentHash string   `json:"content_hash,omitempty"`
 	CreatedAt   int64    `json:"created_at"`
 	UpdatedAt   int64    `json:"updated_at"`
 }
 
 type skillFrontmatter struct {
+	ID          string   `yaml:"id,omitempty"`
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"`
 	Version     string   `yaml:"version"`
@@ -61,6 +63,70 @@ func parseSkillMD(data []byte) (*skillFrontmatter, string, error) {
 func skillIDFromName(name string) string {
 	hash := sha256.Sum256([]byte(name))
 	return hex.EncodeToString(hash[:8])
+}
+
+func fileContentHash(data []byte) string {
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:8])
+}
+
+func writeSkillToDisk(baseDir string, s *Skill) error {
+	cat := s.Category
+	if cat == "" {
+		cat = "general"
+	}
+	dir := filepath.Join(baseDir, cat, s.Name)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+
+	fm := skillFrontmatter{
+		ID:          s.ID,
+		Name:        s.Name,
+		Description: s.Description,
+		Version:     s.Version,
+		Category:    cat,
+		Tags:        s.Tags,
+	}
+	fmBytes, err := yaml.Marshal(&fm)
+	if err != nil {
+		return fmt.Errorf("marshal frontmatter: %w", err)
+	}
+
+	var buf bytes.Buffer
+	buf.WriteString("---\n")
+	buf.Write(fmBytes)
+	buf.WriteString("---\n\n")
+	buf.WriteString(s.Content)
+	buf.WriteString("\n")
+
+	target := filepath.Join(dir, "SKILL.md")
+	tmp := target + ".tmp"
+	if err := os.WriteFile(tmp, buf.Bytes(), 0644); err != nil {
+		return fmt.Errorf("write tmp: %w", err)
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("rename: %w", err)
+	}
+	return nil
+}
+
+func removeSkillFromDisk(baseDir string, s *Skill) error {
+	cat := s.Category
+	if cat == "" {
+		cat = "general"
+	}
+	dir := filepath.Join(baseDir, cat, s.Name)
+	target := filepath.Join(dir, "SKILL.md")
+
+	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	// clean empty parent dirs
+	os.Remove(dir)
+	os.Remove(filepath.Join(baseDir, cat))
+	return nil
 }
 
 // ES operations
@@ -108,7 +174,7 @@ func (es *ESClient) SearchSkills(ctx context.Context, query string) ([]Skill, er
 		body = map[string]any{
 			"query": map[string]any{"match_all": map[string]any{}},
 			"sort":  []any{map[string]any{"name.keyword": map[string]any{"order": "asc", "unmapped_type": "keyword"}}},
-			"size":  200,
+			"size":  500,
 		}
 	} else {
 		words := strings.Fields(query)
@@ -127,7 +193,7 @@ func (es *ESClient) SearchSkills(ctx context.Context, query string) ([]Skill, er
 					"analyze_wildcard": true,
 				},
 			},
-			"size": 200,
+			"size": 500,
 		}
 	}
 
@@ -177,50 +243,88 @@ func (es *ESClient) DeleteSkill(ctx context.Context, id string) error {
 	return nil
 }
 
-// Seed function
+// Disk → ES sync
 
-func seedSkills(ctx context.Context, es *ESClient, dir string) error {
-	entries, err := os.ReadDir(dir)
+func syncSkillsFromDisk(ctx context.Context, esClient *ESClient, dir string) (added, updated int, err error) {
+	existing, err := esClient.SearchSkills(ctx, "")
 	if err != nil {
-		return fmt.Errorf("read skills dir: %w", err)
+		return 0, 0, fmt.Errorf("load existing skills: %w", err)
+	}
+	existingIDs := make(map[string]bool, len(existing))
+	esMap := make(map[string]*Skill, len(existing))
+	for i := range existing {
+		esMap[existing[i].ID] = &existing[i]
+		existingIDs[existing[i].ID] = true
 	}
 
-	seeded := 0
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
+	// Collect disk skills into esMap, marking new/changed
+	changed := make(map[string]bool)
+	newSkills := make(map[string]bool)
+
+	err = filepath.WalkDir(dir, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() || d.Name() != "SKILL.md" {
+			return nil
 		}
 
-		skillFile := filepath.Join(dir, entry.Name(), "SKILL.md")
-		data, err := os.ReadFile(skillFile)
-		if err != nil {
-			continue
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
 		}
 
-		fm, body, err := parseSkillMD(data)
-		if err != nil {
-			slog.Error("failed to parse skill", "dir", entry.Name(), "error", err)
-			continue
+		fm, body, parseErr := parseSkillMD(data)
+		if parseErr != nil {
+			slog.Error("failed to parse skill", "path", path, "error", parseErr)
+			return nil
 		}
 
-		name := entry.Name()
+		name := filepath.Base(filepath.Dir(path))
 		if fm != nil && fm.Name != "" {
 			name = fm.Name
 		}
-		id := skillIDFromName(name)
 
-		_, err = es.GetSkill(ctx, id)
-		if err == nil {
-			continue
+		id := skillIDFromName(name)
+		if fm != nil && fm.ID != "" {
+			id = fm.ID
+		}
+
+		hash := fileContentHash(data)
+
+		if prev, ok := esMap[id]; ok {
+			if prev.ContentHash == hash {
+				return nil
+			}
+			prev.Content = body
+			prev.ContentHash = hash
+			prev.UpdatedAt = time.Now().UnixMilli()
+			if fm != nil {
+				if fm.Name != "" {
+					prev.Name = fm.Name
+				}
+				if fm.Description != "" {
+					prev.Description = fm.Description
+				}
+				if fm.Category != "" {
+					prev.Category = fm.Category
+				}
+				if fm.Version != "" {
+					prev.Version = fm.Version
+				}
+				if len(fm.Tags) > 0 {
+					prev.Tags = fm.Tags
+				}
+			}
+			changed[id] = true
+			return nil
 		}
 
 		now := time.Now().UnixMilli()
 		s := &Skill{
-			ID:        id,
-			Name:      name,
-			Content:   body,
-			CreatedAt: now,
-			UpdatedAt: now,
+			ID:          id,
+			Name:        name,
+			Content:     body,
+			ContentHash: hash,
+			CreatedAt:   now,
+			UpdatedAt:   now,
 		}
 		if fm != nil {
 			if fm.Description != "" {
@@ -243,18 +347,35 @@ func seedSkills(ctx context.Context, es *ESClient, dir string) error {
 			s.Category = "general"
 		}
 
-		if err := es.IndexSkill(ctx, s); err != nil {
-			slog.Error("failed to seed skill", "name", name, "error", err)
-			continue
-		}
-		seeded++
-		slog.Info("skill seeded", "id", id, "name", name)
+		esMap[id] = s
+		newSkills[id] = true
+		return nil
+	})
+	if err != nil {
+		return 0, 0, fmt.Errorf("walk skills dir: %w", err)
 	}
 
-	if seeded > 0 {
-		slog.Info("skill seeding complete", "seeded", seeded)
+	for id := range changed {
+		s := esMap[id]
+		if indexErr := esClient.IndexSkill(ctx, s); indexErr != nil {
+			slog.Error("failed to update skill", "name", s.Name, "error", indexErr)
+		} else {
+			updated++
+			slog.Info("skill updated from disk", "id", id, "name", s.Name)
+		}
 	}
-	return nil
+
+	for id := range newSkills {
+		s := esMap[id]
+		if indexErr := esClient.IndexSkill(ctx, s); indexErr != nil {
+			slog.Error("failed to index new skill", "name", s.Name, "error", indexErr)
+		} else {
+			added++
+			slog.Info("skill synced from disk", "id", id, "name", s.Name)
+		}
+	}
+
+	return added, updated, nil
 }
 
 // PG operations for skill-employee assignments
@@ -412,6 +533,12 @@ func (h *APIHandler) CreateSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.skillsDir != "" {
+		if err := writeSkillToDisk(h.skillsDir, s); err != nil {
+			slog.Warn("failed to write skill to disk", "name", s.Name, "error", err)
+		}
+	}
+
 	slog.Info("skill created", "id", s.ID, "name", s.Name)
 	writeJSON(w, s)
 }
@@ -442,6 +569,9 @@ func (h *APIHandler) UpdateSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	oldName := existing.Name
+	oldCategory := existing.Category
+
 	if body.Name != "" {
 		existing.Name = body.Name
 	}
@@ -467,6 +597,16 @@ func (h *APIHandler) UpdateSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.skillsDir != "" {
+		if oldName != existing.Name || oldCategory != existing.Category {
+			old := &Skill{Name: oldName, Category: oldCategory}
+			removeSkillFromDisk(h.skillsDir, old)
+		}
+		if err := writeSkillToDisk(h.skillsDir, existing); err != nil {
+			slog.Warn("failed to write skill to disk", "name", existing.Name, "error", err)
+		}
+	}
+
 	slog.Info("skill updated", "id", id)
 	writeJSON(w, existing)
 }
@@ -478,9 +618,18 @@ func (h *APIHandler) DeleteSkill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := r.PathValue("id")
+
+	skill, _ := h.esClient.GetSkill(r.Context(), id)
+
 	if err := h.esClient.DeleteSkill(r.Context(), id); err != nil {
 		writeError(w, "failed to delete skill: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	if h.skillsDir != "" && skill != nil {
+		if err := removeSkillFromDisk(h.skillsDir, skill); err != nil {
+			slog.Warn("failed to remove skill from disk", "name", skill.Name, "error", err)
+		}
 	}
 
 	slog.Info("skill deleted", "id", id)
