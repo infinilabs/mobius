@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { SettingsData, Conversation, ConversationSummary, FileRef, Prompt, VertexModel, Employee } from './types';
+import type { SettingsData, Conversation, ConversationSummary, FileRef, Prompt, VertexModel, Employee, Skill } from './types';
 import { log } from './logger';
 
 export async function fetchConfig(): Promise<{ project_id: string }> {
@@ -118,6 +118,46 @@ export async function removeModel(id: string): Promise<void> {
   await axios.delete(`/api/models/${id}`);
 }
 
+// Skills
+export async function listSkills(query?: string): Promise<Skill[]> {
+  const params = query ? `?q=${encodeURIComponent(query)}` : '';
+  const { data } = await axios.get(`/api/skills${params}`);
+  return data;
+}
+
+export async function getSkill(id: string): Promise<Skill> {
+  const { data } = await axios.get(`/api/skills/${id}`);
+  return data;
+}
+
+export async function createSkill(skill: { name: string; description: string; category: string; content: string; tags: string[]; version?: string }): Promise<Skill> {
+  const { data } = await axios.post('/api/skills', skill);
+  return data;
+}
+
+export async function updateSkill(id: string, skill: { name?: string; description?: string; category?: string; content?: string; tags?: string[]; version?: string }): Promise<Skill> {
+  const { data } = await axios.put(`/api/skills/${id}`, skill);
+  return data;
+}
+
+export async function deleteSkill(id: string): Promise<void> {
+  await axios.delete(`/api/skills/${id}`);
+}
+
+export async function listEmployeeSkills(employeeId: string): Promise<Skill[]> {
+  const { data } = await axios.get(`/api/employees/${employeeId}/skills`);
+  return data;
+}
+
+export async function assignSkillToEmployee(employeeId: string, skillId: string): Promise<void> {
+  await axios.post(`/api/employees/${employeeId}/skills`, { skill_id: skillId });
+}
+
+export async function unassignSkillFromEmployee(employeeId: string, skillId: string): Promise<void> {
+  await axios.delete(`/api/employees/${employeeId}/skills/${skillId}`);
+}
+
+// Employees
 export async function listEmployees(): Promise<Employee[]> {
   const { data } = await axios.get('/api/employees');
   return data;

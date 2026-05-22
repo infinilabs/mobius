@@ -94,6 +94,18 @@ export interface Prompt {
   updated_at: number;
 }
 
+export interface Skill {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  content: string;
+  tags: string[];
+  version: string;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface EmployeeModel {
   model_id: string;
   purpose: string;

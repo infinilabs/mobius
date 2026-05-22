@@ -135,11 +135,26 @@ func main() {
 				slog.Error("failed to seed prompts", "error", err)
 			}
 		}
+
+		skillsDir := "skills"
+		if _, err := os.Stat(skillsDir); os.IsNotExist(err) {
+			skillsDir = "../skills"
+		}
+		if _, err := os.Stat(skillsDir); err == nil {
+			if err := seedSkills(ctx, esClient, skillsDir); err != nil {
+				slog.Error("failed to seed skills", "error", err)
+			}
+		}
 	}
 
 	if pgClient != nil {
 		if err := pgClient.SeedDefaultEmployees(ctx); err != nil {
 			slog.Error("failed to seed default employees", "error", err)
+		}
+		if esClient != nil {
+			if err := pgClient.SeedDefaultSkillAssignments(ctx, esClient); err != nil {
+				slog.Error("failed to seed skill assignments", "error", err)
+			}
 		}
 	}
 
@@ -194,6 +209,13 @@ func main() {
 	mux.Handle("PUT /api/prompts/{id}", h(api.UpdatePrompt))
 	mux.Handle("DELETE /api/prompts/{id}", h(api.DeletePrompt))
 
+	// Skills
+	mux.Handle("GET /api/skills", h(api.ListSkills))
+	mux.Handle("POST /api/skills", h(api.CreateSkill))
+	mux.Handle("GET /api/skills/{id}", h(api.GetSkill))
+	mux.Handle("PUT /api/skills/{id}", h(api.UpdateSkill))
+	mux.Handle("DELETE /api/skills/{id}", h(api.DeleteSkill))
+
 	// Employees
 	mux.Handle("GET /api/employees", h(api.ListEmployees))
 	mux.Handle("POST /api/employees", h(api.CreateEmployee))
@@ -201,6 +223,9 @@ func main() {
 	mux.Handle("PUT /api/employees/{id}", h(api.UpdateEmployee))
 	mux.Handle("DELETE /api/employees/{id}", h(api.DeleteEmployee))
 	mux.Handle("PUT /api/employees/{id}/manager", h(api.SetEmployeeManager))
+	mux.Handle("GET /api/employees/{id}/skills", h(api.ListEmployeeSkills))
+	mux.Handle("POST /api/employees/{id}/skills", h(api.AssignSkillToEmployee))
+	mux.Handle("DELETE /api/employees/{id}/skills/{skillId}", h(api.UnassignSkillFromEmployee))
 
 	// Models
 	mux.Handle("GET /api/models", h(api.ListModels))

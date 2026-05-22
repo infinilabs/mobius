@@ -94,16 +94,17 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 		agent, err := h.pgClient.GetEmployee(r.Context(), req.AgentID)
 		if err == nil {
 			systemPrompt = fmt.Sprintf("You are %s, %s. %s", agent.Name, agent.Title, agent.Backstory)
-			if len(agent.Skills) > 0 {
-				systemPrompt += "\n\nYour skills include: "
-				for i, s := range agent.Skills {
-					if i > 0 {
-						systemPrompt += ", "
+
+			if h.esClient != nil {
+				skillIDs, _ := h.pgClient.ListEmployeeSkillIDs(r.Context(), req.AgentID)
+				for _, sid := range skillIDs {
+					skill, serr := h.esClient.GetSkill(r.Context(), sid)
+					if serr == nil {
+						systemPrompt += "\n\n## Skill: " + skill.Name + "\n" + skill.Content
 					}
-					systemPrompt += s.Skill
 				}
-				systemPrompt += "."
 			}
+
 			systemAck = fmt.Sprintf("I'm %s, %s. How can I help you?", agent.Name, agent.Title)
 
 			for _, m := range agent.Models {
