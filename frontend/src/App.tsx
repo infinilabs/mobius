@@ -3,7 +3,7 @@ import {
   PenLine, Gauge, Bot, Palette, Radio, Settings,
   ChevronLeft, ChevronRight, Server, Layers,
   MessageSquare, MoreHorizontal, Pencil, Trash2, Check, X,
-  FileText, Users, BookOpen,
+  FileText, Users, BookOpen, Kanban,
 } from 'lucide-react';
 import { fetchConfig, listConversations, renameConversation, deleteConversation } from './api';
 import type { ConversationSummary } from './types';
@@ -16,13 +16,15 @@ import AutopilotPage from './pages/AutopilotPage';
 import PromptsPage from './pages/PromptsPage';
 import HRPage from './pages/HRPage';
 import SkillsPage from './pages/SkillsPage';
+import TasksPage from './pages/TasksPage';
 import SettingsPage from './pages/SettingsPage';
 
-type Page = 'new-task' | 'cockpit' | 'hr' | 'skills' | 'agent-workspace' | 'creatives' | 'prompts' | 'autopilot' | 'settings';
+type Page = 'new-task' | 'cockpit' | 'tasks' | 'hr' | 'skills' | 'agent-workspace' | 'creatives' | 'prompts' | 'autopilot' | 'settings';
 
 const NAV_ITEMS: { id: Page; label: string; icon: React.ReactNode }[] = [
   { id: 'new-task',         label: 'New Task',          icon: <PenLine size={18} /> },
   { id: 'cockpit',          label: 'Cockpit',           icon: <Gauge size={18} /> },
+  { id: 'tasks',            label: 'Tasks',             icon: <Kanban size={18} /> },
   { id: 'hr',               label: 'HR',                icon: <Users size={18} /> },
   { id: 'skills',           label: 'Skills',            icon: <BookOpen size={18} /> },
   { id: 'agent-workspace',  label: 'Agent Workspace',   icon: <Bot size={18} /> },
@@ -252,6 +254,7 @@ function App() {
             />
           )}
           {activePage === 'cockpit' && <div className="overflow-y-auto h-full"><CockpitPage /></div>}
+          {activePage === 'tasks' && <div className="overflow-y-auto h-full"><TasksPage /></div>}
           {activePage === 'hr' && <div className="overflow-y-auto h-full"><HRPage /></div>}
           {activePage === 'skills' && <div className="overflow-y-auto h-full"><SkillsPage /></div>}
           {activePage === 'agent-workspace' && <div className="overflow-y-auto h-full"><AgentWorkspacePage /></div>}

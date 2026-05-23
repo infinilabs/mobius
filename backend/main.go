@@ -281,6 +281,16 @@ func main() {
 	mux.Handle("POST /api/employees/{id}/skills/reset", h(api.ResetEmployeeSkills))
 	mux.Handle("DELETE /api/employees/{id}/skills/{skillId}", h(api.UnassignSkillFromEmployee))
 
+	// Tasks
+	mux.Handle("GET /api/tasks", h(api.ListTasks))
+	mux.Handle("POST /api/tasks", h(api.CreateTask))
+	mux.Handle("GET /api/tasks/{id}", h(api.GetTask))
+	mux.Handle("PUT /api/tasks/{id}", h(api.UpdateTaskFields))
+	mux.Handle("DELETE /api/tasks/{id}", h(api.DeleteTask))
+	mux.Handle("PUT /api/tasks/{id}/status", h(api.UpdateTaskStatus))
+	mux.Handle("GET /api/tasks/{id}/comments", h(api.ListTaskComments))
+	mux.Handle("POST /api/tasks/{id}/comments", h(api.AddTaskComment))
+
 	// Models
 	mux.Handle("GET /api/models", h(api.ListModels))
 	mux.Handle("POST /api/models", h(api.AddModel))

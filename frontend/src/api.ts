@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { SettingsData, Conversation, ConversationSummary, FileRef, Prompt, VertexModel, Employee, Skill } from './types';
+import type { SettingsData, Conversation, ConversationSummary, FileRef, Prompt, VertexModel, Employee, Skill, Task, TaskComment } from './types';
 import { log } from './logger';
 
 export async function fetchConfig(): Promise<{ project_id: string }> {
@@ -199,6 +199,50 @@ export async function deleteEmployee(id: string): Promise<void> {
 
 export async function setEmployeeManager(id: string, managerId: string): Promise<void> {
   await axios.put(`/api/employees/${id}/manager`, { manager_id: managerId });
+}
+
+// Tasks
+export async function listTasks(filters?: { status?: string; assignee_id?: string }): Promise<Task[]> {
+  const params = new URLSearchParams();
+  if (filters?.status) params.set('status', filters.status);
+  if (filters?.assignee_id) params.set('assignee_id', filters.assignee_id);
+  const qs = params.toString();
+  const { data } = await axios.get(`/api/tasks${qs ? `?${qs}` : ''}`);
+  return data;
+}
+
+export async function createTask(task: { title: string; body?: string; priority?: string; assignee_id?: string; creator_id?: string; dependencies?: string[] }): Promise<Task> {
+  const { data } = await axios.post('/api/tasks', task);
+  return data;
+}
+
+export async function getTask(id: string): Promise<Task> {
+  const { data } = await axios.get(`/api/tasks/${id}`);
+  return data;
+}
+
+export async function updateTask(id: string, fields: { title?: string; body?: string; priority?: string; assignee_id?: string; result?: string }): Promise<Task> {
+  const { data } = await axios.put(`/api/tasks/${id}`, fields);
+  return data;
+}
+
+export async function deleteTask(id: string): Promise<void> {
+  await axios.delete(`/api/tasks/${id}`);
+}
+
+export async function updateTaskStatus(id: string, status: string, actorId?: string): Promise<Task> {
+  const { data } = await axios.put(`/api/tasks/${id}/status`, { status, actor_id: actorId || undefined });
+  return data;
+}
+
+export async function listTaskComments(id: string): Promise<TaskComment[]> {
+  const { data } = await axios.get(`/api/tasks/${id}/comments`);
+  return data;
+}
+
+export async function addTaskComment(id: string, authorId: string, content: string): Promise<TaskComment> {
+  const { data } = await axios.post(`/api/tasks/${id}/comments`, { author_id: authorId, content });
+  return data;
 }
 
 export async function sendChatMessage(

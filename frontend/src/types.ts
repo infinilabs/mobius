@@ -123,6 +123,30 @@ export interface EmployeeBrief {
   role: string;
 }
 
+export interface Task {
+  id: string;
+  title: string;
+  body: string;
+  status: 'todo' | 'ready' | 'in_progress' | 'needs_review' | 'done' | 'blocked';
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  assignee: EmployeeBrief | null;
+  creator: EmployeeBrief | null;
+  result: string;
+  failure_count: number;
+  dependencies: string[];
+  created_at: string;
+  updated_at: string;
+  completed_at?: string;
+}
+
+export interface TaskComment {
+  id: string;
+  task_id: string;
+  author: EmployeeBrief | null;
+  content: string;
+  created_at: string;
+}
+
 export interface Employee {
   id: string;
   name: string;
