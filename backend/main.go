@@ -124,7 +124,16 @@ func main() {
 		skillsDir = "../skills"
 	}
 
-	api := NewAPIHandler(cfg, configPath, genaiClient, esClient, gcsClient, pgClient, skillsDir)
+	providers := NewProviderRegistry()
+	if genaiClient != nil {
+		providers.Register("gemini", NewGeminiProvider(genaiClient))
+	}
+	gc := cfg.GetSettings().GoogleCloud
+	if gc.ProjectID != "" {
+		providers.Register("claude", NewClaudeProvider(gc.ProjectID, "us-east5"))
+	}
+
+	api := NewAPIHandler(cfg, configPath, genaiClient, esClient, gcsClient, pgClient, skillsDir, providers)
 
 	// Skill sync sources
 	hermesPath := cfg.SkillSync.HermesPath
@@ -281,6 +290,10 @@ func main() {
 	mux.Handle("POST /api/employees/{id}/skills/reset", h(api.ResetEmployeeSkills))
 	mux.Handle("DELETE /api/employees/{id}/skills/{skillId}", h(api.UnassignSkillFromEmployee))
 
+	// Delegation
+	mux.Handle("POST /api/employees/hire", h(api.HireEmployee))
+	mux.Handle("POST /api/tasks/delegate", h(api.DelegateTask))
+
 	// Tasks
 	mux.Handle("GET /api/tasks", h(api.ListTasks))
 	mux.Handle("POST /api/tasks", h(api.CreateTask))
@@ -330,6 +343,12 @@ func main() {
 	}
 
 	syncCtx, syncCancel := context.WithCancel(context.Background())
+
+	// Background task dispatcher
+	if pgClient != nil {
+		dispatcher := NewTaskDispatcher(pgClient, esClient, providers, 5)
+		go dispatcher.Start(syncCtx)
+	}
 
 	// Periodic disk→ES sync (every 60s)
 	if esClient != nil {

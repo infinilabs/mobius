@@ -201,6 +201,34 @@ export async function setEmployeeManager(id: string, managerId: string): Promise
   await axios.put(`/api/employees/${id}/manager`, { manager_id: managerId });
 }
 
+// Delegation
+export async function hireEmployee(hire: {
+  hiring_manager_id: string;
+  name: string;
+  title: string;
+  backstory: string;
+  role?: string;
+  primary_llm?: string;
+  skills?: { skill: string; description: string }[];
+}): Promise<Employee> {
+  const { data } = await axios.post('/api/employees/hire', hire);
+  return data;
+}
+
+export async function delegateTask(delegation: {
+  creator_id: string;
+  assignee_id: string;
+  title: string;
+  goal: string;
+  context?: string;
+  priority?: string;
+  conversation_id?: string;
+  dependencies?: string[];
+}): Promise<Task> {
+  const { data } = await axios.post('/api/tasks/delegate', delegation);
+  return data;
+}
+
 // Tasks
 export async function listTasks(filters?: { status?: string; assignee_id?: string }): Promise<Task[]> {
   const params = new URLSearchParams();
@@ -230,8 +258,8 @@ export async function deleteTask(id: string): Promise<void> {
   await axios.delete(`/api/tasks/${id}`);
 }
 
-export async function updateTaskStatus(id: string, status: string, actorId?: string): Promise<Task> {
-  const { data } = await axios.put(`/api/tasks/${id}/status`, { status, actor_id: actorId || undefined });
+export async function updateTaskStatus(id: string, status: string, actorId?: string, feedback?: string): Promise<Task> {
+  const { data } = await axios.put(`/api/tasks/${id}/status`, { status, actor_id: actorId || undefined, feedback: feedback || undefined });
   return data;
 }
 

@@ -374,8 +374,20 @@ function TaskDetailModal({ taskId, employees, onClose, onChanged }: {
 
   const handleStatusChange = async (status: string) => {
     setError('');
+    let feedback: string | undefined;
+
+    if (status === 'ready' && task?.status === 'needs_review') {
+      const input = prompt('Please provide rejection feedback so the agent knows what to fix:');
+      if (input === null) return;
+      if (!input.trim()) {
+        setError('Feedback is required when rejecting a task.');
+        return;
+      }
+      feedback = input.trim();
+    }
+
     try {
-      await updateTaskStatus(taskId, status, commentAuthor || undefined);
+      await updateTaskStatus(taskId, status, commentAuthor || undefined, feedback);
       await reload();
       onChanged();
     } catch (e: unknown) {

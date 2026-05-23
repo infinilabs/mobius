@@ -307,6 +307,15 @@ func (pg *PGClient) UpdateTask(ctx context.Context, id string, title, body, prio
 	return nil
 }
 
+func (pg *PGClient) SetTaskConversationID(ctx context.Context, taskID, conversationID string) error {
+	_, err := pg.pool.Exec(ctx,
+		"UPDATE tasks SET conversation_id = $1 WHERE id = $2", conversationID, taskID)
+	if err != nil {
+		return fmt.Errorf("set conversation_id: %w", err)
+	}
+	return nil
+}
+
 func (pg *PGClient) DeleteTask(ctx context.Context, id string) error {
 	_, err := pg.pool.Exec(ctx, "DELETE FROM tasks WHERE id = $1", id)
 	if err != nil {
@@ -323,7 +332,7 @@ var validTransitions = map[string]map[string]bool{
 	"blocked":      {"ready": true},
 }
 
-func (pg *PGClient) UpdateTaskStatus(ctx context.Context, id, newStatus, actorID string) error {
+func (pg *PGClient) UpdateTaskStatus(ctx context.Context, id, newStatus, actorID string, feedback ...string) error {
 	tx, err := pg.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -376,6 +385,9 @@ func (pg *PGClient) UpdateTaskStatus(ctx context.Context, id, newStatus, actorID
 		sets = "status = $1, updated_at = NOW(), completed_at = NOW()"
 	} else if newStatus == "ready" && currentStatus == "needs_review" {
 		sets = "status = $1, updated_at = NOW(), result = ''"
+		if len(feedback) > 0 && feedback[0] != "" {
+			pg.AddTaskComment(ctx, id, actorID, "REJECTED: "+feedback[0])
+		}
 	}
 
 	_, err = tx.Exec(ctx, fmt.Sprintf("UPDATE tasks SET %s WHERE id = $2", sets), args...)
@@ -650,15 +662,16 @@ func (h *APIHandler) UpdateTaskStatus(w http.ResponseWriter, r *http.Request) {
 
 	id := r.PathValue("id")
 	var body struct {
-		Status  string `json:"status"`
-		ActorID string `json:"actor_id"`
+		Status   string `json:"status"`
+		ActorID  string `json:"actor_id"`
+		Feedback string `json:"feedback,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	if err := h.pgClient.UpdateTaskStatus(r.Context(), id, body.Status, body.ActorID); err != nil {
+	if err := h.pgClient.UpdateTaskStatus(r.Context(), id, body.Status, body.ActorID, body.Feedback); err != nil {
 		writeError(w, err.Error(), http.StatusBadRequest)
 		return
 	}

@@ -90,9 +90,11 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 	systemPrompt := "You are Mobius, an AI growth partner for advertising, marketing, and business optimization. Help users with ad performance analysis, campaign strategy, creative production, and growth planning."
 	systemAck := "Understood. I'm Mobius, your AI growth partner. How can I help you today?"
 
+	var agent *Employee
 	if req.AgentID != "" && h.pgClient != nil {
-		agent, err := h.pgClient.GetEmployee(r.Context(), req.AgentID)
+		a, err := h.pgClient.GetEmployee(r.Context(), req.AgentID)
 		if err == nil {
+			agent = a
 			systemPrompt = fmt.Sprintf("You are %s, %s. %s", agent.Name, agent.Title, agent.Backstory)
 
 			if h.esClient != nil {
@@ -118,29 +120,38 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 		modelID = req.ModelID
 	}
 
-	var contents []*genai.Content
+	// Build tools for this agent
+	var tools []ToolDef
+	if agent != nil {
+		tools = buildAgentTools(agent)
 
-	contents = append(contents, &genai.Content{
-		Role:  "user",
-		Parts: []*genai.Part{{Text: systemPrompt}},
-	})
-	contents = append(contents, &genai.Content{
-		Role:  "model",
-		Parts: []*genai.Part{{Text: systemAck}},
-	})
+		if hasTag(agent.Tags, "manager") || agent.Role == "CEO" {
+			systemPrompt += "\n\n## SYSTEM DIRECTIVE: Quality Gate\n" +
+				"As a manager, you review work from your team. When a task has status 'needs_review':\n" +
+				"1. Inspect the result carefully — check code, specs, or analysis for correctness.\n" +
+				"2. Do NOT blindly approve. Verify the deliverable meets the goal.\n" +
+				"3. If quality issues exist: call review_task with action=\"REJECT\" and specific feedback.\n" +
+				"4. If the work is complete and correct: call review_task with action=\"APPROVE\"."
+		}
+	}
+
+	// Build provider-neutral messages
+	var messages []LLMMessage
+	messages = append(messages, LLMMessage{Role: "user", Text: systemPrompt})
+	messages = append(messages, LLMMessage{Role: "model", Text: systemAck})
 
 	conv = h.conversations.Get(req.ConversationID)
 	for _, msg := range conv.Messages {
-		parts := []*genai.Part{{Text: msg.Content}}
-		for _, f := range msg.Files {
-			if f.GCSURI != "" {
-				parts = append(parts, genai.NewPartFromURI(f.GCSURI, f.MIMEType))
-			}
-		}
-		contents = append(contents, &genai.Content{
-			Role:  msg.Role,
-			Parts: parts,
+		messages = append(messages, LLMMessage{
+			Role: msg.Role, Text: msg.Content, Files: msg.Files,
 		})
+	}
+
+	// Resolve provider
+	provider := h.providers.ResolveProvider(modelID)
+	if provider == nil {
+		writeError(w, "no LLM provider for model: "+modelID, http.StatusBadRequest)
+		return
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -153,30 +164,34 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
-	var fullResponse string
-
-	for chunk, err := range h.genaiClient.Models.GenerateContentStream(
-		ctx,
-		modelID,
-		contents,
-		nil,
-	) {
-		if err != nil {
-			slog.Error("genai stream error", "error", err)
-			errData, _ := json.Marshal(map[string]string{"error": err.Error()})
-			fmt.Fprintf(w, "data: %s\n\n", errData)
-			flusher.Flush()
-			break
-		}
-
-		text := chunk.Text()
-		if text != "" {
-			fullResponse += text
+	llmReq := &LLMRequest{
+		Model:        modelID,
+		Messages:     messages,
+		Tools:        tools,
+		OnText: func(text string) {
 			data, _ := json.Marshal(map[string]string{"text": text})
 			fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
-		}
+		},
+		OnToolCall: func(call ToolCall) map[string]any {
+			if agent == nil {
+				return map[string]any{"error": "no agent context for tool execution"}
+			}
+			return h.executeToolCall(r.Context(), call, agent, conv.ID)
+		},
+		OnToolEvent: func(name, status string) {
+			data, _ := json.Marshal(map[string]any{"tool_call": name, "status": status})
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		},
+	}
+
+	fullResponse, err := provider.ChatStream(r.Context(), llmReq)
+	if err != nil {
+		slog.Error("provider chat error", "error", err, "model", modelID)
+		errData, _ := json.Marshal(map[string]string{"error": err.Error()})
+		fmt.Fprintf(w, "data: %s\n\n", errData)
+		flusher.Flush()
 	}
 
 	if fullResponse != "" {

@@ -1,0 +1,106 @@
+package main
+
+import (
+	"context"
+	"fmt"
+
+	"google.golang.org/genai"
+)
+
+type GeminiProvider struct {
+	client *genai.Client
+}
+
+func NewGeminiProvider(client *genai.Client) *GeminiProvider {
+	return &GeminiProvider{client: client}
+}
+
+func (g *GeminiProvider) ChatStream(ctx context.Context, req *LLMRequest) (string, error) {
+	var contents []*genai.Content
+	for _, m := range req.Messages {
+		role := m.Role
+		if role == "assistant" {
+			role = "model"
+		}
+		parts := []*genai.Part{{Text: m.Text}}
+		for _, f := range m.Files {
+			if f.GCSURI != "" {
+				parts = append(parts, genai.NewPartFromURI(f.GCSURI, f.MIMEType))
+			}
+		}
+		contents = append(contents, &genai.Content{Role: role, Parts: parts})
+	}
+
+	var tools []*genai.Tool
+	if len(req.Tools) > 0 {
+		var decls []*genai.FunctionDeclaration
+		for _, td := range req.Tools {
+			decls = append(decls, &genai.FunctionDeclaration{
+				Name:                 td.Name,
+				Description:          td.Description,
+				ParametersJsonSchema: td.Parameters,
+			})
+		}
+		tools = []*genai.Tool{{FunctionDeclarations: decls}}
+	}
+
+	config := &genai.GenerateContentConfig{Tools: tools}
+	if req.SystemPrompt != "" {
+		config.SystemInstruction = &genai.Content{
+			Parts: []*genai.Part{{Text: req.SystemPrompt}},
+		}
+	}
+
+	var fullText string
+	for i := 0; i < 5; i++ {
+		var calls []*genai.FunctionCall
+		var iterText string
+
+		for chunk, err := range g.client.Models.GenerateContentStream(
+			ctx, req.Model, contents, config,
+		) {
+			if err != nil {
+				return fullText, fmt.Errorf("stream error: %w", err)
+			}
+			if fcs := chunk.FunctionCalls(); len(fcs) > 0 {
+				calls = append(calls, fcs...)
+				continue
+			}
+			text := chunk.Text()
+			if text != "" {
+				iterText += text
+				if req.OnText != nil {
+					req.OnText(text)
+				}
+			}
+		}
+
+		if len(calls) == 0 {
+			fullText += iterText
+			break
+		}
+
+		for _, fc := range calls {
+			tc := ToolCall{Name: fc.Name, Args: fc.Args}
+			result := req.OnToolCall(tc)
+
+			if req.OnToolEvent != nil {
+				req.OnToolEvent(fc.Name, "executed")
+			}
+
+			contents = append(contents, &genai.Content{
+				Role:  "model",
+				Parts: []*genai.Part{{FunctionCall: fc}},
+			})
+			contents = append(contents, &genai.Content{
+				Role: "user",
+				Parts: []*genai.Part{{FunctionResponse: &genai.FunctionResponse{
+					Name:     fc.Name,
+					Response: result,
+				}}},
+			})
+		}
+	}
+
+	return fullText, nil
+}

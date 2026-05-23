@@ -24,6 +24,7 @@ type APIHandler struct {
 	esClient      *ESClient
 	gcsClient     *GCSClient
 	pgClient      *PGClient
+	providers     *ProviderRegistry
 	health        *HealthChecker
 	skillsDir     string
 	syncSources   []SkillSyncSource
@@ -32,7 +33,7 @@ type APIHandler struct {
 	lastSyncResult *SyncResult
 }
 
-func NewAPIHandler(cfg *Config, configPath string, genaiClient *genai.Client, esClient *ESClient, gcsClient *GCSClient, pgClient *PGClient, skillsDir string) *APIHandler {
+func NewAPIHandler(cfg *Config, configPath string, genaiClient *genai.Client, esClient *ESClient, gcsClient *GCSClient, pgClient *PGClient, skillsDir string, providers *ProviderRegistry) *APIHandler {
 	h := &APIHandler{
 		config:        cfg,
 		configPath:    configPath,
@@ -42,6 +43,7 @@ func NewAPIHandler(cfg *Config, configPath string, genaiClient *genai.Client, es
 		esClient:      esClient,
 		gcsClient:     gcsClient,
 		pgClient:      pgClient,
+		providers:     providers,
 		health:        NewHealthChecker(5 * time.Second),
 		skillsDir:     skillsDir,
 	}
