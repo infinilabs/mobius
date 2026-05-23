@@ -25,6 +25,7 @@ type VertexModel struct {
 	ModelID  string `yaml:"model_id" json:"model_id"`
 	Location string `yaml:"location" json:"location"`
 	Type     string `yaml:"type" json:"type"`
+	Default  bool   `yaml:"default,omitempty" json:"default,omitempty"`
 }
 
 type VertexAIConfig struct {
@@ -63,11 +64,32 @@ func (v *VertexAIConfig) GetModels() []VertexModel {
 	return models
 }
 
-func (v *VertexAIConfig) DefaultLLM() (modelID, location string) {
-	for _, m := range v.GetModels() {
-		if m.Type == "llm" {
+func (v *VertexAIConfig) DefaultModel(modelType string) (modelID, location string) {
+	models := v.GetModels()
+	var first VertexModel
+	var found bool
+	for _, m := range models {
+		if m.Type != modelType {
+			continue
+		}
+		if m.Default {
 			return m.ModelID, m.Location
 		}
+		if !found {
+			first = m
+			found = true
+		}
+	}
+	if found {
+		return first.ModelID, first.Location
+	}
+	return "", ""
+}
+
+func (v *VertexAIConfig) DefaultLLM() (modelID, location string) {
+	mid, loc := v.DefaultModel("llm")
+	if mid != "" {
+		return mid, loc
 	}
 	return v.LLMModelID, v.LLMLocation
 }

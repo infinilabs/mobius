@@ -25,9 +25,22 @@ google_cloud:
     location: "us-central1"
     public_access_prevention: true
   vertex_ai:
-    llm_model_id: "gemini-3.1-pro-preview"
-    llm_location: "global"
-    img_model_id: "gemini-3.1-flash-image-preview"
-    img_location: "global"
-    video_model_id: "veo-3.1-generate-001"
-    video_location: "global"
+    models:
+      - id: "gemini-3.1-pro"
+        name: "Gemini 3.1 Pro"
+        model_id: "gemini-3.1-pro-preview"
+        location: "global"
+        type: "llm"
+        default: true
+      - id: "gemini-3.1-flash-image"
+        name: "Gemini 3.1 Flash Image"
+        model_id: "gemini-3.1-flash-image-preview"
+        location: "global"
+        type: "image"
+        default: true
+      - id: "veo-3.1"
+        name: "Veo 3.1"
+        model_id: "veo-3.1-generate-001"
+        location: "global"
+        type: "video"
+        default: true
