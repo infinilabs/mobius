@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  PenLine, Gauge, Bot, Palette, Radio, Settings,
-  ChevronLeft, ChevronRight, Server, Layers,
+  PenLine, Gauge, Bot, Palette, Radio, Megaphone,
+  ChevronLeft, ChevronRight, ChevronDown, Layers,
   MessageSquare, MoreHorizontal, Pencil, Trash2, Check, X,
-  FileText, Users, BookOpen, Kanban,
+  FileText, Users, BookOpen, Kanban, Wrench, Monitor,
 } from 'lucide-react';
 import { fetchConfig, listConversations, renameConversation, deleteConversation } from './api';
 import type { ConversationSummary } from './types';
@@ -21,24 +21,32 @@ import SettingsPage from './pages/SettingsPage';
 
 type Page = 'new-task' | 'cockpit' | 'tasks' | 'hr' | 'skills' | 'agent-workspace' | 'creatives' | 'prompts' | 'autopilot' | 'settings';
 
-const NAV_ITEMS: { id: Page; label: string; icon: React.ReactNode }[] = [
-  { id: 'new-task',         label: 'New Task',          icon: <PenLine size={18} /> },
+type NavItem = { id: Page; label: string; icon: React.ReactNode };
+
+const MARKETING_ITEMS: NavItem[] = [
   { id: 'cockpit',          label: 'Cockpit',           icon: <Gauge size={18} /> },
+  { id: 'creatives',        label: 'Creatives',         icon: <Palette size={18} /> },
+  { id: 'agent-workspace',  label: 'Agent Workspace',   icon: <Bot size={18} /> },
+  { id: 'autopilot',        label: 'Autopilot',         icon: <Radio size={18} /> },
+];
+
+const OPS_ITEMS: NavItem[] = [
   { id: 'tasks',            label: 'Tasks',             icon: <Kanban size={18} /> },
   { id: 'hr',               label: 'HR',                icon: <Users size={18} /> },
+];
+
+const MGMT_ITEMS: NavItem[] = [
+  { id: 'settings',         label: 'System',            icon: <Monitor size={18} /> },
   { id: 'skills',           label: 'Skills',            icon: <BookOpen size={18} /> },
-  { id: 'agent-workspace',  label: 'Agent Workspace',   icon: <Bot size={18} /> },
-  { id: 'creatives',        label: 'Creatives',         icon: <Palette size={18} /> },
   { id: 'prompts',          label: 'Prompts',           icon: <FileText size={18} /> },
-  { id: 'autopilot',        label: 'Autopilot',         icon: <Radio size={18} /> },
-  { id: 'settings',         label: 'Settings',          icon: <Settings size={18} /> },
 ];
 
 function App() {
   const [activePage, setActivePage] = useState<Page>('new-task');
-  const [config, setConfig] = useState<{ project_id: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [marketingOpen, setMarketingOpen] = useState(true);
+  const [mgmtOpen, setMgmtOpen] = useState(false);
 
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -50,8 +58,8 @@ function App() {
   useEffect(() => {
     log.info('app', 'initializing');
     fetchConfig()
-      .then(setConfig)
-      .catch(() => { log.warn('app', 'config fetch failed, using fallback'); setConfig({ project_id: 'Not connected' }); })
+      .then(() => {})
+      .catch(() => { log.warn('app', 'config fetch failed'); })
       .finally(() => setLoading(false));
     refreshConversations();
   }, [refreshConversations]);
@@ -128,33 +136,21 @@ function App() {
 
         {/* Nav Items */}
         <nav className={`flex flex-col gap-0.5 ${sidebarOpen ? 'px-3' : 'px-1.5'}`}>
-          {NAV_ITEMS.map(item => {
-            const isActive = activePage === item.id && !(item.id === 'new-task' && activeConversationId);
-            return (
-              <button
-                key={item.id}
-                onClick={() => {
-                  if (item.id === 'new-task') {
-                    handleNewTask();
-                  } else {
-                    setActivePage(item.id);
-                  }
-                }}
-                className={`flex items-center gap-2.5 rounded-lg cursor-pointer transition-all text-left ${
-                  sidebarOpen ? 'px-3 py-2.5' : 'p-2.5 justify-center'
-                } ${
-                  isActive
-                    ? 'text-white font-medium'
-                    : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/30'
-                }`}
-                style={isActive ? { background: '#18181b', boxShadow: 'inset 0 0 0 1px rgba(63,63,70,0.4)' } : undefined}
-                title={sidebarOpen ? undefined : item.label}
-              >
-                <span className={`shrink-0 ${isActive ? 'text-cyan-400' : ''}`}>{item.icon}</span>
-                {sidebarOpen && <span className="text-sm whitespace-nowrap">{item.label}</span>}
-              </button>
-            );
-          })}
+          <NavButton item={{ id: 'new-task', label: 'New Task', icon: <PenLine size={18} /> }} activePage={activePage} activeConversationId={activeConversationId} sidebarOpen={sidebarOpen} onNav={handleNewTask} />
+
+          <div className={`${sidebarOpen ? 'mx-1' : 'mx-0.5'} border-t border-zinc-800/40 my-1.5`} />
+
+          {OPS_ITEMS.map(item => (
+            <NavButton key={item.id} item={item} activePage={activePage} activeConversationId={activeConversationId} sidebarOpen={sidebarOpen} onNav={() => setActivePage(item.id)} />
+          ))}
+
+          <div className={`${sidebarOpen ? 'mx-1' : 'mx-0.5'} border-t border-zinc-800/40 my-1.5`} />
+
+          {/* Management group */}
+          <NavGroup label="Management" icon={<Wrench size={18} />} open={mgmtOpen} onToggle={() => setMgmtOpen(!mgmtOpen)} items={MGMT_ITEMS} activePage={activePage} activeConversationId={activeConversationId} sidebarOpen={sidebarOpen} onNav={setActivePage} />
+
+          {/* Marketing group */}
+          <NavGroup label="Marketing" icon={<Megaphone size={18} />} open={marketingOpen} onToggle={() => setMarketingOpen(!marketingOpen)} items={MARKETING_ITEMS} activePage={activePage} activeConversationId={activeConversationId} sidebarOpen={sidebarOpen} onNav={setActivePage} />
         </nav>
 
         {/* Recents */}
@@ -199,30 +195,6 @@ function App() {
 
         {/* Footer */}
         <div className={`${sidebarOpen ? 'px-3' : 'px-1.5'} pb-4 shrink-0 mt-auto`}>
-          {sidebarOpen ? (
-            <div className="p-3 rounded-xl border border-zinc-800/40 flex items-center gap-3 mb-3" style={{ background: '#111114' }}>
-              <div className="p-2 rounded-lg border border-emerald-500/15 shrink-0" style={{ background: '#052e1610' }}>
-                <div className="relative">
-                  <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-                  <Server size={15} className="text-emerald-400" />
-                </div>
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-[9px] text-zinc-600 uppercase font-semibold tracking-wider">Project</p>
-                <p className="text-xs font-mono truncate text-zinc-400">{config?.project_id || 'Not connected'}</p>
-              </div>
-            </div>
-          ) : (
-            <div className="flex justify-center mb-3" title={config?.project_id || 'Not connected'}>
-              <div className="p-2 rounded-lg border border-emerald-500/15" style={{ background: '#052e1610' }}>
-                <div className="relative">
-                  <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-                  <Server size={15} className="text-emerald-400" />
-                </div>
-              </div>
-            </div>
-          )}
-
           <button
             onClick={() => setSidebarOpen(!sidebarOpen)}
             className={`w-full flex items-center gap-2 rounded-lg text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800/30 cursor-pointer transition-all ${
@@ -265,6 +237,62 @@ function App() {
         </div>
       </main>
     </div>
+  );
+}
+
+function NavGroup({ label, icon, open, onToggle, items, activePage, activeConversationId, sidebarOpen, onNav }: {
+  label: string; icon: React.ReactNode; open: boolean; onToggle: () => void;
+  items: NavItem[]; activePage: Page; activeConversationId: string | null; sidebarOpen: boolean; onNav: (page: Page) => void;
+}) {
+  const hasActive = items.some(i => i.id === activePage);
+  return (
+    <>
+      <button
+        onClick={onToggle}
+        className={`flex items-center gap-2.5 rounded-lg cursor-pointer transition-all text-left ${
+          sidebarOpen ? 'px-3 py-2' : 'p-2.5 justify-center'
+        } ${hasActive ? 'text-zinc-300' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/30'}`}
+        title={sidebarOpen ? undefined : label}
+      >
+        <span className={`shrink-0 ${hasActive ? 'text-cyan-400' : ''}`}>{icon}</span>
+        {sidebarOpen && (
+          <>
+            <span className="text-sm whitespace-nowrap flex-1">{label}</span>
+            <ChevronDown size={14} className={`text-zinc-600 transition-transform ${open ? 'rotate-180' : ''}`} />
+          </>
+        )}
+      </button>
+      {open && (
+        <div className={`flex flex-col gap-0.5 ${sidebarOpen ? 'pl-4' : ''}`}>
+          {items.map(item => (
+            <NavButton key={item.id} item={item} activePage={activePage} activeConversationId={activeConversationId} sidebarOpen={sidebarOpen} onNav={() => onNav(item.id)} />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function NavButton({ item, activePage, activeConversationId, sidebarOpen, onNav }: {
+  item: NavItem; activePage: Page; activeConversationId: string | null; sidebarOpen: boolean; onNav: () => void;
+}) {
+  const isActive = activePage === item.id && !(item.id === 'new-task' && activeConversationId);
+  return (
+    <button
+      onClick={onNav}
+      className={`flex items-center gap-2.5 rounded-lg cursor-pointer transition-all text-left ${
+        sidebarOpen ? 'px-3 py-2' : 'p-2.5 justify-center'
+      } ${
+        isActive
+          ? 'text-white font-medium'
+          : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/30'
+      }`}
+      style={isActive ? { background: '#18181b', boxShadow: 'inset 0 0 0 1px rgba(63,63,70,0.4)' } : undefined}
+      title={sidebarOpen ? undefined : item.label}
+    >
+      <span className={`shrink-0 ${isActive ? 'text-cyan-400' : ''}`}>{item.icon}</span>
+      {sidebarOpen && <span className="text-sm whitespace-nowrap">{item.label}</span>}
+    </button>
   );
 }
 
