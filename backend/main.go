@@ -126,13 +126,51 @@ func main() {
 
 	api := NewAPIHandler(cfg, configPath, genaiClient, esClient, gcsClient, pgClient, skillsDir)
 
+	// Skill sync sources
 	hermesPath := cfg.SkillSync.HermesPath
 	if hermesPath == "" {
 		hermesPath = "../hermes-agent"
 	}
 	if _, err := os.Stat(hermesPath); err == nil {
 		api.syncSources = append(api.syncSources, NewHermesSource(hermesPath))
-		slog.Info("hermes skill sync source configured", "path", hermesPath)
+		slog.Info("skill sync source configured", "source", "hermes", "path", hermesPath)
+	}
+
+	defaultRepos := []struct {
+		name, path, category string
+		dirs                 []string
+	}{
+		{"anthropic", "../anthropic-skills", "anthropic", []string{"skills"}},
+		{"addyosmani", "../addyosmani-skills", "engineering", []string{"skills"}},
+		{"vercel", "../vercel-skills", "frontend", []string{"skills"}},
+		{"trailofbits", "../trailofbits-skills", "security", []string{"plugins", ".codex/skills"}},
+	}
+	for _, r := range defaultRepos {
+		if _, err := os.Stat(r.path); err == nil {
+			api.syncSources = append(api.syncSources, &GitRepoSource{
+				SourceName: r.name,
+				BasePath:   r.path,
+				Category:   r.category,
+				SkillsDirs: r.dirs,
+			})
+			slog.Info("skill sync source configured", "source", r.name, "path", r.path)
+		}
+	}
+
+	for _, r := range cfg.SkillSync.Repos {
+		if _, err := os.Stat(r.Path); err == nil {
+			dirs := r.Dirs
+			if len(dirs) == 0 {
+				dirs = []string{"skills"}
+			}
+			api.syncSources = append(api.syncSources, &GitRepoSource{
+				SourceName: r.Name,
+				BasePath:   r.Path,
+				Category:   r.Category,
+				SkillsDirs: dirs,
+			})
+			slog.Info("skill sync source configured (config)", "source", r.Name, "path", r.Path)
+		}
 	}
 
 	if esClient != nil {
@@ -240,6 +278,7 @@ func main() {
 	mux.Handle("PUT /api/employees/{id}/manager", h(api.SetEmployeeManager))
 	mux.Handle("GET /api/employees/{id}/skills", h(api.ListEmployeeSkills))
 	mux.Handle("POST /api/employees/{id}/skills", h(api.AssignSkillToEmployee))
+	mux.Handle("POST /api/employees/{id}/skills/reset", h(api.ResetEmployeeSkills))
 	mux.Handle("DELETE /api/employees/{id}/skills/{skillId}", h(api.UnassignSkillFromEmployee))
 
 	// Models

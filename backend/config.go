@@ -107,6 +107,12 @@ type Config struct {
 
 	SkillSync struct {
 		HermesPath string `yaml:"hermes_path,omitempty" json:"hermes_path,omitempty"`
+		Repos      []struct {
+			Name     string   `yaml:"name" json:"name"`
+			Path     string   `yaml:"path" json:"path"`
+			Category string   `yaml:"category" json:"category"`
+			Dirs     []string `yaml:"dirs" json:"dirs"`
+		} `yaml:"repos,omitempty" json:"repos,omitempty"`
 	} `yaml:"skill_sync,omitempty" json:"skill_sync,omitempty"`
 }
 

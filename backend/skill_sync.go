@@ -225,6 +225,126 @@ func buildMobiusSkillMD(name, description, version, category string, tags []stri
 	return buf.String()
 }
 
+// GitRepoSource syncs skills from a local Git repository with SKILL.md files.
+// Works for anthropics/skills, addyosmani/agent-skills, vercel-labs/agent-skills,
+// trailofbits/skills, and any repo following the SKILL.md convention.
+type GitRepoSource struct {
+	SourceName string
+	BasePath   string
+	Category   string // default category if not derivable from directory
+	SkillsDirs []string // subdirectories to scan (e.g. ["skills", "plugins"])
+}
+
+type genericFrontmatter struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	Version     string `yaml:"version"`
+	License     string `yaml:"license"`
+	Metadata    struct {
+		Version string `yaml:"version"`
+	} `yaml:"metadata"`
+}
+
+func (g *GitRepoSource) Name() string { return g.SourceName }
+
+func (g *GitRepoSource) Sync(ctx context.Context, targetDir string) (added, updated int, err error) {
+	if _, err := os.Stat(g.BasePath); os.IsNotExist(err) {
+		return 0, 0, fmt.Errorf("%s not found at %s", g.SourceName, g.BasePath)
+	}
+
+	for _, subdir := range g.SkillsDirs {
+		scanDir := filepath.Join(g.BasePath, subdir)
+		if _, err := os.Stat(scanDir); os.IsNotExist(err) {
+			continue
+		}
+
+		walkErr := filepath.WalkDir(scanDir, func(path string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil || d.IsDir() || d.Name() != "SKILL.md" {
+				return nil
+			}
+
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil
+			}
+
+			a, u := g.processSkill(data, path, scanDir, targetDir)
+			added += a
+			updated += u
+			return nil
+		})
+		if walkErr != nil {
+			slog.Error("failed to walk dir", "source", g.SourceName, "dir", scanDir, "error", walkErr)
+		}
+	}
+
+	return added, updated, nil
+}
+
+func (g *GitRepoSource) processSkill(data []byte, path, scanRoot, targetDir string) (added, updated int) {
+	content := string(data)
+	if !strings.HasPrefix(content, "---\n") {
+		return 0, 0
+	}
+	end := strings.Index(content[4:], "\n---\n")
+	if end < 0 {
+		return 0, 0
+	}
+	fmRaw := content[4 : 4+end]
+	body := strings.TrimSpace(content[4+end+5:])
+
+	var gfm genericFrontmatter
+	if err := yaml.Unmarshal([]byte(fmRaw), &gfm); err != nil {
+		return 0, 0
+	}
+	if gfm.Name == "" {
+		return 0, 0
+	}
+
+	category := g.Category
+	version := gfm.Version
+	if version == "" {
+		version = gfm.Metadata.Version
+	}
+	if version == "" {
+		version = "1.0.0"
+	}
+
+	tagSet := map[string]bool{g.SourceName: true}
+	if category != "" {
+		tagSet[category] = true
+	}
+	tags := make([]string, 0, len(tagSet))
+	for t := range tagSet {
+		tags = append(tags, t)
+	}
+	sort.Strings(tags)
+
+	newContent := buildMobiusSkillMD(gfm.Name, gfm.Description, version, category, tags, body)
+
+	outDir := filepath.Join(targetDir, category, gfm.Name)
+	outFile := filepath.Join(outDir, "SKILL.md")
+
+	if existingData, readErr := os.ReadFile(outFile); readErr == nil {
+		if fileContentHash(existingData) == fileContentHash([]byte(newContent)) {
+			return 0, 0
+		}
+		os.MkdirAll(outDir, 0755)
+		if err := os.WriteFile(outFile, []byte(newContent), 0644); err != nil {
+			slog.Warn("failed to write updated skill", "source", g.SourceName, "name", gfm.Name, "error", err)
+			return 0, 0
+		}
+		return 0, 1
+	}
+
+	os.MkdirAll(outDir, 0755)
+	if err := os.WriteFile(outFile, []byte(newContent), 0644); err != nil {
+		slog.Warn("failed to write new skill", "source", g.SourceName, "name", gfm.Name, "error", err)
+		return 0, 0
+	}
+	return 1, 0
+}
+
 // runFullSync executes upstream source sync followed by disk→ES sync.
 func (h *APIHandler) runFullSync(ctx context.Context) *SyncResult {
 	result := &SyncResult{

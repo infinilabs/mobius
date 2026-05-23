@@ -168,6 +168,10 @@ export async function unassignSkillFromEmployee(employeeId: string, skillId: str
   await axios.delete(`/api/employees/${employeeId}/skills/${skillId}`);
 }
 
+export async function resetEmployeeSkills(employeeId: string): Promise<void> {
+  await axios.post(`/api/employees/${employeeId}/skills/reset`);
+}
+
 // Employees
 export async function listEmployees(): Promise<Employee[]> {
   const { data } = await axios.get('/api/employees');

@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Users, Plus, Trash2, X, Pencil, ChevronDown, ChevronRight,
-  Brain, Wrench, UserCog, Tag, Filter,
+  Brain, Wrench, UserCog, Tag, Filter, RotateCcw,
 } from 'lucide-react';
-import { listEmployees, createEmployee, updateEmployee, deleteEmployee, setEmployeeManager, listModels, listEmployeeSkills } from '../api';
+import { listEmployees, createEmployee, updateEmployee, deleteEmployee, setEmployeeManager, listModels, listEmployeeSkills, resetEmployeeSkills } from '../api';
 import type { Employee, EmployeeModel, VertexModel, Skill } from '../types';
 
 const ROLE_COLORS: Record<string, string> = {
@@ -327,9 +327,23 @@ function DetailPanel({ employee, employees, onEdit, onDelete, onReassign, onClos
         )}
 
         <div>
-          <div className="flex items-center gap-1.5 mb-1.5">
-            <Wrench size={11} className="text-zinc-600" />
-            <p className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wider">Assigned Skills ({assignedSkills.length})</p>
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center gap-1.5">
+              <Wrench size={11} className="text-zinc-600" />
+              <p className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wider">Assigned Skills ({assignedSkills.length})</p>
+            </div>
+            {employee.tags.includes('founder') && (
+              <button
+                onClick={async () => {
+                  await resetEmployeeSkills(employee.id);
+                  listEmployeeSkills(employee.id).then(setAssignedSkills).catch(() => setAssignedSkills([]));
+                }}
+                className="flex items-center gap-1 px-1.5 py-0.5 text-[9px] text-zinc-500 hover:text-cyan-400 border border-zinc-800/30 hover:border-cyan-500/30 rounded transition-colors cursor-pointer"
+                title="Reset to default skills"
+              >
+                <RotateCcw size={9} /> Reset
+              </button>
+            )}
           </div>
           {assignedSkills.length > 0 ? (
             <div className="space-y-1">

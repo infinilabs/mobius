@@ -392,21 +392,23 @@ func (pg *PGClient) CountEmployees(ctx context.Context) (int, error) {
 }
 
 func (pg *PGClient) backfillDefaultTags(ctx context.Context) {
-	defaults := map[string]string{
-		"Elong": "executive",
-		"Steve": "manager",
-		"Linas": "manager",
-		"Allen": "manager",
+	defaults := map[string][]string{
+		"Elong": {"executive", "founder"},
+		"Steve": {"manager", "founder"},
+		"Linas": {"manager", "founder"},
+		"Allen": {"manager", "founder"},
 	}
-	for name, tag := range defaults {
+	for name, tags := range defaults {
 		var id string
 		err := pg.pool.QueryRow(ctx, "SELECT id FROM employees WHERE name=$1", name).Scan(&id)
 		if err != nil {
 			continue
 		}
-		pg.pool.Exec(ctx,
-			"INSERT INTO employee_tags (employee_id, tag) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-			id, tag)
+		for _, tag := range tags {
+			pg.pool.Exec(ctx,
+				"INSERT INTO employee_tags (employee_id, tag) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+				id, tag)
+		}
 	}
 }
 
@@ -444,7 +446,7 @@ func (pg *PGClient) SeedDefaultEmployees(ctx context.Context) error {
 				{"Team Leadership", "Coordinate cross-functional teams effectively"},
 				{"Executive Review", "Synthesize outputs into delivery packages"},
 			},
-			Tags: []string{"executive"},
+			Tags: []string{"executive", "founder"},
 		},
 		{
 			Name:  "Steve",
@@ -459,7 +461,7 @@ func (pg *PGClient) SeedDefaultEmployees(ctx context.Context) error {
 				{"Roadmap Planning", "Prioritize features by impact and feasibility"},
 				{"Specification Writing", "Create detailed product blueprints"},
 			},
-			Tags: []string{"manager"},
+			Tags: []string{"manager", "founder"},
 		},
 		{
 			Name:  "Linas",
@@ -474,7 +476,7 @@ func (pg *PGClient) SeedDefaultEmployees(ctx context.Context) error {
 				{"Code Review", "Ensure code quality and performance standards"},
 				{"Performance Optimization", "Eliminate bottlenecks and reduce latency"},
 			},
-			Tags: []string{"manager"},
+			Tags: []string{"manager", "founder"},
 		},
 		{
 			Name:  "Allen",
@@ -489,7 +491,7 @@ func (pg *PGClient) SeedDefaultEmployees(ctx context.Context) error {
 				{"Quality Metrics", "Track and report on code health and coverage"},
 				{"Automated Testing", "Design and maintain automated test frameworks"},
 			},
-			Tags: []string{"manager"},
+			Tags: []string{"manager", "founder"},
 		},
 	}
 

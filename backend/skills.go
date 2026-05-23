@@ -426,10 +426,48 @@ func (pg *PGClient) SeedDefaultSkillAssignments(ctx context.Context, es *ESClien
 	}
 
 	defaults := map[string][]string{
-		"Elong": {"task-decomposition"},
-		"Steve": {"writing-plans", "code-review"},
-		"Linas": {"test-driven-development", "systematic-debugging", "codebase-inspection", "spike"},
-		"Allen": {"code-review", "systematic-debugging", "test-driven-development"},
+		"Elong": {
+			"task-decomposition",
+			"planning-and-task-breakdown",
+			"idea-refine",
+			"spec-driven-development",
+			"shipping-and-launch",
+			"one-three-one-rule",
+		},
+		"Steve": {
+			"writing-plans",
+			"code-review",
+			"frontend-ui-engineering",
+			"web-design-guidelines",
+			"interview-me",
+			"documentation-and-adrs",
+			"frontend-design",
+		},
+		"Linas": {
+			"systematic-debugging",
+			"test-driven-development",
+			"codebase-inspection",
+			"spike",
+			"incremental-implementation",
+			"performance-optimization",
+			"code-simplification",
+			"api-and-interface-design",
+			"security-and-hardening",
+			"source-driven-development",
+			"mcp-builder",
+		},
+		"Allen": {
+			"test-driven-development",
+			"systematic-debugging",
+			"code-review-and-quality",
+			"debugging-and-error-recovery",
+			"browser-testing-with-devtools",
+			"webapp-testing",
+			"ci-cd-and-automation",
+			"doubt-driven-development",
+			"mutation-testing",
+			"coverage-analysis",
+		},
 	}
 
 	for empName, skillNames := range defaults {
@@ -441,6 +479,10 @@ func (pg *PGClient) SeedDefaultSkillAssignments(ctx context.Context, es *ESClien
 
 		for _, sn := range skillNames {
 			skillID := skillIDFromName(sn)
+			if _, lookupErr := es.GetSkill(ctx, skillID); lookupErr != nil {
+				slog.Warn("default skill not in ES, skipping assignment", "employee", empName, "skill", sn, "id", skillID)
+				continue
+			}
 			pg.pool.Exec(ctx,
 				"INSERT INTO skill_assignments (employee_id, skill_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
 				empID, skillID)
@@ -448,6 +490,89 @@ func (pg *PGClient) SeedDefaultSkillAssignments(ctx context.Context, es *ESClien
 	}
 
 	slog.Info("default skill assignments seeded")
+	return nil
+}
+
+func (pg *PGClient) ResetEmployeeSkills(ctx context.Context, es *ESClient, employeeID string) error {
+	if es == nil {
+		return nil
+	}
+
+	var empName string
+	err := pg.pool.QueryRow(ctx, "SELECT name FROM employees WHERE id=$1", employeeID).Scan(&empName)
+	if err != nil {
+		return fmt.Errorf("employee not found: %w", err)
+	}
+
+	var count int
+	pg.pool.QueryRow(ctx, "SELECT count(*) FROM employee_tags WHERE employee_id=$1 AND tag='founder'", employeeID).Scan(&count)
+	if count == 0 {
+		return fmt.Errorf("reset is only available for founders")
+	}
+
+	defaults := map[string][]string{
+		"Elong": {
+			"task-decomposition",
+			"planning-and-task-breakdown",
+			"idea-refine",
+			"spec-driven-development",
+			"shipping-and-launch",
+			"one-three-one-rule",
+		},
+		"Steve": {
+			"writing-plans",
+			"code-review",
+			"frontend-ui-engineering",
+			"web-design-guidelines",
+			"interview-me",
+			"documentation-and-adrs",
+			"frontend-design",
+		},
+		"Linas": {
+			"systematic-debugging",
+			"test-driven-development",
+			"codebase-inspection",
+			"spike",
+			"incremental-implementation",
+			"performance-optimization",
+			"code-simplification",
+			"api-and-interface-design",
+			"security-and-hardening",
+			"source-driven-development",
+			"mcp-builder",
+		},
+		"Allen": {
+			"test-driven-development",
+			"systematic-debugging",
+			"code-review-and-quality",
+			"debugging-and-error-recovery",
+			"browser-testing-with-devtools",
+			"webapp-testing",
+			"ci-cd-and-automation",
+			"doubt-driven-development",
+			"mutation-testing",
+			"coverage-analysis",
+		},
+	}
+
+	skillNames, ok := defaults[empName]
+	if !ok {
+		return fmt.Errorf("no default skills defined for %s", empName)
+	}
+
+	pg.pool.Exec(ctx, "DELETE FROM skill_assignments WHERE employee_id=$1", employeeID)
+
+	for _, sn := range skillNames {
+		skillID := skillIDFromName(sn)
+		if _, lookupErr := es.GetSkill(ctx, skillID); lookupErr != nil {
+			continue
+		}
+		pg.pool.Exec(ctx,
+			"INSERT INTO skill_assignments (employee_id, skill_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+			employeeID, skillID)
+	}
+
+	slog.Info("employee skills reset to defaults", "employee", empName, "id", employeeID)
 	return nil
 }
 
@@ -681,6 +806,21 @@ func (h *APIHandler) AssignSkillToEmployee(w http.ResponseWriter, r *http.Reques
 	}
 
 	slog.Info("skill assigned", "employee", empID, "skill", body.SkillID)
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (h *APIHandler) ResetEmployeeSkills(w http.ResponseWriter, r *http.Request) {
+	if h.pgClient == nil || h.esClient == nil {
+		writeError(w, "service not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	empID := r.PathValue("id")
+	if err := h.pgClient.ResetEmployeeSkills(r.Context(), h.esClient, empID); err != nil {
+		writeError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
