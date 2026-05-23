@@ -105,6 +105,10 @@ type Config struct {
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch" json:"elasticsearch"`
 	GoogleCloud   GoogleCloudConfig   `yaml:"google_cloud" json:"google_cloud"`
 
+	Upload struct {
+		MaxFileSizeMB int `yaml:"max_file_size_mb,omitempty" json:"max_file_size_mb,omitempty"`
+	} `yaml:"upload,omitempty" json:"upload,omitempty"`
+
 	SkillSync struct {
 		HermesPath string `yaml:"hermes_path,omitempty" json:"hermes_path,omitempty"`
 		Repos      []struct {
@@ -116,19 +120,37 @@ type Config struct {
 	} `yaml:"skill_sync,omitempty" json:"skill_sync,omitempty"`
 }
 
+type UploadConfig struct {
+	MaxFileSizeMB int `json:"max_file_size_mb"`
+}
+
 type SettingsData struct {
 	Postgres      PostgresConfig      `json:"postgres"`
 	Elasticsearch ElasticsearchConfig `json:"elasticsearch"`
 	GoogleCloud   GoogleCloudConfig   `json:"google_cloud"`
+	Upload        UploadConfig        `json:"upload"`
+}
+
+func (c *Config) MaxUploadBytes() int64 {
+	mb := c.Upload.MaxFileSizeMB
+	if mb <= 0 {
+		mb = 20
+	}
+	return int64(mb) << 20
 }
 
 func (c *Config) GetSettings() SettingsData {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	mb := c.Upload.MaxFileSizeMB
+	if mb <= 0 {
+		mb = 20
+	}
 	return SettingsData{
 		Postgres:      c.Postgres,
 		Elasticsearch: c.Elasticsearch,
 		GoogleCloud:   c.GoogleCloud,
+		Upload:        UploadConfig{MaxFileSizeMB: mb},
 	}
 }
 

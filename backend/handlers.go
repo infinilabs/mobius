@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -259,7 +260,16 @@ func (h *APIHandler) RemoveModel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *APIHandler) UploadFile(w http.ResponseWriter, r *http.Request) {
-	r.ParseMultipartForm(32 << 20)
+	maxBytes := h.config.MaxUploadBytes()
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+(10<<20))
+	if err := r.ParseMultipartForm(maxBytes + (1 << 20)); err != nil {
+		mb := h.config.Upload.MaxFileSizeMB
+		if mb <= 0 {
+			mb = 20
+		}
+		writeError(w, fmt.Sprintf("file too large: max %d MB", mb), http.StatusRequestEntityTooLarge)
+		return
+	}
 
 	file, header, err := r.FormFile("file")
 	if err != nil {

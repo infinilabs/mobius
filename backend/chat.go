@@ -51,8 +51,8 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Message == "" {
-		writeError(w, "message is required", http.StatusBadRequest)
+	if req.Message == "" && len(req.Files) == 0 {
+		writeError(w, "message or files required", http.StatusBadRequest)
 		return
 	}
 

@@ -50,10 +50,15 @@ export interface GoogleCloudConfig {
   vertex_ai: VertexAIConfig;
 }
 
+export interface UploadConfig {
+  max_file_size_mb: number;
+}
+
 export interface SettingsData {
   postgres: PostgresConfig;
   elasticsearch: ElasticsearchConfig;
   google_cloud: GoogleCloudConfig;
+  upload: UploadConfig;
 }
 
 export interface FileRef {
