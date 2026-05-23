@@ -126,12 +126,7 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 		tools = buildAgentTools(agent)
 
 		if hasTag(agent.Tags, "manager") || agent.Role == "CEO" {
-			systemPrompt += "\n\n## SYSTEM DIRECTIVE: Quality Gate\n" +
-				"As a manager, you review work from your team. When a task has status 'needs_review':\n" +
-				"1. Inspect the result carefully — check code, specs, or analysis for correctness.\n" +
-				"2. Do NOT blindly approve. Verify the deliverable meets the goal.\n" +
-				"3. If quality issues exist: call review_task with action=\"REJECT\" and specific feedback.\n" +
-				"4. If the work is complete and correct: call review_task with action=\"APPROVE\"."
+			systemPrompt += managerDirectives()
 		}
 	}
 

@@ -221,11 +221,7 @@ func (d *TaskDispatcher) executeAgentTask(ctx context.Context, t Task) {
 	}
 
 	if hasTag(assignee.Tags, "manager") || assignee.Role == "CEO" {
-		systemPrompt += "\n\n## SYSTEM DIRECTIVE: Quality Gate\n" +
-			"As a manager, you review work from your team. When a task has status 'needs_review':\n" +
-			"1. Inspect the result carefully.\n" +
-			"2. If quality issues exist: call review_task with action=\"REJECT\" and feedback.\n" +
-			"3. If the work is correct: call review_task with action=\"APPROVE\"."
+		systemPrompt += managerDirectives()
 	}
 
 	var messages []LLMMessage
@@ -352,6 +348,14 @@ func (d *TaskDispatcher) execHireFromDispatcher(ctx context.Context, args map[st
 
 	if name == "" || title == "" || backstory == "" {
 		return map[string]any{"error": "name, title, and backstory are required"}
+	}
+
+	fresh, err := d.pgClient.GetEmployee(ctx, manager.ID)
+	if err != nil {
+		return map[string]any{"error": "failed to load manager: " + err.Error()}
+	}
+	if reason, ok := checkHireDuplicate(fresh, title); !ok {
+		return map[string]any{"error": reason}
 	}
 
 	emp := &Employee{

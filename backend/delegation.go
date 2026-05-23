@@ -111,6 +111,14 @@ func (h *APIHandler) execHireEmployee(ctx context.Context, args map[string]any, 
 		return map[string]any{"error": "name, title, and backstory are required"}
 	}
 
+	fresh, err := h.pgClient.GetEmployee(ctx, manager.ID)
+	if err != nil {
+		return map[string]any{"error": "failed to load manager: " + err.Error()}
+	}
+	if reason, ok := checkHireDuplicate(fresh, title); !ok {
+		return map[string]any{"error": reason}
+	}
+
 	emp := &Employee{
 		Name:      name,
 		Title:     title,
@@ -261,6 +269,11 @@ func (h *APIHandler) HireEmployee(w http.ResponseWriter, r *http.Request) {
 
 	if !hasTag(manager.Tags, "manager") && manager.Role != "CEO" {
 		writeError(w, "only managers can hire employees", http.StatusForbidden)
+		return
+	}
+
+	if reason, ok := checkHireDuplicate(manager, body.Title); !ok {
+		writeError(w, reason, http.StatusConflict)
 		return
 	}
 
