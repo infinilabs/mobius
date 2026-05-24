@@ -362,6 +362,18 @@ func (d *TaskDispatcher) executeAgentTask(ctx context.Context, t Task) {
 		}
 	}
 
+	comments, _ := d.pgClient.ListTaskComments(ctx, t.ID)
+	if len(comments) > 0 {
+		systemPrompt += "\n\n## Task History (previous review feedback — address these issues):\n"
+		for _, c := range comments {
+			author := "System"
+			if c.Author != nil {
+				author = c.Author.Name
+			}
+			systemPrompt += fmt.Sprintf("- [%s] %s\n", author, c.Content)
+		}
+	}
+
 	var messages []LLMMessage
 	messages = append(messages, LLMMessage{Role: "user", Text: systemPrompt})
 	messages = append(messages, LLMMessage{Role: "model", Text: fmt.Sprintf("I'm %s, %s. Ready.", assignee.Name, assignee.Title)})
