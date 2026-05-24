@@ -1,0 +1,23 @@
+{
+  "settings": {
+    "analysis": {
+      "analyzer": {
+        "memory_analyzer": {
+          "type": "custom",
+          "tokenizer": "standard",
+          "filter": ["lowercase", "stop", "snowball"]
+        }
+      }
+    }
+  },
+  "mappings": {
+    "properties": {
+      "id":              { "type": "keyword" },
+      "employee_id":     { "type": "keyword" },
+      "conversation_id": { "type": "keyword" },
+      "memory_text":     { "type": "text", "analyzer": "memory_analyzer", "search_analyzer": "memory_analyzer" },
+      "created_at":      { "type": "date" },
+      "updated_at":      { "type": "date" }
+    }
+  }
+}

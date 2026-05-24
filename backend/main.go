@@ -290,6 +290,11 @@ func main() {
 	mux.Handle("POST /api/employees/{id}/skills/reset", h(api.ResetEmployeeSkills))
 	mux.Handle("DELETE /api/employees/{id}/skills/{skillId}", h(api.UnassignSkillFromEmployee))
 
+	// Employee Memories
+	mux.Handle("GET /api/employees/{id}/memories", h(api.ListEmployeeMemories))
+	mux.Handle("POST /api/employees/{id}/memories", h(api.AddEmployeeMemory))
+	mux.Handle("DELETE /api/employees/{id}/memories/{memoryId}", h(api.DeleteEmployeeMemory))
+
 	// Delegation
 	mux.Handle("POST /api/employees/hire", h(api.HireEmployee))
 	mux.Handle("POST /api/tasks/delegate", h(api.DelegateTask))
@@ -346,7 +351,7 @@ func main() {
 
 	// Background task dispatcher
 	if pgClient != nil {
-		dispatcher := NewTaskDispatcher(pgClient, esClient, providers, 5)
+		dispatcher := NewTaskDispatcher(pgClient, esClient, providers, 5, cfg)
 		go dispatcher.Start(syncCtx)
 	}
 

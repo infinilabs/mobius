@@ -6,15 +6,31 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v9"
 )
 
 const (
-	IdxConversations = "mobius_conversations"
-	IdxMessages      = "mobius_messages"
+	IdxConversations     = "mobius_conversations"
+	IdxMessages          = "mobius_messages"
+	IdxEmployeeMemories  = "mobius_employee_memories"
 )
+
+const maxMemoriesPerEmployee = 100
+const dedupScoreThreshold = 8.0
+
+type EmployeeMemory struct {
+	ID             string  `json:"id"`
+	EmployeeID     string  `json:"employee_id"`
+	ConversationID string  `json:"conversation_id"`
+	MemoryText     string  `json:"memory_text"`
+	CreatedAt      string  `json:"created_at"`
+	UpdatedAt      string  `json:"updated_at"`
+	Score          float64 `json:"-"`
+}
 
 type ESClient struct {
 	client *elasticsearch.Client
@@ -43,8 +59,51 @@ func NewESClient(url string) (*ESClient, error) {
 		return nil, fmt.Errorf("ES returned error: %s", info.String())
 	}
 
+	esClient := &ESClient{client: client}
+
+	ctx := context.Background()
+	schemaFile := "schemas/elasticsearch/002_employee_memories.json"
+	if err := esClient.CreateIndexIfNotExist(ctx, IdxEmployeeMemories, schemaFile); err != nil {
+		slog.Error("failed to bootstrap employee memories index", "error", err)
+	}
+
 	slog.Info("Elasticsearch connected", "url", url)
-	return &ESClient{client: client}, nil
+	return esClient, nil
+}
+
+func (es *ESClient) CreateIndexIfNotExist(ctx context.Context, indexName, schemaPath string) error {
+	res, err := es.client.Indices.Exists([]string{indexName}, es.client.Indices.Exists.WithContext(ctx))
+	if err != nil {
+		return fmt.Errorf("check index %s: %w", indexName, err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode == 200 {
+		return nil
+	}
+
+	schemaBytes, err := os.ReadFile(schemaPath)
+	if err != nil {
+		schemaBytes, err = os.ReadFile(filepath.Join("..", schemaPath))
+		if err != nil {
+			return fmt.Errorf("read ES schema %s: %w", schemaPath, err)
+		}
+	}
+
+	cRes, err := es.client.Indices.Create(indexName,
+		es.client.Indices.Create.WithContext(ctx),
+		es.client.Indices.Create.WithBody(bytes.NewReader(schemaBytes)),
+	)
+	if err != nil {
+		return fmt.Errorf("create ES index %s: %w", indexName, err)
+	}
+	defer cRes.Body.Close()
+	if cRes.IsError() {
+		return fmt.Errorf("create ES index %s error: %s", indexName, cRes.String())
+	}
+
+	slog.Info("ES index created with custom mapping", "index", indexName)
+	return nil
 }
 
 func (es *ESClient) Ping(ctx context.Context) error {
@@ -325,4 +384,197 @@ func (es *ESClient) UpdateConversationTitle(ctx context.Context, convID, title s
 
 func timeNowMillis() int64 {
 	return time.Now().UnixMilli()
+}
+
+// Employee Memory operations
+
+func (es *ESClient) IndexEmployeeMemory(ctx context.Context, employeeID, convID, text string) error {
+	now := time.Now().Format(time.RFC3339)
+	doc := map[string]any{
+		"id":              generateID(),
+		"employee_id":     employeeID,
+		"conversation_id": convID,
+		"memory_text":     text,
+		"created_at":      now,
+		"updated_at":      now,
+	}
+
+	body, _ := json.Marshal(doc)
+	res, err := es.client.Index(IdxEmployeeMemories, bytes.NewReader(body),
+		es.client.Index.WithContext(ctx),
+		es.client.Index.WithDocumentID(doc["id"].(string)),
+	)
+	if err != nil {
+		return fmt.Errorf("ES index memory failed: %w", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("ES index memory error: %s", res.String())
+	}
+	return nil
+}
+
+func (es *ESClient) SearchEmployeeMemories(ctx context.Context, employeeID, query string, size int) ([]EmployeeMemory, float64, error) {
+	var body map[string]any
+	if query == "" {
+		body = map[string]any{
+			"query": map[string]any{
+				"term": map[string]any{"employee_id": employeeID},
+			},
+			"sort": []any{map[string]any{"created_at": "desc"}},
+			"size": size,
+		}
+	} else {
+		body = map[string]any{
+			"query": map[string]any{
+				"bool": map[string]any{
+					"must":   []any{map[string]any{"match": map[string]any{"memory_text": query}}},
+					"filter": []any{map[string]any{"term": map[string]any{"employee_id": employeeID}}},
+				},
+			},
+			"size": size,
+		}
+	}
+
+	buf, _ := json.Marshal(body)
+	res, err := es.client.Search(
+		es.client.Search.WithContext(ctx),
+		es.client.Search.WithIndex(IdxEmployeeMemories),
+		es.client.Search.WithBody(bytes.NewReader(buf)),
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("ES search memories failed: %w", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return nil, 0, fmt.Errorf("ES search memories error: %s", res.String())
+	}
+
+	var result struct {
+		Hits struct {
+			Hits []struct {
+				Source EmployeeMemory `json:"_source"`
+				Score  float64        `json:"_score"`
+			} `json:"hits"`
+		} `json:"hits"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return nil, 0, fmt.Errorf("ES decode memories failed: %w", err)
+	}
+
+	var topScore float64
+	memories := make([]EmployeeMemory, 0, len(result.Hits.Hits))
+	for i, hit := range result.Hits.Hits {
+		m := hit.Source
+		m.Score = hit.Score
+		memories = append(memories, m)
+		if i == 0 {
+			topScore = hit.Score
+		}
+	}
+	return memories, topScore, nil
+}
+
+func (es *ESClient) DeleteEmployeeMemory(ctx context.Context, id string) error {
+	res, err := es.client.Delete(IdxEmployeeMemories, id,
+		es.client.Delete.WithContext(ctx),
+	)
+	if err != nil {
+		return fmt.Errorf("ES delete memory failed: %w", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("ES delete memory error: %s", res.String())
+	}
+	return nil
+}
+
+func (es *ESClient) CountEmployeeMemories(ctx context.Context, employeeID string) (int, error) {
+	body := map[string]any{
+		"query": map[string]any{
+			"term": map[string]any{"employee_id": employeeID},
+		},
+	}
+	buf, _ := json.Marshal(body)
+	res, err := es.client.Count(
+		es.client.Count.WithContext(ctx),
+		es.client.Count.WithIndex(IdxEmployeeMemories),
+		es.client.Count.WithBody(bytes.NewReader(buf)),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("ES count memories failed: %w", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return 0, fmt.Errorf("ES count memories error: %s", res.String())
+	}
+
+	var result struct {
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return 0, fmt.Errorf("ES decode count failed: %w", err)
+	}
+	return result.Count, nil
+}
+
+func (es *ESClient) OldestEmployeeMemory(ctx context.Context, employeeID string) (*EmployeeMemory, error) {
+	body := map[string]any{
+		"query": map[string]any{
+			"term": map[string]any{"employee_id": employeeID},
+		},
+		"sort": []any{map[string]any{"created_at": "asc"}},
+		"size": 1,
+	}
+	buf, _ := json.Marshal(body)
+	res, err := es.client.Search(
+		es.client.Search.WithContext(ctx),
+		es.client.Search.WithIndex(IdxEmployeeMemories),
+		es.client.Search.WithBody(bytes.NewReader(buf)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ES oldest memory failed: %w", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return nil, fmt.Errorf("ES oldest memory error: %s", res.String())
+	}
+
+	var result struct {
+		Hits struct {
+			Hits []struct {
+				Source EmployeeMemory `json:"_source"`
+			} `json:"hits"`
+		} `json:"hits"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("ES decode oldest memory failed: %w", err)
+	}
+	if len(result.Hits.Hits) == 0 {
+		return nil, nil
+	}
+	return &result.Hits.Hits[0].Source, nil
+}
+
+func (es *ESClient) IndexEmployeeMemoryDedup(ctx context.Context, employeeID, convID, text string) error {
+	_, topScore, err := es.SearchEmployeeMemories(ctx, employeeID, text, 1)
+	if err == nil && topScore >= dedupScoreThreshold {
+		slog.Debug("memory dedup: skipping duplicate", "employee_id", employeeID, "score", topScore)
+		return nil
+	}
+
+	if err := es.IndexEmployeeMemory(ctx, employeeID, convID, text); err != nil {
+		return err
+	}
+
+	count, cerr := es.CountEmployeeMemories(ctx, employeeID)
+	if cerr == nil && count > maxMemoriesPerEmployee {
+		oldest, oerr := es.OldestEmployeeMemory(ctx, employeeID)
+		if oerr == nil && oldest != nil {
+			es.DeleteEmployeeMemory(ctx, oldest.ID)
+			slog.Info("memory evicted (cap)", "employee_id", employeeID, "evicted_id", oldest.ID)
+		}
+	}
+
+	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"google.golang.org/genai"
@@ -128,6 +129,21 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 		if hasTag(agent.Tags, "manager") || agent.Role == "CEO" {
 			systemPrompt += managerDirectives()
 		}
+
+		if h.esClient != nil {
+			mList, _, _ := h.esClient.SearchEmployeeMemories(r.Context(), agent.ID, req.Message, 3)
+			if len(mList) > 0 {
+				systemPrompt += "\n\n## Retrospective Learnings (your long-term memory):\n"
+				for _, m := range mList {
+					id := m.ID
+					if len(id) > 8 {
+						id = id[:8]
+					}
+					systemPrompt += fmt.Sprintf("- [%s] %s\n", id, m.MemoryText)
+				}
+				systemPrompt += "\nUse forget_memory with the ID in brackets to remove stale entries."
+			}
+		}
 	}
 
 	// Build provider-neutral messages
@@ -209,7 +225,53 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if agent != nil && h.esClient != nil && fullResponse != "" &&
+		len(req.Message)+len(fullResponse) > 100 {
+		go h.absorbMemory(context.Background(), agent.ID, req.Message, fullResponse, req.ConversationID)
+	}
+
 	doneData, _ := json.Marshal(map[string]bool{"done": true})
 	fmt.Fprintf(w, "data: %s\n\n", doneData)
 	flusher.Flush()
+}
+
+func (h *APIHandler) absorbMemory(ctx context.Context, employeeID, input, response, sourceID string) {
+	modelID, _ := h.config.GoogleCloud.VertexAI.DefaultLLM()
+	if modelID == "" {
+		return
+	}
+	provider := h.providers.ResolveProvider(modelID)
+	if provider == nil {
+		return
+	}
+
+	prompt := fmt.Sprintf(`You extract concise facts from conversations.
+
+Review this exchange:
+User: %s
+Assistant: %s
+
+If a new technical decision, convention, constraint, or user preference was established, output it as a single concise sentence.
+Examples:
+- "We use pgx/v5 for PostgreSQL transactions in this project."
+- "The user prefers CamelCase for Go struct field names."
+
+If nothing new was decided, output exactly: NONE`, input, response)
+
+	req := &LLMRequest{
+		Model:    modelID,
+		Messages: []LLMMessage{{Role: "user", Text: prompt}},
+		OnText:   func(string) {},
+	}
+
+	result, err := provider.ChatStream(ctx, req)
+	if err != nil || result == "" || strings.Contains(strings.ToUpper(result), "NONE") {
+		return
+	}
+
+	memoryText := strings.TrimSpace(result)
+	if memoryText != "" {
+		h.esClient.IndexEmployeeMemoryDedup(ctx, employeeID, sourceID, memoryText)
+		slog.Info("memory absorbed", "employee_id", employeeID, "memory", memoryText)
+	}
 }

@@ -116,10 +116,41 @@ var listTeamToolDef = ToolDef{
 	},
 }
 
+var storeMemoryToolDef = ToolDef{
+	Name:        "store_memory",
+	Description: "Record a critical fact, decision, or preference into your long-term memory for future conversations.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"memory_text": map[string]any{
+				"type":        "string",
+				"description": "A concise, single-sentence fact (e.g. 'We use pgx/v5 for PostgreSQL in this project').",
+			},
+		},
+		"required": []string{"memory_text"},
+	},
+}
+
+var forgetMemoryToolDef = ToolDef{
+	Name:        "forget_memory",
+	Description: "Remove an outdated or incorrect memory from your long-term memory.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"memory_id": map[string]any{
+				"type":        "string",
+				"description": "The ID of the memory to forget (shown in your Retrospective Learnings).",
+			},
+		},
+		"required": []string{"memory_id"},
+	},
+}
+
 func buildAgentTools(agent *Employee) []ToolDef {
 	var tools []ToolDef
 
 	tools = append(tools, submitTaskResultToolDef, listTeamToolDef)
+	tools = append(tools, storeMemoryToolDef, forgetMemoryToolDef)
 
 	if agent.Role == "CEO" {
 		tools = append(tools, delegateTaskToolDef, reviewTaskToolDef)

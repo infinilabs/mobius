@@ -20,6 +20,7 @@ export interface VertexModel {
   model_id: string;
   location: string;
   type: 'llm' | 'image' | 'video';
+  default?: boolean;
 }
 
 export interface VertexAIConfig {
@@ -164,6 +165,15 @@ export interface Employee {
   tags: string[];
   manager_id?: string | null;
   reports: EmployeeBrief[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EmployeeMemory {
+  id: string;
+  employee_id: string;
+  conversation_id: string;
+  memory_text: string;
   created_at: string;
   updated_at: string;
 }

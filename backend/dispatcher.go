@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 )
@@ -13,13 +14,14 @@ type TaskDispatcher struct {
 	pgClient       *PGClient
 	esClient       *ESClient
 	providers      *ProviderRegistry
+	config         *Config
 	maxConcurrency int
 	staleTimeout   time.Duration
 	sem            chan struct{}
 	wg             sync.WaitGroup
 }
 
-func NewTaskDispatcher(pg *PGClient, es *ESClient, pr *ProviderRegistry, maxConcurrency int) *TaskDispatcher {
+func NewTaskDispatcher(pg *PGClient, es *ESClient, pr *ProviderRegistry, maxConcurrency int, cfg *Config) *TaskDispatcher {
 	if maxConcurrency <= 0 {
 		maxConcurrency = 5
 	}
@@ -27,6 +29,7 @@ func NewTaskDispatcher(pg *PGClient, es *ESClient, pr *ProviderRegistry, maxConc
 		pgClient:       pg,
 		esClient:       es,
 		providers:      pr,
+		config:         cfg,
 		maxConcurrency: maxConcurrency,
 		staleTimeout:   5 * time.Minute,
 		sem:            make(chan struct{}, maxConcurrency),
@@ -224,6 +227,20 @@ func (d *TaskDispatcher) executeAgentTask(ctx context.Context, t Task) {
 		systemPrompt += managerDirectives()
 	}
 
+	if d.esClient != nil {
+		mList, _, _ := d.esClient.SearchEmployeeMemories(ctx, assignee.ID, t.Body, 3)
+		if len(mList) > 0 {
+			systemPrompt += "\n\n## Retrospective Learnings (your long-term memory):\n"
+			for _, m := range mList {
+				id := m.ID
+				if len(id) > 8 {
+					id = id[:8]
+				}
+				systemPrompt += fmt.Sprintf("- [%s] %s\n", id, m.MemoryText)
+			}
+		}
+	}
+
 	var messages []LLMMessage
 	messages = append(messages, LLMMessage{Role: "user", Text: systemPrompt})
 	messages = append(messages, LLMMessage{Role: "model", Text: fmt.Sprintf("I'm %s, %s. Ready.", assignee.Name, assignee.Title)})
@@ -254,10 +271,14 @@ func (d *TaskDispatcher) executeAgentTask(ctx context.Context, t Task) {
 		},
 	}
 
-	_, err = provider.ChatStream(ctx, llmReq)
+	fullResponse, err := provider.ChatStream(ctx, llmReq)
 	if err != nil {
 		d.failTask(ctx, t.ID, "LLM execution failed: "+err.Error())
 		return
+	}
+
+	if d.esClient != nil && fullResponse != "" && len(t.Body)+len(fullResponse) > 100 {
+		go d.absorbMemory(context.Background(), t.Assignee.ID, t.Body, fullResponse, t.ID)
 	}
 
 	updated, err := d.pgClient.GetTask(ctx, t.ID)
@@ -289,6 +310,24 @@ func (d *TaskDispatcher) dispatcherToolCall(ctx context.Context, call ToolCall, 
 			members = []map[string]any{}
 		}
 		return map[string]any{"team": members, "count": len(members)}
+	case "store_memory":
+		text, _ := call.Args["memory_text"].(string)
+		if text == "" || d.esClient == nil {
+			return map[string]any{"error": "memory_text is required"}
+		}
+		if err := d.esClient.IndexEmployeeMemoryDedup(ctx, agent.ID, taskID, text); err != nil {
+			return map[string]any{"error": "failed to store memory: " + err.Error()}
+		}
+		return map[string]any{"status": "remembered", "memory_text": text}
+	case "forget_memory":
+		memoryID, _ := call.Args["memory_id"].(string)
+		if memoryID == "" || d.esClient == nil {
+			return map[string]any{"error": "memory_id is required"}
+		}
+		if err := d.esClient.DeleteEmployeeMemory(ctx, memoryID); err != nil {
+			return map[string]any{"error": "failed to forget: " + err.Error()}
+		}
+		return map[string]any{"status": "forgotten", "memory_id": memoryID}
 	default:
 		return map[string]any{"error": "unknown tool: " + call.Name}
 	}
@@ -420,6 +459,50 @@ func (d *TaskDispatcher) execReviewFromDispatcher(ctx context.Context, args map[
 		return map[string]any{"status": "rejected", "task_id": taskID, "feedback": feedback}
 	default:
 		return map[string]any{"error": "action must be APPROVE or REJECT"}
+	}
+}
+
+func (d *TaskDispatcher) absorbMemory(ctx context.Context, employeeID, input, response, sourceID string) {
+	if d.config == nil {
+		return
+	}
+	modelID, _ := d.config.GoogleCloud.VertexAI.DefaultLLM()
+	if modelID == "" {
+		return
+	}
+	provider := d.providers.ResolveProvider(modelID)
+	if provider == nil {
+		return
+	}
+
+	prompt := fmt.Sprintf(`You extract concise facts from conversations.
+
+Review this exchange:
+User: %s
+Assistant: %s
+
+If a new technical decision, convention, constraint, or user preference was established, output it as a single concise sentence.
+Examples:
+- "We use pgx/v5 for PostgreSQL transactions in this project."
+- "The user prefers CamelCase for Go struct field names."
+
+If nothing new was decided, output exactly: NONE`, input, response)
+
+	req := &LLMRequest{
+		Model:    modelID,
+		Messages: []LLMMessage{{Role: "user", Text: prompt}},
+		OnText:   func(string) {},
+	}
+
+	result, err := provider.ChatStream(ctx, req)
+	if err != nil || result == "" || strings.Contains(strings.ToUpper(result), "NONE") {
+		return
+	}
+
+	memoryText := strings.TrimSpace(result)
+	if memoryText != "" {
+		d.esClient.IndexEmployeeMemoryDedup(ctx, employeeID, sourceID, memoryText)
+		slog.Info("memory absorbed", "employee_id", employeeID, "memory", memoryText)
 	}
 }
 

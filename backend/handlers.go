@@ -325,3 +325,73 @@ func (h *APIHandler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, ref)
 }
 
+// Employee Memory handlers
+
+func (h *APIHandler) ListEmployeeMemories(w http.ResponseWriter, r *http.Request) {
+	if h.esClient == nil {
+		writeError(w, "Elasticsearch not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	empID := r.PathValue("id")
+	query := r.URL.Query().Get("q")
+
+	size := 100
+	if query != "" {
+		size = 20
+	}
+
+	memories, _, err := h.esClient.SearchEmployeeMemories(r.Context(), empID, query, size)
+	if err != nil {
+		writeError(w, "failed to search memories: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, memories)
+}
+
+func (h *APIHandler) AddEmployeeMemory(w http.ResponseWriter, r *http.Request) {
+	if h.esClient == nil {
+		writeError(w, "Elasticsearch not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	empID := r.PathValue("id")
+	var body struct {
+		MemoryText     string `json:"memory_text"`
+		ConversationID string `json:"conversation_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if body.MemoryText == "" {
+		writeError(w, "memory_text is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.esClient.IndexEmployeeMemoryDedup(r.Context(), empID, body.ConversationID, body.MemoryText); err != nil {
+		writeError(w, "failed to store memory: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("memory added via API", "employee_id", empID)
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, map[string]string{"status": "remembered", "memory_text": body.MemoryText})
+}
+
+func (h *APIHandler) DeleteEmployeeMemory(w http.ResponseWriter, r *http.Request) {
+	if h.esClient == nil {
+		writeError(w, "Elasticsearch not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	memoryID := r.PathValue("memoryId")
+	if err := h.esClient.DeleteEmployeeMemory(r.Context(), memoryID); err != nil {
+		writeError(w, "failed to delete memory: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("memory deleted via API", "memory_id", memoryID)
+	writeJSON(w, map[string]string{"status": "forgotten"})
+}
+

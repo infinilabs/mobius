@@ -25,9 +25,41 @@ func (h *APIHandler) executeToolCall(
 		return h.execReviewTask(ctx, call.Args, agent)
 	case "list_team":
 		return h.execListTeam(ctx, agent)
+	case "store_memory":
+		return h.execStoreMemory(ctx, call.Args, agent, conversationID)
+	case "forget_memory":
+		return h.execForgetMemory(ctx, call.Args)
 	default:
 		return map[string]any{"error": "unknown tool: " + call.Name}
 	}
+}
+
+func (h *APIHandler) execStoreMemory(ctx context.Context, args map[string]any, agent *Employee, convID string) map[string]any {
+	if h.esClient == nil {
+		return map[string]any{"error": "memory storage not available"}
+	}
+	text, _ := args["memory_text"].(string)
+	if text == "" {
+		return map[string]any{"error": "memory_text is required"}
+	}
+	if err := h.esClient.IndexEmployeeMemoryDedup(ctx, agent.ID, convID, text); err != nil {
+		return map[string]any{"error": "failed to store memory: " + err.Error()}
+	}
+	return map[string]any{"status": "remembered", "memory_text": text}
+}
+
+func (h *APIHandler) execForgetMemory(ctx context.Context, args map[string]any) map[string]any {
+	if h.esClient == nil {
+		return map[string]any{"error": "memory storage not available"}
+	}
+	memoryID, _ := args["memory_id"].(string)
+	if memoryID == "" {
+		return map[string]any{"error": "memory_id is required"}
+	}
+	if err := h.esClient.DeleteEmployeeMemory(ctx, memoryID); err != nil {
+		return map[string]any{"error": "failed to forget: " + err.Error()}
+	}
+	return map[string]any{"status": "forgotten", "memory_id": memoryID}
 }
 
 func (h *APIHandler) execDelegateTask(ctx context.Context, args map[string]any, creator *Employee, conversationID string) map[string]any {

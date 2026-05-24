@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { SettingsData, Conversation, ConversationSummary, FileRef, Prompt, VertexModel, Employee, Skill, Task, TaskComment } from './types';
+import type { SettingsData, Conversation, ConversationSummary, FileRef, Prompt, VertexModel, Employee, EmployeeMemory, Skill, Task, TaskComment } from './types';
 import { log } from './logger';
 
 export async function fetchConfig(): Promise<{ project_id: string }> {
@@ -170,6 +170,21 @@ export async function unassignSkillFromEmployee(employeeId: string, skillId: str
 
 export async function resetEmployeeSkills(employeeId: string): Promise<void> {
   await axios.post(`/api/employees/${employeeId}/skills/reset`);
+}
+
+// Employee Memories
+export async function listEmployeeMemories(employeeId: string, query?: string): Promise<EmployeeMemory[]> {
+  const params = query ? { q: query } : {};
+  const { data } = await axios.get(`/api/employees/${employeeId}/memories`, { params });
+  return data;
+}
+
+export async function addEmployeeMemory(employeeId: string, memoryText: string, conversationId?: string): Promise<void> {
+  await axios.post(`/api/employees/${employeeId}/memories`, { memory_text: memoryText, conversation_id: conversationId || '' });
+}
+
+export async function deleteEmployeeMemory(employeeId: string, memoryId: string): Promise<void> {
+  await axios.delete(`/api/employees/${employeeId}/memories/${memoryId}`);
 }
 
 // Employees

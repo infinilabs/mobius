@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Users, Plus, Trash2, X, Pencil, ChevronDown, ChevronRight,
-  Brain, Wrench, UserCog, Tag, Filter, RotateCcw,
+  Brain, Wrench, UserCog, Tag, Filter, RotateCcw, Database, Search,
 } from 'lucide-react';
-import { listEmployees, createEmployee, updateEmployee, deleteEmployee, setEmployeeManager, listModels, listEmployeeSkills, resetEmployeeSkills } from '../api';
-import type { Employee, EmployeeModel, VertexModel, Skill } from '../types';
+import { listEmployees, createEmployee, updateEmployee, deleteEmployee, setEmployeeManager, listModels, listEmployeeSkills, resetEmployeeSkills, listEmployeeMemories, addEmployeeMemory, deleteEmployeeMemory } from '../api';
+import type { Employee, EmployeeModel, EmployeeMemory, VertexModel, Skill } from '../types';
 
 const ROLE_COLORS: Record<string, string> = {
   CEO: '#38bdf8', PM: '#c084fc', Engineer: '#4ade80',
@@ -269,10 +269,31 @@ function DetailPanel({ employee, employees, onEdit, onDelete, onReassign, onClos
   const color = ROLE_COLORS[employee.role] || ROLE_COLORS.Custom;
   const [showReassign, setShowReassign] = useState(false);
   const [assignedSkills, setAssignedSkills] = useState<Skill[]>([]);
+  const [memories, setMemories] = useState<EmployeeMemory[]>([]);
+  const [memorySearch, setMemorySearch] = useState('');
+  const [newMemoryText, setNewMemoryText] = useState('');
 
   useEffect(() => {
     listEmployeeSkills(employee.id).then(setAssignedSkills).catch(() => setAssignedSkills([]));
+    listEmployeeMemories(employee.id).then(setMemories).catch(() => setMemories([]));
   }, [employee.id]);
+
+  const searchMemories = (q: string) => {
+    setMemorySearch(q);
+    listEmployeeMemories(employee.id, q || undefined).then(setMemories).catch(() => setMemories([]));
+  };
+
+  const handleAddMemory = async () => {
+    if (!newMemoryText.trim()) return;
+    await addEmployeeMemory(employee.id, newMemoryText.trim());
+    setNewMemoryText('');
+    listEmployeeMemories(employee.id, memorySearch || undefined).then(setMemories).catch(() => setMemories([]));
+  };
+
+  const handleDeleteMemory = async (memoryId: string) => {
+    await deleteEmployeeMemory(employee.id, memoryId);
+    setMemories(prev => prev.filter(m => m.id !== memoryId));
+  };
 
   return (
     <div className="w-[340px] shrink-0 rounded-xl border border-zinc-800/40 overflow-hidden" style={{ background: '#111114' }}>
@@ -361,6 +382,63 @@ function DetailPanel({ employee, employees, onEdit, onDelete, onReassign, onClos
             <p className="text-[10px] text-zinc-600">No skills assigned</p>
           )}
           <p className="text-[9px] text-zinc-700 mt-2">Manage assignments in Skills page</p>
+        </div>
+
+        {/* Memory */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center gap-1.5">
+              <Database size={11} className="text-zinc-600" />
+              <p className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wider">Memory ({memories.length})</p>
+            </div>
+          </div>
+
+          <div className="relative mb-2">
+            <Search size={10} className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-600" />
+            <input
+              type="text"
+              value={memorySearch}
+              onChange={e => searchMemories(e.target.value)}
+              placeholder="Search memories..."
+              className="w-full text-[10px] text-zinc-300 rounded-lg pl-6 pr-2 py-1.5 outline-none border border-zinc-800/50 focus:border-cyan-500/30"
+              style={{ background: '#09090b' }}
+            />
+          </div>
+
+          {memories.length > 0 ? (
+            <div className="space-y-1 max-h-[150px] overflow-y-auto">
+              {memories.map(m => (
+                <div key={m.id} className="flex items-start justify-between gap-1.5 px-2.5 py-1.5 rounded-lg border border-zinc-800/30" style={{ background: '#09090b' }}>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[10px] text-zinc-300 leading-relaxed">{m.memory_text}</p>
+                    <p className="text-[8px] text-zinc-700 mt-0.5 font-mono">{m.id.slice(0, 8)}</p>
+                  </div>
+                  <button onClick={() => handleDeleteMemory(m.id)}
+                    className="shrink-0 p-0.5 text-zinc-700 hover:text-red-400 cursor-pointer transition-colors">
+                    <Trash2 size={9} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[10px] text-zinc-600">{memorySearch ? 'No matching memories' : 'No memories yet'}</p>
+          )}
+
+          <div className="flex gap-1.5 mt-2">
+            <input
+              type="text"
+              value={newMemoryText}
+              onChange={e => setNewMemoryText(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleAddMemory()}
+              placeholder="Add a memory..."
+              className="flex-1 text-[10px] text-zinc-300 rounded-lg px-2.5 py-1.5 outline-none border border-zinc-800/50 focus:border-cyan-500/30"
+              style={{ background: '#09090b' }}
+            />
+            <button onClick={handleAddMemory}
+              className="px-2 py-1.5 text-[9px] text-cyan-400 border border-cyan-500/30 rounded-lg hover:bg-cyan-500/10 cursor-pointer transition-colors">
+              Add
+            </button>
+          </div>
         </div>
 
         {employee.tags.length > 0 && (
