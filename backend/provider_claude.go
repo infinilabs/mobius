@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -19,6 +20,7 @@ type ClaudeProvider struct {
 	projectID   string
 	location    string
 	tokenSource oauth2.TokenSource
+	httpClient  *http.Client
 }
 
 func NewClaudeProvider(projectID, location string) *ClaudeProvider {
@@ -30,7 +32,18 @@ func NewClaudeProvider(projectID, location string) *ClaudeProvider {
 	} else {
 		ts = creds.TokenSource
 	}
-	return &ClaudeProvider{projectID: projectID, location: location, tokenSource: ts}
+	return &ClaudeProvider{
+		projectID:   projectID,
+		location:    location,
+		tokenSource: ts,
+		httpClient: &http.Client{
+			Timeout: 120 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:    90 * time.Second,
+			},
+		},
+	}
 }
 
 func (c *ClaudeProvider) endpoint(model string) string {
@@ -81,8 +94,9 @@ func (c *ClaudeProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 		})
 	}
 
+	const maxToolRounds = 10
 	var fullText string
-	for i := 0; i < 5; i++ {
+	for i := 0; i < maxToolRounds; i++ {
 		body := map[string]any{
 			"anthropic_version": "vertex-2023-10-16",
 			"max_tokens":       4096,
@@ -103,6 +117,11 @@ func (c *ClaudeProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 		fullText += text
 
 		if len(toolCalls) == 0 {
+			break
+		}
+
+		if i == maxToolRounds-1 {
+			slog.Warn("claude: tool call loop limit reached", "model", req.Model, "rounds", maxToolRounds)
 			break
 		}
 
@@ -166,7 +185,7 @@ func (c *ClaudeProvider) doStream(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return "", nil, fmt.Errorf("http: %w", err)
 	}

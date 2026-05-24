@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"time"
 )
@@ -182,7 +181,10 @@ func (d *TaskDispatcher) reclaimStaleTasks(ctx context.Context) {
 		d.pgClient.AddTaskComment(ctx, id, "", "System: Task reclaimed — execution stalled or server crashed.")
 
 		var failures int
-		tx.QueryRow(ctx, "SELECT failure_count FROM tasks WHERE id = $1", id).Scan(&failures)
+		if err := tx.QueryRow(ctx, "SELECT failure_count FROM tasks WHERE id = $1", id).Scan(&failures); err != nil {
+			slog.Error("reclaimer: failed to read failure_count", "task_id", id, "error", err)
+			continue
+		}
 		failures++
 
 		status := "ready"
@@ -193,12 +195,16 @@ func (d *TaskDispatcher) reclaimStaleTasks(ctx context.Context) {
 		backoffSecs := 15 * (1 << uint(failures))
 		retryAfter := time.Now().Add(time.Duration(backoffSecs) * time.Second)
 
-		tx.Exec(ctx,
+		if _, err := tx.Exec(ctx,
 			"UPDATE tasks SET status = $1, failure_count = $2, retry_after = $3, updated_at = NOW() WHERE id = $4",
-			status, failures, retryAfter, id)
+			status, failures, retryAfter, id); err != nil {
+			slog.Error("reclaimer: failed to update task", "task_id", id, "error", err)
+		}
 	}
 
-	tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		slog.Error("reclaimer: commit failed", "error", err)
+	}
 }
 
 func (d *TaskDispatcher) sweepScheduledTasks(ctx context.Context) {
@@ -272,20 +278,29 @@ func (d *TaskDispatcher) sweepScheduledTasks(ctx context.Context) {
 			continue
 		}
 
-		var repeatClause string
-		if t.RepeatTimes != nil {
+		isOneShot := ScheduleKind(t.CronExpr) == "once"
+
+		if isOneShot {
+			_, err = tx.Exec(ctx,
+				"UPDATE tasks SET is_scheduled = FALSE, next_run_at = NULL, updated_at = NOW() WHERE id = $1",
+				t.ID)
+		} else if t.RepeatTimes != nil {
 			rem := *t.RepeatTimes - 1
 			if rem <= 0 {
-				repeatClause = ", is_scheduled = FALSE, repeat_times = 0, next_run_at = NULL"
+				_, err = tx.Exec(ctx,
+					"UPDATE tasks SET is_scheduled = FALSE, repeat_times = 0, next_run_at = NULL, updated_at = NOW() WHERE id = $1",
+					t.ID)
 				d.pgClient.AddTaskComment(ctx, t.ID, "", "System: Repeat count exhausted. Schedule deactivated.")
 			} else {
-				repeatClause = fmt.Sprintf(", repeat_times = %d", rem)
+				_, err = tx.Exec(ctx,
+					"UPDATE tasks SET next_run_at = $1, repeat_times = $2, updated_at = NOW() WHERE id = $3",
+					nextRun, rem, t.ID)
 			}
+		} else {
+			_, err = tx.Exec(ctx,
+				"UPDATE tasks SET next_run_at = $1, updated_at = NOW() WHERE id = $2",
+				nextRun, t.ID)
 		}
-
-		_, err = tx.Exec(ctx, fmt.Sprintf(
-			"UPDATE tasks SET next_run_at = $1%s, updated_at = NOW() WHERE id = $2",
-			repeatClause), nextRun, t.ID)
 		if err != nil {
 			slog.Error("scheduler: failed to advance next_run_at", "id", t.ID, "error", err)
 			continue
@@ -379,13 +394,7 @@ func (d *TaskDispatcher) executeAgentTask(ctx context.Context, t Task) {
 	messages = append(messages, LLMMessage{Role: "model", Text: fmt.Sprintf("I'm %s, %s. Ready.", assignee.Name, assignee.Title)})
 	messages = append(messages, LLMMessage{Role: "user", Text: fmt.Sprintf("Please complete this task:\n\n%s", t.Body)})
 
-	modelID := "gemini-3.1-pro-preview"
-	for _, m := range assignee.Models {
-		if m.Purpose == "primary_llm" && m.ModelID != "" {
-			modelID = m.ModelID
-			break
-		}
-	}
+	modelID := resolveModelID(d.config, assignee)
 
 	provider := d.providers.ResolveProvider(modelID)
 	if provider == nil {
@@ -411,7 +420,8 @@ func (d *TaskDispatcher) executeAgentTask(ctx context.Context, t Task) {
 	}
 
 	if d.esClient != nil && fullResponse != "" && len(t.Body)+len(fullResponse) > 100 {
-		go d.absorbMemory(context.Background(), t.Assignee.ID, t.Body, fullResponse, t.ID)
+		go absorbMemoryFromExchange(context.Background(), d.config, d.providers,
+			d.esClient, t.Assignee.ID, t.Body, fullResponse, t.ID)
 	}
 
 	updated, err := d.pgClient.GetTask(ctx, t.ID)
@@ -592,50 +602,6 @@ func (d *TaskDispatcher) execReviewFromDispatcher(ctx context.Context, args map[
 		return map[string]any{"status": "rejected", "task_id": taskID, "feedback": feedback}
 	default:
 		return map[string]any{"error": "action must be APPROVE or REJECT"}
-	}
-}
-
-func (d *TaskDispatcher) absorbMemory(ctx context.Context, employeeID, input, response, sourceID string) {
-	if d.config == nil {
-		return
-	}
-	modelID, _ := d.config.GoogleCloud.VertexAI.DefaultLLM()
-	if modelID == "" {
-		return
-	}
-	provider := d.providers.ResolveProvider(modelID)
-	if provider == nil {
-		return
-	}
-
-	prompt := fmt.Sprintf(`You extract concise facts from conversations.
-
-Review this exchange:
-User: %s
-Assistant: %s
-
-If a new technical decision, convention, constraint, or user preference was established, output it as a single concise sentence.
-Examples:
-- "We use pgx/v5 for PostgreSQL transactions in this project."
-- "The user prefers CamelCase for Go struct field names."
-
-If nothing new was decided, output exactly: NONE`, input, response)
-
-	req := &LLMRequest{
-		Model:    modelID,
-		Messages: []LLMMessage{{Role: "user", Text: prompt}},
-		OnText:   func(string) {},
-	}
-
-	result, err := provider.ChatStream(ctx, req)
-	if err != nil || result == "" || strings.Contains(strings.ToUpper(result), "NONE") {
-		return
-	}
-
-	memoryText := strings.TrimSpace(result)
-	if memoryText != "" {
-		d.esClient.IndexEmployeeMemoryDedup(ctx, employeeID, sourceID, memoryText)
-		slog.Info("memory absorbed", "employee_id", employeeID, "memory", memoryText)
 	}
 }
 

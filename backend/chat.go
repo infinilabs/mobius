@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"google.golang.org/genai"
@@ -227,51 +226,11 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 
 	if agent != nil && h.esClient != nil && fullResponse != "" &&
 		len(req.Message)+len(fullResponse) > 100 {
-		go h.absorbMemory(context.Background(), agent.ID, req.Message, fullResponse, req.ConversationID)
+		go absorbMemoryFromExchange(context.Background(), h.config, h.providers,
+			h.esClient, agent.ID, req.Message, fullResponse, req.ConversationID)
 	}
 
 	doneData, _ := json.Marshal(map[string]bool{"done": true})
 	fmt.Fprintf(w, "data: %s\n\n", doneData)
 	flusher.Flush()
-}
-
-func (h *APIHandler) absorbMemory(ctx context.Context, employeeID, input, response, sourceID string) {
-	modelID, _ := h.config.GoogleCloud.VertexAI.DefaultLLM()
-	if modelID == "" {
-		return
-	}
-	provider := h.providers.ResolveProvider(modelID)
-	if provider == nil {
-		return
-	}
-
-	prompt := fmt.Sprintf(`You extract concise facts from conversations.
-
-Review this exchange:
-User: %s
-Assistant: %s
-
-If a new technical decision, convention, constraint, or user preference was established, output it as a single concise sentence.
-Examples:
-- "We use pgx/v5 for PostgreSQL transactions in this project."
-- "The user prefers CamelCase for Go struct field names."
-
-If nothing new was decided, output exactly: NONE`, input, response)
-
-	req := &LLMRequest{
-		Model:    modelID,
-		Messages: []LLMMessage{{Role: "user", Text: prompt}},
-		OnText:   func(string) {},
-	}
-
-	result, err := provider.ChatStream(ctx, req)
-	if err != nil || result == "" || strings.Contains(strings.ToUpper(result), "NONE") {
-		return
-	}
-
-	memoryText := strings.TrimSpace(result)
-	if memoryText != "" {
-		h.esClient.IndexEmployeeMemoryDedup(ctx, employeeID, sourceID, memoryText)
-		slog.Info("memory absorbed", "employee_id", employeeID, "memory", memoryText)
-	}
 }

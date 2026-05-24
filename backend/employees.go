@@ -201,35 +201,50 @@ func (pg *PGClient) GetEmployee(ctx context.Context, id string) (*Employee, erro
 	emp.Tags = []string{}
 	emp.Reports = []EmployeeBrief{}
 
-	modelsMap, _ := pg.batchLoadModels(ctx, []string{id})
-	if m, ok := modelsMap[id]; ok {
-		emp.Models = m
-	}
+	batch := &pgx.Batch{}
+	batch.Queue("SELECT model_id, purpose FROM employee_models WHERE employee_id = $1", id)
+	batch.Queue("SELECT skill, description FROM employee_skills WHERE employee_id = $1", id)
+	batch.Queue("SELECT tag FROM employee_tags WHERE employee_id = $1 ORDER BY tag", id)
+	batch.Queue(`SELECT e.id, e.name, e.title, e.role FROM employees e
+		JOIN employee_reporting r ON r.employee_id = e.id WHERE r.manager_id = $1`, id)
+	br := pg.pool.SendBatch(ctx, batch)
+	defer br.Close()
 
-	skillsMap, _ := pg.batchLoadSkills(ctx, []string{id})
-	if s, ok := skillsMap[id]; ok {
-		emp.Skills = s
+	if modelRows, err := br.Query(); err == nil {
+		for modelRows.Next() {
+			var m EmployeeModel
+			if err := modelRows.Scan(&m.ModelID, &m.Purpose); err == nil {
+				emp.Models = append(emp.Models, m)
+			}
+		}
+		modelRows.Close()
 	}
-
-	tagsMap, _ := pg.batchLoadTags(ctx, []string{id})
-	if t, ok := tagsMap[id]; ok {
-		emp.Tags = t
+	if skillRows, err := br.Query(); err == nil {
+		for skillRows.Next() {
+			var s EmployeeSkill
+			if err := skillRows.Scan(&s.Skill, &s.Description); err == nil {
+				emp.Skills = append(emp.Skills, s)
+			}
+		}
+		skillRows.Close()
 	}
-
-	reportRows, err := pg.pool.Query(ctx, `
-		SELECT e.id, e.name, e.title, e.role
-		FROM employees e
-		JOIN employee_reporting r ON r.employee_id = e.id
-		WHERE r.manager_id = $1
-	`, id)
-	if err == nil {
-		defer reportRows.Close()
+	if tagRows, err := br.Query(); err == nil {
+		for tagRows.Next() {
+			var tag string
+			if err := tagRows.Scan(&tag); err == nil {
+				emp.Tags = append(emp.Tags, tag)
+			}
+		}
+		tagRows.Close()
+	}
+	if reportRows, err := br.Query(); err == nil {
 		for reportRows.Next() {
 			var b EmployeeBrief
 			if err := reportRows.Scan(&b.ID, &b.Name, &b.Title, &b.Role); err == nil {
 				emp.Reports = append(emp.Reports, b)
 			}
 		}
+		reportRows.Close()
 	}
 
 	return &emp, nil
@@ -336,7 +351,7 @@ func (pg *PGClient) DeleteEmployee(ctx context.Context, id string) error {
 	defer tx.Rollback(ctx)
 
 	var managerID *string
-	pg.pool.QueryRow(ctx, "SELECT manager_id FROM employee_reporting WHERE employee_id=$1", id).Scan(&managerID)
+	tx.QueryRow(ctx, "SELECT manager_id FROM employee_reporting WHERE employee_id=$1", id).Scan(&managerID)
 
 	if managerID != nil {
 		tx.Exec(ctx, `

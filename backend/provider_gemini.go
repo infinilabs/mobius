@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"google.golang.org/genai"
 )
@@ -51,8 +52,9 @@ func (g *GeminiProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 		}
 	}
 
+	const maxToolRounds = 10
 	var fullText string
-	for i := 0; i < 5; i++ {
+	for i := 0; i < maxToolRounds; i++ {
 		var calls []*genai.FunctionCall
 		var iterText string
 
@@ -76,6 +78,12 @@ func (g *GeminiProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 		}
 
 		if len(calls) == 0 {
+			fullText += iterText
+			break
+		}
+
+		if i == maxToolRounds-1 {
+			slog.Warn("gemini: tool call loop limit reached", "model", req.Model, "rounds", maxToolRounds)
 			fullText += iterText
 			break
 		}

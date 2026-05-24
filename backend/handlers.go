@@ -159,7 +159,11 @@ func writeJSON(w http.ResponseWriter, data any) {
 }
 
 func writeError(w http.ResponseWriter, msg string, code int) {
-	slog.Error("api error", "status", code, "error", msg)
+	if code >= 500 {
+		slog.Error("api error", "status", code, "error", msg)
+	} else {
+		slog.Warn("api error", "status", code, "error", msg)
+	}
 	http.Error(w, msg, code)
 }
 

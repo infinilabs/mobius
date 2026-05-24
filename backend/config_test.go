@@ -1,0 +1,180 @@
+package main
+
+import (
+	"sync"
+	"testing"
+)
+
+func TestDefaultLLM_FromModelsArray(t *testing.T) {
+	v := VertexAIConfig{
+		Models: []VertexModel{
+			{ID: "m1", ModelID: "gemini-2.5-flash", Location: "us-central1", Type: "llm"},
+			{ID: "m2", ModelID: "gemini-3.1-pro", Location: "us-east4", Type: "llm", Default: true},
+		},
+	}
+	modelID, loc := v.DefaultLLM()
+	if modelID != "gemini-3.1-pro" {
+		t.Errorf("expected gemini-3.1-pro, got %s", modelID)
+	}
+	if loc != "us-east4" {
+		t.Errorf("expected us-east4, got %s", loc)
+	}
+}
+
+func TestDefaultLLM_FallbackToFirst(t *testing.T) {
+	v := VertexAIConfig{
+		Models: []VertexModel{
+			{ID: "m1", ModelID: "gemini-2.5-flash", Location: "us-central1", Type: "llm"},
+			{ID: "m2", ModelID: "imagen-4.0", Location: "us-central1", Type: "image"},
+		},
+	}
+	modelID, _ := v.DefaultLLM()
+	if modelID != "gemini-2.5-flash" {
+		t.Errorf("expected first LLM model gemini-2.5-flash, got %s", modelID)
+	}
+}
+
+func TestDefaultLLM_FallbackToLegacy(t *testing.T) {
+	v := VertexAIConfig{
+		LLMModelID:  "legacy-model",
+		LLMLocation: "europe-west1",
+	}
+	modelID, loc := v.DefaultLLM()
+	if modelID != "legacy-model" {
+		t.Errorf("expected legacy-model, got %s", modelID)
+	}
+	if loc != "europe-west1" {
+		t.Errorf("expected europe-west1, got %s", loc)
+	}
+}
+
+func TestDefaultLLM_Empty(t *testing.T) {
+	v := VertexAIConfig{}
+	modelID, loc := v.DefaultLLM()
+	if modelID != "" {
+		t.Errorf("expected empty model ID, got %s", modelID)
+	}
+	if loc != "" {
+		t.Errorf("expected empty location, got %s", loc)
+	}
+}
+
+func TestDefaultModel_FiltersByType(t *testing.T) {
+	v := VertexAIConfig{
+		Models: []VertexModel{
+			{ID: "m1", ModelID: "gemini-2.5-flash", Type: "llm"},
+			{ID: "m2", ModelID: "imagen-4.0", Type: "image", Default: true},
+			{ID: "m3", ModelID: "veo-3", Type: "video"},
+		},
+	}
+	imgModel, _ := v.DefaultModel("image")
+	if imgModel != "imagen-4.0" {
+		t.Errorf("expected imagen-4.0 for image type, got %s", imgModel)
+	}
+
+	vidModel, _ := v.DefaultModel("video")
+	if vidModel != "veo-3" {
+		t.Errorf("expected veo-3 for video type, got %s", vidModel)
+	}
+
+	missing, _ := v.DefaultModel("audio")
+	if missing != "" {
+		t.Errorf("expected empty for missing type, got %s", missing)
+	}
+}
+
+func TestGetModels_LegacyFields(t *testing.T) {
+	v := VertexAIConfig{
+		LLMModelID:   "gemini-pro",
+		LLMLocation:  "us-central1",
+		ImgModelID:   "imagen-3",
+		ImgLocation:  "us-east4",
+		VideoModelID: "veo-2",
+		VideoLocation: "us-central1",
+	}
+	models := v.GetModels()
+	if len(models) != 3 {
+		t.Fatalf("expected 3 models from legacy fields, got %d", len(models))
+	}
+
+	types := map[string]bool{}
+	for _, m := range models {
+		types[m.Type] = true
+	}
+	for _, expected := range []string{"llm", "image", "video"} {
+		if !types[expected] {
+			t.Errorf("missing model type %s", expected)
+		}
+	}
+}
+
+func TestGetModels_ModelsArray(t *testing.T) {
+	v := VertexAIConfig{
+		LLMModelID: "should-be-ignored",
+		Models: []VertexModel{
+			{ID: "m1", ModelID: "gemini-2.5-flash", Type: "llm"},
+		},
+	}
+	models := v.GetModels()
+	if len(models) != 1 {
+		t.Fatalf("expected 1 model from array, got %d", len(models))
+	}
+	if models[0].ModelID != "gemini-2.5-flash" {
+		t.Errorf("expected gemini-2.5-flash, got %s", models[0].ModelID)
+	}
+}
+
+func TestGetSettings_ThreadSafe(t *testing.T) {
+	cfg := &Config{}
+	cfg.GoogleCloud.ProjectID = "initial"
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			cfg.ApplySettings(SettingsData{
+				GoogleCloud: GoogleCloudConfig{ProjectID: "updated"},
+			})
+		}()
+		go func() {
+			defer wg.Done()
+			s := cfg.GetSettings()
+			_ = s.GoogleCloud.ProjectID
+		}()
+	}
+	wg.Wait()
+}
+
+func TestResolveModelID_SettingsDefault(t *testing.T) {
+	cfg := &Config{}
+	cfg.GoogleCloud.VertexAI.Models = []VertexModel{
+		{ID: "m1", ModelID: "gemini-2.5-flash", Location: "us-central1", Type: "llm", Default: true},
+	}
+	modelID := resolveModelID(cfg, nil)
+	if modelID != "gemini-2.5-flash" {
+		t.Errorf("expected settings default gemini-2.5-flash, got %s", modelID)
+	}
+}
+
+func TestResolveModelID_EmployeeOverride(t *testing.T) {
+	cfg := &Config{}
+	cfg.GoogleCloud.VertexAI.Models = []VertexModel{
+		{ID: "m1", ModelID: "gemini-2.5-flash", Location: "us-central1", Type: "llm", Default: true},
+	}
+	emp := &Employee{
+		Models: []EmployeeModel{{ModelID: "claude-sonnet-4", Purpose: "primary_llm"}},
+	}
+	modelID := resolveModelID(cfg, emp)
+	if modelID != "claude-sonnet-4" {
+		t.Errorf("expected employee override claude-sonnet-4, got %s", modelID)
+	}
+}
+
+func TestResolveModelID_FallbackToHardcoded(t *testing.T) {
+	cfg := &Config{}
+	modelID := resolveModelID(cfg, nil)
+	if modelID != defaultFallbackModel {
+		t.Errorf("expected fallback %s, got %s", defaultFallbackModel, modelID)
+	}
+}
