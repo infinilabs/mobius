@@ -62,9 +62,19 @@ func NewESClient(url string) (*ESClient, error) {
 	esClient := &ESClient{client: client}
 
 	ctx := context.Background()
-	schemaFile := "schemas/elasticsearch/002_employee_memories.json"
-	if err := esClient.CreateIndexIfNotExist(ctx, IdxEmployeeMemories, schemaFile); err != nil {
-		slog.Error("failed to bootstrap employee memories index", "error", err)
+	esIndices := []struct {
+		name, schema string
+	}{
+		{IdxConversations, "schemas/elasticsearch/mobius_conversations.json"},
+		{IdxMessages, "schemas/elasticsearch/mobius_messages.json"},
+		{IdxEmployeeMemories, "schemas/elasticsearch/002_employee_memories.json"},
+		{IdxPrompts, "schemas/elasticsearch/mobius_prompts.json"},
+		{IdxSkills, "schemas/elasticsearch/mobius_skills.json"},
+	}
+	for _, idx := range esIndices {
+		if err := esClient.CreateIndexIfNotExist(ctx, idx.name, idx.schema); err != nil {
+			slog.Error("failed to bootstrap ES index", "index", idx.name, "error", err)
+		}
 	}
 
 	slog.Info("Elasticsearch connected", "url", url)
