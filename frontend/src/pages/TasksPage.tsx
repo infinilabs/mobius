@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, X, MessageSquare, ChevronRight, AlertCircle, CheckCircle2, Clock, ArrowRight, Trash2 } from 'lucide-react';
+import { Plus, X, MessageSquare, ChevronRight, AlertCircle, CheckCircle2, Clock, ArrowRight, Trash2, Timer, Pause, Play } from 'lucide-react';
 import {
   listTasks, createTask, getTask, updateTask, deleteTask, updateTaskStatus,
-  listTaskComments, addTaskComment, listEmployees,
+  listTaskComments, addTaskComment, listEmployees, listTaskRuns, updateTaskSchedule,
 } from '../api';
 import type { Task, TaskComment, Employee } from '../types';
 
 const STATUS_COLUMNS: { key: Task['status']; label: string; color: string }[] = [
+  { key: 'scheduled',    label: 'Scheduled',     color: 'text-amber-400' },
   { key: 'todo',         label: 'Todo',          color: 'text-zinc-400' },
   { key: 'ready',        label: 'Ready',         color: 'text-cyan-400' },
   { key: 'in_progress',  label: 'In Progress',   color: 'text-blue-400' },
@@ -59,7 +60,7 @@ export default function TasksPage() {
   }, [refresh]);
 
   const grouped: Record<Task['status'], Task[]> = {
-    todo: [], ready: [], in_progress: [], needs_review: [], done: [], blocked: [],
+    scheduled: [], todo: [], ready: [], in_progress: [], needs_review: [], done: [], blocked: [],
   };
   for (const t of tasks) {
     grouped[t.status]?.push(t);
@@ -90,7 +91,7 @@ export default function TasksPage() {
         <div className="flex gap-4 h-full min-w-max">
           {STATUS_COLUMNS.map(col => {
             const colTasks = grouped[col.key];
-            if (col.key === 'blocked' && colTasks.length === 0) return null;
+            if ((col.key === 'blocked' || col.key === 'scheduled') && colTasks.length === 0) return null;
             return (
               <div key={col.key} className="w-72 flex flex-col shrink-0">
                 <div className="flex items-center gap-2 mb-3 px-1">
@@ -138,6 +139,7 @@ export default function TasksPage() {
 
 function TaskCard({ task, onClick }: { task: Task; onClick: () => void }) {
   const isReview = task.status === 'needs_review';
+  const isScheduled = task.is_scheduled;
 
   return (
     <button
@@ -145,11 +147,28 @@ function TaskCard({ task, onClick }: { task: Task; onClick: () => void }) {
       className={`w-full text-left p-3 rounded-lg border transition-all cursor-pointer hover:border-zinc-600/60 ${
         isReview
           ? 'border-violet-700/40 shadow-[0_0_8px_rgba(168,85,247,0.15)]'
+          : isScheduled
+          ? 'border-amber-700/40 shadow-[0_0_8px_rgba(217,119,6,0.1)]'
           : 'border-zinc-800/60'
       }`}
       style={{ background: '#111114' }}
     >
-      <p className="text-sm font-medium text-zinc-200 truncate">{task.title}</p>
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-medium text-zinc-200 truncate">{task.title}</p>
+        {isScheduled && <Timer size={14} className="text-amber-400 shrink-0 ml-2" />}
+      </div>
+
+      {isScheduled && task.cron_expr && (
+        <div className="mt-1.5 space-y-0.5">
+          <p className="text-[10px] text-amber-400/80 font-mono">{task.cron_expr}</p>
+          {task.next_run_at && (
+            <p className="text-[10px] text-zinc-500">
+              Next: {new Date(task.next_run_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+            </p>
+          )}
+          {!task.next_run_at && <p className="text-[10px] text-zinc-600 italic">Paused</p>}
+        </div>
+      )}
 
       <div className="flex items-center gap-2 mt-2">
         <span className={`text-[10px] px-1.5 py-0.5 rounded border ${PRIORITY_STYLES[task.priority]}`}>
@@ -164,6 +183,9 @@ function TaskCard({ task, onClick }: { task: Task; onClick: () => void }) {
           <span className="text-[10px] text-violet-400 flex items-center gap-0.5 animate-pulse">
             <Clock size={10} /> Review
           </span>
+        )}
+        {isScheduled && task.repeat_times != null && (
+          <span className="text-[10px] text-zinc-500">{task.repeat_times} left</span>
         )}
       </div>
 
@@ -196,11 +218,15 @@ function CreateTaskModal({ employees, allTasks, onClose, onCreated }: {
   const [assigneeId, setAssigneeId] = useState('');
   const [creatorId, setCreatorId] = useState('');
   const [deps, setDeps] = useState<string[]>([]);
+  const [isScheduled, setIsScheduled] = useState(false);
+  const [cronExpr, setCronExpr] = useState('');
+  const [repeatTimes, setRepeatTimes] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   const handleSubmit = async () => {
     if (!title.trim()) { setError('Title is required'); return; }
+    if (isScheduled && !cronExpr.trim()) { setError('Schedule expression is required'); return; }
     setSaving(true);
     setError('');
     try {
@@ -210,11 +236,17 @@ function CreateTaskModal({ employees, allTasks, onClose, onCreated }: {
         priority,
         assignee_id: assigneeId || undefined,
         creator_id: creatorId || undefined,
-        dependencies: deps.length > 0 ? deps : undefined,
+        dependencies: isScheduled ? undefined : (deps.length > 0 ? deps : undefined),
+        is_scheduled: isScheduled || undefined,
+        cron_expr: isScheduled ? cronExpr.trim() : undefined,
+        repeat_times: isScheduled && repeatTimes ? parseInt(repeatTimes, 10) : undefined,
       });
       onCreated();
-    } catch {
-      setError('Failed to create task');
+    } catch (e: unknown) {
+      const axErr = e as { response?: { data?: { error?: string } | string } };
+      const d = axErr?.response?.data;
+      const msg = typeof d === 'string' ? d : (typeof d === 'object' && d?.error ? d.error : 'Failed to create task');
+      setError(msg);
     } finally {
       setSaving(false);
     }
@@ -296,7 +328,49 @@ function CreateTaskModal({ employees, allTasks, onClose, onCreated }: {
             </select>
           </div>
 
-          {openTasks.length > 0 && (
+          <div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={isScheduled}
+                onChange={e => setIsScheduled(e.target.checked)}
+                className="rounded border-zinc-700 cursor-pointer"
+              />
+              <span className="text-xs text-zinc-400 flex items-center gap-1">
+                <Timer size={12} /> Set Recurring Schedule
+              </span>
+            </label>
+
+            {isScheduled && (
+              <div className="mt-3 space-y-3 pl-6 border-l-2 border-amber-700/30">
+                <div>
+                  <label className="text-xs text-zinc-500 block mb-1">Schedule Expression</label>
+                  <input
+                    value={cronExpr}
+                    onChange={e => setCronExpr(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-zinc-800 bg-zinc-900/50 text-sm text-zinc-200 outline-none focus:border-amber-700/50 font-mono"
+                    placeholder="every 30m  |  0 9 * * 1-5  |  2026-06-01T09:00:00Z"
+                  />
+                  <p className="text-[10px] text-zinc-600 mt-1">
+                    Interval: every 30m, every 2h &middot; Cron: 0 9 * * * &middot; One-shot: ISO timestamp
+                  </p>
+                </div>
+                <div>
+                  <label className="text-xs text-zinc-500 block mb-1">Repeat Count (blank = infinite)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={repeatTimes}
+                    onChange={e => setRepeatTimes(e.target.value)}
+                    className="w-32 px-3 py-2 rounded-lg border border-zinc-800 bg-zinc-900/50 text-sm text-zinc-200 outline-none focus:border-amber-700/50"
+                    placeholder="infinite"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {!isScheduled && openTasks.length > 0 && (
             <div>
               <label className="text-xs text-zinc-500 uppercase tracking-wider block mb-1">Dependencies (blocks until done)</label>
               <div className="space-y-1 max-h-32 overflow-y-auto border border-zinc-800 rounded-lg p-2 bg-zinc-900/30">
@@ -351,6 +425,7 @@ function TaskDetailModal({ taskId, employees, onClose, onChanged }: {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [resultDraft, setResultDraft] = useState('');
+  const [runs, setRuns] = useState<Task[]>([]);
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState('');
   const [editBody, setEditBody] = useState('');
@@ -363,6 +438,9 @@ function TaskDetailModal({ taskId, employees, onClose, onChanged }: {
       setTask(t);
       setComments(c);
       setResultDraft(t.result);
+      if (t.is_scheduled) {
+        listTaskRuns(taskId).then(setRuns).catch(() => setRuns([]));
+      }
     } catch {
       setError('Failed to load task');
     } finally {
@@ -557,6 +635,74 @@ function TaskDetailModal({ taskId, employees, onClose, onChanged }: {
                         </span>
                       ))}
                     </div>
+                  </div>
+                )}
+
+                {/* Schedule info + run history */}
+                {task.is_scheduled && (
+                  <div className="mb-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-0.5">Schedule</p>
+                        <p className="text-xs text-amber-400 font-mono">{task.cron_expr}</p>
+                        {task.next_run_at ? (
+                          <p className="text-[10px] text-zinc-500 mt-0.5">
+                            Next: {new Date(task.next_run_at).toLocaleString()}
+                          </p>
+                        ) : (
+                          <p className="text-[10px] text-zinc-600 italic mt-0.5">Paused</p>
+                        )}
+                        {task.repeat_times != null && (
+                          <p className="text-[10px] text-zinc-500 mt-0.5">{task.repeat_times} runs remaining</p>
+                        )}
+                      </div>
+                      <div className="flex gap-2">
+                        {task.next_run_at ? (
+                          <button
+                            onClick={async () => {
+                              await updateTaskSchedule(taskId, { is_scheduled: false });
+                              await reload();
+                              onChanged();
+                            }}
+                            className="flex items-center gap-1 px-2 py-1 rounded text-[10px] text-amber-400 border border-amber-700/40 hover:bg-amber-900/20 cursor-pointer"
+                          >
+                            <Pause size={10} /> Pause
+                          </button>
+                        ) : (
+                          <button
+                            onClick={async () => {
+                              await updateTaskSchedule(taskId, { is_scheduled: true });
+                              await reload();
+                              onChanged();
+                            }}
+                            className="flex items-center gap-1 px-2 py-1 rounded text-[10px] text-emerald-400 border border-emerald-700/40 hover:bg-emerald-900/20 cursor-pointer"
+                          >
+                            <Play size={10} /> Resume
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {runs.length > 0 && (
+                      <div className="mt-3">
+                        <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-1">
+                          Run History ({runs.length})
+                        </p>
+                        <div className="space-y-1 max-h-40 overflow-y-auto border border-zinc-800/40 rounded-lg p-2 bg-zinc-900/20">
+                          {runs.map(run => {
+                            const sc = STATUS_COLUMNS.find(c => c.key === run.status);
+                            return (
+                              <div key={run.id} className="flex items-center justify-between text-[10px] py-1">
+                                <span className="text-zinc-400 truncate flex-1">{run.title}</span>
+                                <span className={`ml-2 shrink-0 ${sc?.color ?? 'text-zinc-500'}`}>
+                                  {sc?.label ?? run.status}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 

@@ -39,8 +39,10 @@ func NewTaskDispatcher(pg *PGClient, es *ESClient, pr *ProviderRegistry, maxConc
 func (d *TaskDispatcher) Start(ctx context.Context) {
 	dispatchTicker := time.NewTicker(15 * time.Second)
 	reclaimTicker := time.NewTicker(1 * time.Minute)
+	scheduleTicker := time.NewTicker(60 * time.Second)
 	defer dispatchTicker.Stop()
 	defer reclaimTicker.Stop()
+	defer scheduleTicker.Stop()
 
 	slog.Info("task dispatcher started", "max_concurrency", d.maxConcurrency)
 	for {
@@ -49,6 +51,8 @@ func (d *TaskDispatcher) Start(ctx context.Context) {
 			d.sweepAndDispatch(ctx)
 		case <-reclaimTicker.C:
 			d.reclaimStaleTasks(ctx)
+		case <-scheduleTicker.C:
+			d.sweepScheduledTasks(ctx)
 		case <-ctx.Done():
 			slog.Info("task dispatcher stopping, draining running tasks...")
 			d.wg.Wait()
@@ -195,6 +199,123 @@ func (d *TaskDispatcher) reclaimStaleTasks(ctx context.Context) {
 	}
 
 	tx.Commit(ctx)
+}
+
+func (d *TaskDispatcher) sweepScheduledTasks(ctx context.Context) {
+	tx, err := d.pgClient.pool.Begin(ctx)
+	if err != nil {
+		slog.Error("scheduler: begin tx failed", "error", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	rows, err := tx.Query(ctx, `
+		SELECT id, title, body, priority, assignee_id, creator_id,
+		       cron_expr, repeat_times, next_run_at
+		FROM tasks
+		WHERE is_scheduled = TRUE
+		  AND next_run_at IS NOT NULL
+		  AND next_run_at <= NOW()
+		FOR UPDATE SKIP LOCKED
+	`)
+	if err != nil {
+		slog.Error("scheduler: query due templates failed", "error", err)
+		return
+	}
+	defer rows.Close()
+
+	type tpl struct {
+		ID          string
+		Title       string
+		Body        string
+		Priority    string
+		AssigneeID  *string
+		CreatorID   *string
+		CronExpr    string
+		RepeatTimes *int
+		NextRunAt   time.Time
+	}
+	var templates []tpl
+
+	for rows.Next() {
+		var t tpl
+		if err := rows.Scan(&t.ID, &t.Title, &t.Body, &t.Priority,
+			&t.AssigneeID, &t.CreatorID, &t.CronExpr, &t.RepeatTimes,
+			&t.NextRunAt); err == nil {
+			templates = append(templates, t)
+		}
+	}
+	rows.Close()
+
+	if len(templates) == 0 {
+		return
+	}
+
+	slog.Info("scheduler: due templates found", "count", len(templates))
+	now := time.Now()
+
+	for _, t := range templates {
+		nextRun, err := ComputeNextRun(t.CronExpr, now)
+		if err != nil {
+			slog.Error("scheduler: invalid cron expr, deactivating template",
+				"id", t.ID, "expr", t.CronExpr, "error", err)
+			tx.Exec(ctx, "UPDATE tasks SET is_scheduled = FALSE, next_run_at = NULL, updated_at = NOW() WHERE id = $1", t.ID)
+			d.pgClient.AddTaskComment(ctx, t.ID, "", "System: Invalid schedule expression. Template deactivated.")
+			continue
+		}
+
+		grace := GracePeriod(t.CronExpr)
+		if now.Sub(t.NextRunAt) > grace && ScheduleKind(t.CronExpr) != "once" {
+			slog.Info("scheduler: template past grace window, fast-forwarding",
+				"id", t.ID, "scheduled_at", t.NextRunAt, "grace_seconds", grace.Seconds())
+			tx.Exec(ctx, "UPDATE tasks SET next_run_at = $1, updated_at = NOW() WHERE id = $2", nextRun, t.ID)
+			continue
+		}
+
+		var repeatClause string
+		if t.RepeatTimes != nil {
+			rem := *t.RepeatTimes - 1
+			if rem <= 0 {
+				repeatClause = ", is_scheduled = FALSE, repeat_times = 0, next_run_at = NULL"
+				d.pgClient.AddTaskComment(ctx, t.ID, "", "System: Repeat count exhausted. Schedule deactivated.")
+			} else {
+				repeatClause = fmt.Sprintf(", repeat_times = %d", rem)
+			}
+		}
+
+		_, err = tx.Exec(ctx, fmt.Sprintf(
+			"UPDATE tasks SET next_run_at = $1%s, updated_at = NOW() WHERE id = $2",
+			repeatClause), nextRun, t.ID)
+		if err != nil {
+			slog.Error("scheduler: failed to advance next_run_at", "id", t.ID, "error", err)
+			continue
+		}
+
+		runTime := now.Format("2006-01-02 15:04")
+		child := &Task{
+			Title:    fmt.Sprintf("%s - %s", t.Title, runTime),
+			Body:     t.Body,
+			Priority: t.Priority,
+		}
+		if t.AssigneeID != nil {
+			child.Assignee = &EmployeeBrief{ID: *t.AssigneeID}
+		}
+		if t.CreatorID != nil {
+			child.Creator = &EmployeeBrief{ID: *t.CreatorID}
+		}
+
+		if err := d.pgClient.CreateChildTask(ctx, tx, child, t.ID); err != nil {
+			slog.Error("scheduler: failed to create child task", "template_id", t.ID, "error", err)
+			continue
+		}
+
+		slog.Info("scheduler: child task materialized",
+			"template", t.Title, "child_id", child.ID, "next_run", nextRun.Format(time.RFC3339))
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		slog.Error("scheduler: commit failed", "error", err)
+	}
 }
 
 func (d *TaskDispatcher) executeAgentTask(ctx context.Context, t Task) {

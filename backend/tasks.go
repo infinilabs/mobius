@@ -23,6 +23,11 @@ type Task struct {
 	Result       string         `json:"result"`
 	FailureCount int            `json:"failure_count"`
 	Dependencies []string       `json:"dependencies"`
+	IsScheduled  bool           `json:"is_scheduled"`
+	CronExpr     string         `json:"cron_expr,omitempty"`
+	NextRunAt    *time.Time     `json:"next_run_at,omitempty"`
+	RepeatTimes  *int           `json:"repeat_times,omitempty"`
+	ParentTaskID *string        `json:"parent_task_id,omitempty"`
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
 	CompletedAt  *time.Time     `json:"completed_at,omitempty"`
@@ -43,7 +48,8 @@ func (pg *PGClient) ListTasks(ctx context.Context, status, assigneeID string) ([
 		SELECT t.id, t.title, t.body, t.status, t.priority, t.result,
 		       t.failure_count, t.created_at, t.updated_at, t.completed_at,
 		       t.assignee_id, a.name, a.title, a.role,
-		       t.creator_id, c.name, c.title, c.role
+		       t.creator_id, c.name, c.title, c.role,
+		       t.is_scheduled, t.cron_expr, t.next_run_at, t.repeat_times, t.parent_task_id
 		FROM tasks t
 		LEFT JOIN employees a ON a.id = t.assignee_id
 		LEFT JOIN employees c ON c.id = t.creator_id
@@ -89,6 +95,7 @@ func (pg *PGClient) ListTasks(ctx context.Context, status, assigneeID string) ([
 			&t.FailureCount, &t.CreatedAt, &t.UpdatedAt, &t.CompletedAt,
 			&assigneeID, &assigneeName, &assigneeTitle, &assigneeRole,
 			&creatorID, &creatorName, &creatorTitle, &creatorRole,
+			&t.IsScheduled, &t.CronExpr, &t.NextRunAt, &t.RepeatTimes, &t.ParentTaskID,
 		); err != nil {
 			return nil, fmt.Errorf("scan task: %w", err)
 		}
@@ -142,7 +149,8 @@ func (pg *PGClient) GetTask(ctx context.Context, id string) (*Task, error) {
 		SELECT t.id, t.title, t.body, t.status, t.priority, t.result,
 		       t.failure_count, t.created_at, t.updated_at, t.completed_at,
 		       t.assignee_id, a.name, a.title, a.role,
-		       t.creator_id, c.name, c.title, c.role
+		       t.creator_id, c.name, c.title, c.role,
+		       t.is_scheduled, t.cron_expr, t.next_run_at, t.repeat_times, t.parent_task_id
 		FROM tasks t
 		LEFT JOIN employees a ON a.id = t.assignee_id
 		LEFT JOIN employees c ON c.id = t.creator_id
@@ -152,6 +160,7 @@ func (pg *PGClient) GetTask(ctx context.Context, id string) (*Task, error) {
 		&t.FailureCount, &t.CreatedAt, &t.UpdatedAt, &t.CompletedAt,
 		&assigneeID, &assigneeName, &assigneeTitle, &assigneeRole,
 		&creatorID, &creatorName, &creatorTitle, &creatorRole,
+		&t.IsScheduled, &t.CronExpr, &t.NextRunAt, &t.RepeatTimes, &t.ParentTaskID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get task: %w", err)
@@ -324,12 +333,155 @@ func (pg *PGClient) DeleteTask(ctx context.Context, id string) error {
 	return nil
 }
 
+func (pg *PGClient) CreateScheduledTask(ctx context.Context, t *Task) error {
+	var assigneeID, creatorID *string
+	if t.Assignee != nil && t.Assignee.ID != "" {
+		assigneeID = &t.Assignee.ID
+	}
+	if t.Creator != nil && t.Creator.ID != "" {
+		creatorID = &t.Creator.ID
+	}
+	priority := t.Priority
+	if priority == "" {
+		priority = "medium"
+	}
+
+	err := pg.pool.QueryRow(ctx, `
+		INSERT INTO tasks (title, body, status, priority, assignee_id, creator_id,
+		                   is_scheduled, cron_expr, next_run_at, repeat_times)
+		VALUES ($1, $2, 'scheduled', $3, $4, $5, TRUE, $6, $7, $8)
+		RETURNING id, created_at, updated_at
+	`, t.Title, t.Body, priority, assigneeID, creatorID,
+		t.CronExpr, t.NextRunAt, t.RepeatTimes).Scan(&t.ID, &t.CreatedAt, &t.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("insert scheduled task: %w", err)
+	}
+	t.Status = "scheduled"
+	t.IsScheduled = true
+	t.Priority = priority
+	t.Dependencies = []string{}
+	return nil
+}
+
+func (pg *PGClient) CreateChildTask(ctx context.Context, tx pgx.Tx, child *Task, parentID string) error {
+	var assigneeID, creatorID *string
+	if child.Assignee != nil && child.Assignee.ID != "" {
+		assigneeID = &child.Assignee.ID
+	}
+	if child.Creator != nil && child.Creator.ID != "" {
+		creatorID = &child.Creator.ID
+	}
+	priority := child.Priority
+	if priority == "" {
+		priority = "medium"
+	}
+
+	err := tx.QueryRow(ctx, `
+		INSERT INTO tasks (title, body, status, priority, assignee_id, creator_id, parent_task_id)
+		VALUES ($1, $2, 'ready', $3, $4, $5, $6)
+		RETURNING id, created_at, updated_at
+	`, child.Title, child.Body, priority, assigneeID, creatorID, parentID).Scan(
+		&child.ID, &child.CreatedAt, &child.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("insert child task: %w", err)
+	}
+	child.Status = "ready"
+	child.Priority = priority
+	child.ParentTaskID = &parentID
+	child.Dependencies = []string{}
+	return nil
+}
+
+func (pg *PGClient) ListChildTasks(ctx context.Context, parentID string) ([]Task, error) {
+	rows, err := pg.pool.Query(ctx, `
+		SELECT t.id, t.title, t.status, t.priority, t.result,
+		       t.created_at, t.updated_at, t.completed_at,
+		       t.assignee_id, a.name, a.title, a.role
+		FROM tasks t
+		LEFT JOIN employees a ON a.id = t.assignee_id
+		WHERE t.parent_task_id = $1
+		ORDER BY t.created_at DESC
+	`, parentID)
+	if err != nil {
+		return nil, fmt.Errorf("list child tasks: %w", err)
+	}
+	defer rows.Close()
+
+	var tasks []Task
+	for rows.Next() {
+		var t Task
+		var assigneeID, assigneeName, assigneeTitle, assigneeRole *string
+		if err := rows.Scan(
+			&t.ID, &t.Title, &t.Status, &t.Priority, &t.Result,
+			&t.CreatedAt, &t.UpdatedAt, &t.CompletedAt,
+			&assigneeID, &assigneeName, &assigneeTitle, &assigneeRole,
+		); err != nil {
+			return nil, fmt.Errorf("scan child task: %w", err)
+		}
+		if assigneeID != nil {
+			t.Assignee = &EmployeeBrief{ID: *assigneeID, Name: *assigneeName, Title: *assigneeTitle, Role: *assigneeRole}
+		}
+		t.Dependencies = []string{}
+		tasks = append(tasks, t)
+	}
+	if tasks == nil {
+		tasks = []Task{}
+	}
+	return tasks, nil
+}
+
+func (pg *PGClient) UpdateSchedule(ctx context.Context, id string, cronExpr *string, nextRunAt *time.Time,
+	repeatTimes *int, isScheduled *bool) error {
+
+	sets := []string{"updated_at = NOW()"}
+	args := []any{}
+	argN := 1
+
+	if cronExpr != nil {
+		sets = append(sets, fmt.Sprintf("cron_expr = $%d", argN))
+		args = append(args, *cronExpr)
+		argN++
+	}
+	if nextRunAt != nil {
+		sets = append(sets, fmt.Sprintf("next_run_at = $%d", argN))
+		args = append(args, *nextRunAt)
+		argN++
+	}
+	if repeatTimes != nil {
+		if *repeatTimes < 0 {
+			sets = append(sets, "repeat_times = NULL")
+		} else {
+			sets = append(sets, fmt.Sprintf("repeat_times = $%d", argN))
+			args = append(args, *repeatTimes)
+			argN++
+		}
+	}
+	if isScheduled != nil {
+		sets = append(sets, fmt.Sprintf("is_scheduled = $%d", argN))
+		args = append(args, *isScheduled)
+		argN++
+		if !*isScheduled {
+			sets = append(sets, "next_run_at = NULL")
+		}
+	}
+
+	query := fmt.Sprintf("UPDATE tasks SET %s WHERE id = $%d", strings.Join(sets, ", "), argN)
+	args = append(args, id)
+
+	_, err := pg.pool.Exec(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("update schedule: %w", err)
+	}
+	return nil
+}
+
 var validTransitions = map[string]map[string]bool{
 	"todo":         {"blocked": true},
 	"ready":        {"in_progress": true, "blocked": true},
 	"in_progress":  {"needs_review": true, "ready": true, "blocked": true},
 	"needs_review": {"done": true, "ready": true, "blocked": true},
 	"blocked":      {"ready": true},
+	"scheduled":    {},
 }
 
 func (pg *PGClient) UpdateTaskStatus(ctx context.Context, id, newStatus, actorID string, feedback ...string) error {
@@ -560,6 +712,9 @@ func (h *APIHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		AssigneeID   string   `json:"assignee_id"`
 		CreatorID    string   `json:"creator_id"`
 		Dependencies []string `json:"dependencies"`
+		IsScheduled  bool     `json:"is_scheduled"`
+		CronExpr     string   `json:"cron_expr"`
+		RepeatTimes  *int     `json:"repeat_times"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, "invalid request body", http.StatusBadRequest)
@@ -581,6 +736,36 @@ func (h *APIHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.CreatorID != "" {
 		t.Creator = &EmployeeBrief{ID: body.CreatorID}
+	}
+
+	if body.IsScheduled {
+		if body.CronExpr == "" {
+			writeError(w, "cron_expr is required for scheduled tasks", http.StatusBadRequest)
+			return
+		}
+		nextRun, err := ComputeNextRun(body.CronExpr, time.Now())
+		if err != nil {
+			writeError(w, "invalid schedule: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		t.CronExpr = body.CronExpr
+		t.NextRunAt = &nextRun
+		t.RepeatTimes = body.RepeatTimes
+
+		if err := h.pgClient.CreateScheduledTask(r.Context(), t); err != nil {
+			writeError(w, "failed to create scheduled task: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		full, err := h.pgClient.GetTask(r.Context(), t.ID)
+		if err != nil {
+			writeJSON(w, t)
+			return
+		}
+		slog.Info("scheduled task created", "id", full.ID, "title", full.Title, "cron_expr", body.CronExpr)
+		w.WriteHeader(http.StatusCreated)
+		writeJSON(w, full)
+		return
 	}
 
 	deps := body.Dependencies
@@ -730,4 +915,68 @@ func (h *APIHandler) AddTaskComment(w http.ResponseWriter, r *http.Request) {
 	slog.Info("task comment added", "task_id", id, "comment_id", comment.ID)
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, comment)
+}
+
+func (h *APIHandler) ListTaskRuns(w http.ResponseWriter, r *http.Request) {
+	if h.pgClient == nil {
+		writeError(w, "PostgreSQL not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	id := r.PathValue("id")
+	runs, err := h.pgClient.ListChildTasks(r.Context(), id)
+	if err != nil {
+		writeError(w, "failed to list runs: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, runs)
+}
+
+func (h *APIHandler) UpdateTaskSchedule(w http.ResponseWriter, r *http.Request) {
+	if h.pgClient == nil {
+		writeError(w, "PostgreSQL not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	id := r.PathValue("id")
+	var body struct {
+		CronExpr    *string `json:"cron_expr"`
+		RepeatTimes *int    `json:"repeat_times"`
+		IsScheduled *bool   `json:"is_scheduled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	var nextRun *time.Time
+	if (body.IsScheduled != nil && *body.IsScheduled) || (body.CronExpr != nil && *body.CronExpr != "") {
+		expr := ""
+		if body.CronExpr != nil && *body.CronExpr != "" {
+			expr = *body.CronExpr
+		} else {
+			err := h.pgClient.pool.QueryRow(r.Context(),
+				"SELECT cron_expr FROM tasks WHERE id = $1", id).Scan(&expr)
+			if err != nil || expr == "" {
+				writeError(w, "failed to read schedule expression", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		t, err := ComputeNextRun(expr, time.Now())
+		if err != nil {
+			writeError(w, "invalid schedule: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		nextRun = &t
+	}
+
+	if err := h.pgClient.UpdateSchedule(r.Context(), id, body.CronExpr, nextRun,
+		body.RepeatTimes, body.IsScheduled); err != nil {
+		writeError(w, "failed to update schedule: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	task, _ := h.pgClient.GetTask(r.Context(), id)
+	writeJSON(w, task)
 }

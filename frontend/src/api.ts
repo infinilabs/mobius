@@ -254,7 +254,7 @@ export async function listTasks(filters?: { status?: string; assignee_id?: strin
   return data;
 }
 
-export async function createTask(task: { title: string; body?: string; priority?: string; assignee_id?: string; creator_id?: string; dependencies?: string[] }): Promise<Task> {
+export async function createTask(task: { title: string; body?: string; priority?: string; assignee_id?: string; creator_id?: string; dependencies?: string[]; is_scheduled?: boolean; cron_expr?: string; repeat_times?: number }): Promise<Task> {
   const { data } = await axios.post('/api/tasks', task);
   return data;
 }
@@ -285,6 +285,20 @@ export async function listTaskComments(id: string): Promise<TaskComment[]> {
 
 export async function addTaskComment(id: string, authorId: string, content: string): Promise<TaskComment> {
   const { data } = await axios.post(`/api/tasks/${id}/comments`, { author_id: authorId, content });
+  return data;
+}
+
+export async function listTaskRuns(taskId: string): Promise<Task[]> {
+  const { data } = await axios.get(`/api/tasks/${taskId}/runs`);
+  return data;
+}
+
+export async function updateTaskSchedule(taskId: string, schedule: {
+  cron_expr?: string;
+  repeat_times?: number | null;
+  is_scheduled?: boolean;
+}): Promise<Task> {
+  const { data } = await axios.put(`/api/tasks/${taskId}/schedule`, schedule);
   return data;
 }
 

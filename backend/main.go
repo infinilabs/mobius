@@ -308,6 +308,8 @@ func main() {
 	mux.Handle("PUT /api/tasks/{id}/status", h(api.UpdateTaskStatus))
 	mux.Handle("GET /api/tasks/{id}/comments", h(api.ListTaskComments))
 	mux.Handle("POST /api/tasks/{id}/comments", h(api.AddTaskComment))
+	mux.Handle("GET /api/tasks/{id}/runs", h(api.ListTaskRuns))
+	mux.Handle("PUT /api/tasks/{id}/schedule", h(api.UpdateTaskSchedule))
 
 	// Models
 	mux.Handle("GET /api/models", h(api.ListModels))
