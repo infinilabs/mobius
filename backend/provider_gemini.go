@@ -69,7 +69,7 @@ func (g *GeminiProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 	const maxToolRounds = 10
 	var fullText string
 	for i := 0; i < maxToolRounds; i++ {
-		var calls []*genai.FunctionCall
+		var fcParts []*genai.Part
 		var iterText string
 
 		for chunk, err := range client.Models.GenerateContentStream(
@@ -78,9 +78,12 @@ func (g *GeminiProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 			if err != nil {
 				return fullText, fmt.Errorf("stream error: %w", err)
 			}
-			if fcs := chunk.FunctionCalls(); len(fcs) > 0 {
-				calls = append(calls, fcs...)
-				continue
+			if len(chunk.Candidates) > 0 && chunk.Candidates[0].Content != nil {
+				for _, p := range chunk.Candidates[0].Content.Parts {
+					if p.FunctionCall != nil {
+						fcParts = append(fcParts, p)
+					}
+				}
 			}
 			text := chunk.Text()
 			if text != "" {
@@ -91,7 +94,7 @@ func (g *GeminiProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 			}
 		}
 
-		if len(calls) == 0 {
+		if len(fcParts) == 0 {
 			fullText += iterText
 			break
 		}
@@ -102,7 +105,14 @@ func (g *GeminiProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 			break
 		}
 
-		for _, fc := range calls {
+		contents = append(contents, &genai.Content{
+			Role:  "model",
+			Parts: fcParts,
+		})
+
+		var responseParts []*genai.Part
+		for _, p := range fcParts {
+			fc := p.FunctionCall
 			tc := ToolCall{Name: fc.Name, Args: fc.Args}
 			result := req.OnToolCall(tc)
 
@@ -110,18 +120,17 @@ func (g *GeminiProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 				req.OnToolEvent(fc.Name, "executed")
 			}
 
-			contents = append(contents, &genai.Content{
-				Role:  "model",
-				Parts: []*genai.Part{{FunctionCall: fc}},
-			})
-			contents = append(contents, &genai.Content{
-				Role: "user",
-				Parts: []*genai.Part{{FunctionResponse: &genai.FunctionResponse{
+			responseParts = append(responseParts, &genai.Part{
+				FunctionResponse: &genai.FunctionResponse{
 					Name:     fc.Name,
 					Response: result,
-				}}},
+				},
 			})
 		}
+		contents = append(contents, &genai.Content{
+			Role:  "user",
+			Parts: responseParts,
+		})
 	}
 
 	return fullText, nil
