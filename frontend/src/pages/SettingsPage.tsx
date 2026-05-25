@@ -29,7 +29,7 @@ export default function SettingsPage() {
         postgres: { host: 'localhost', port: 5432, user: 'mobius', password: 'mobius', dbname: 'mobius' },
         elasticsearch: { url: 'http://localhost:9200' },
         google_cloud: {
-          project_id: '', credentials_path: '',
+          project_id: '', credentials_path: '', api_key: '',
           bigquery: { dataset: 'mobius' },
           gcs: { bucket: '', location: 'us-central1', public_access_prevention: true },
           vertex_ai: { llm_model_id: 'gemini-3.1-pro-preview', llm_location: 'global', img_model_id: '', img_location: 'us-central1', video_model_id: '', video_location: 'us-central1' },
@@ -132,13 +132,16 @@ export default function SettingsPage() {
 
       {/* Google Cloud */}
       <ConfigSection icon={<Cloud size={16} />} title="Google Cloud" desc="GCP project, credentials, BigQuery & Vertex AI" color="#fbbf24" status={health.gcs}>
+        <ConfigInput label="Project ID" value={settings.google_cloud.project_id}
+          onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, project_id: v } })}
+          placeholder="your-gcp-project-id" className="mb-3" />
         <div className="grid grid-cols-2 gap-3">
-          <ConfigInput label="Project ID" value={settings.google_cloud.project_id}
-            onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, project_id: v } })}
-            placeholder="your-gcp-project-id" />
           <ConfigInput label="Credentials Path" value={settings.google_cloud.credentials_path}
             onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, credentials_path: v } })}
-            placeholder="Leave empty to use ADC" />
+            placeholder="Leave empty for ADC" />
+          <ConfigInput label="API Key (AI Studio)" value={settings.google_cloud.api_key}
+            onChange={v => setSettings({ ...settings, google_cloud: { ...settings.google_cloud, api_key: v } })}
+            placeholder="Optional: routes Gemini via AI Studio" />
         </div>
 
         {/* BigQuery subsection */}

@@ -9,14 +9,28 @@ import (
 )
 
 type GeminiProvider struct {
-	client *genai.Client
+	vertexClient   *genai.Client
+	studioClient   *genai.Client
+	studioModels   map[string]bool
 }
 
-func NewGeminiProvider(client *genai.Client) *GeminiProvider {
-	return &GeminiProvider{client: client}
+func NewGeminiProvider(vertexClient, studioClient *genai.Client, studioModels map[string]bool) *GeminiProvider {
+	return &GeminiProvider{
+		vertexClient: vertexClient,
+		studioClient: studioClient,
+		studioModels: studioModels,
+	}
+}
+
+func (g *GeminiProvider) clientForModel(modelID string) *genai.Client {
+	if g.studioClient != nil && g.studioModels[modelID] {
+		return g.studioClient
+	}
+	return g.vertexClient
 }
 
 func (g *GeminiProvider) ChatStream(ctx context.Context, req *LLMRequest) (string, error) {
+	client := g.clientForModel(req.Model)
 	var contents []*genai.Content
 	for _, m := range req.Messages {
 		role := m.Role
@@ -58,7 +72,7 @@ func (g *GeminiProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 		var calls []*genai.FunctionCall
 		var iterText string
 
-		for chunk, err := range g.client.Models.GenerateContentStream(
+		for chunk, err := range client.Models.GenerateContentStream(
 			ctx, req.Model, contents, config,
 		) {
 			if err != nil {

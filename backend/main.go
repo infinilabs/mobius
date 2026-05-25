@@ -75,11 +75,12 @@ func main() {
 	slog.SetDefault(serverLogger)
 
 	ctx := context.Background()
-	genaiClient, err := NewGenAIClient(ctx, cfg)
+	vertexClient, geminiClient, err := NewGenAIClients(ctx, cfg)
 	if err != nil {
-		slog.Error("failed to init Vertex AI client", "error", err)
-		slog.Warn("Vertex AI chat will be unavailable until config is fixed")
-		genaiClient = nil
+		slog.Error("failed to init GenAI clients", "error", err)
+		slog.Warn("GenAI features will be unavailable until config is fixed")
+		vertexClient = nil
+		geminiClient = nil
 	}
 
 	var esClient *ESClient
@@ -125,15 +126,21 @@ func main() {
 	}
 
 	providers := NewProviderRegistry()
-	if genaiClient != nil {
-		providers.Register("gemini", NewGeminiProvider(genaiClient))
+	if vertexClient != nil {
+		var studioModels map[string]bool
+		if geminiClient != vertexClient {
+			slog.Info("listing AI Studio models for dynamic routing...")
+			studioModels = ListAvailableModels(ctx, geminiClient)
+			slog.Info("AI Studio models discovered", "count", len(studioModels))
+		}
+		providers.Register("gemini", NewGeminiProvider(vertexClient, geminiClient, studioModels))
 	}
 	gc := cfg.GetSettings().GoogleCloud
 	if gc.ProjectID != "" {
 		providers.Register("claude", NewClaudeProvider(gc.ProjectID, "us-east5"))
 	}
 
-	api := NewAPIHandler(cfg, configPath, genaiClient, esClient, gcsClient, pgClient, skillsDir, providers)
+	api := NewAPIHandler(cfg, configPath, vertexClient, esClient, gcsClient, pgClient, skillsDir, providers)
 
 	// Skill sync sources
 	hermesPath := cfg.SkillSync.HermesPath

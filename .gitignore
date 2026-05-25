@@ -19,6 +19,10 @@ data/es/
 # File uploads
 tmp/
 
+# Runtime data
+conversations/
+projects/
+
 # Config with credentials (template is tracked, actual config is not)
 conf.yaml
 

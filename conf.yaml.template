@@ -15,9 +15,13 @@ postgres:
 elasticsearch:
   url: "http://localhost:9200"
 
+upload:
+  max_file_size_mb: 20
+
 google_cloud:
   project_id: "your-gcp-project-id"
   credentials_path: "" # leave empty to use ADC
+  api_key: ""           # optional: AI Studio API key for Gemini models (overrides service account for Gemini)
   bigquery:
     dataset: "mobius"
   gcs:

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"google.golang.org/genai"
@@ -21,28 +22,63 @@ type ChatRequest struct {
 	ProjectID      string    `json:"project_id,omitempty"`
 }
 
-func NewGenAIClient(ctx context.Context, cfg *Config) (*genai.Client, error) {
+func NewGenAIClients(ctx context.Context, cfg *Config) (vertexClient *genai.Client, geminiClient *genai.Client, err error) {
 	settings := cfg.GetSettings()
 	gc := settings.GoogleCloud
+
+	if gc.CredentialsPath != "" {
+		os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", gc.CredentialsPath)
+	}
 
 	_, location := gc.VertexAI.DefaultLLM()
 	if location == "" {
 		location = "global"
 	}
 
-	if gc.CredentialsPath != "" {
-		os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", gc.CredentialsPath)
-	}
-
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+	vertexClient, err = genai.NewClient(ctx, &genai.ClientConfig{
 		Project:  gc.ProjectID,
 		Location: location,
 		Backend:  genai.BackendVertexAI,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create genai client: %w", err)
+		return nil, nil, fmt.Errorf("failed to create Vertex AI client: %w", err)
 	}
-	return client, nil
+
+	geminiClient = vertexClient
+
+	if gc.APIKey != "" {
+		slog.Info("Gemini models will use Google AI Studio (API Key)")
+		geminiClient, err = genai.NewClient(ctx, &genai.ClientConfig{
+			APIKey:  gc.APIKey,
+			Backend: genai.BackendGeminiAPI,
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create Google AI client: %w", err)
+		}
+	} else {
+		slog.Info("Gemini models will use Vertex AI (Service Account/ADC)")
+	}
+
+	return vertexClient, geminiClient, nil
+}
+
+func ListAvailableModels(ctx context.Context, client *genai.Client) map[string]bool {
+	models := make(map[string]bool)
+	for m, err := range client.Models.All(ctx) {
+		if err != nil {
+			slog.Warn("model listing stopped", "error", err)
+			break
+		}
+		if m.Name == "" {
+			continue
+		}
+		id := m.Name
+		if i := strings.LastIndex(id, "/"); i >= 0 {
+			id = id[i+1:]
+		}
+		models[id] = true
+	}
+	return models
 }
 
 func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {

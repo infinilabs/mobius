@@ -217,7 +217,7 @@ function App() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-hidden relative flex flex-col" style={{ background: '#09090b' }}>
+      <main className="flex-1 overflow-hidden relative flex flex-col select-text" style={{ background: '#09090b' }}>
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[600px] pointer-events-none" style={{ background: 'radial-gradient(ellipse at center top, rgba(56,189,248,0.06) 0%, transparent 60%)' }} />
 
         <div className="relative z-10 flex-1 overflow-hidden">

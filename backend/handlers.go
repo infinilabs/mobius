@@ -92,7 +92,7 @@ func (h *APIHandler) registerProbes() {
 
 	h.health.Register("llm", func(ctx context.Context) ServiceStatus {
 		if h.genaiClient == nil {
-			return StatusUnavailable("Vertex AI client not initialized")
+			return StatusUnavailable("GenAI client not initialized")
 		}
 		modelID, _ := h.config.GoogleCloud.VertexAI.DefaultLLM()
 		if modelID == "" {

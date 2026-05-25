@@ -173,6 +173,7 @@ type GCSConfig struct {
 type GoogleCloudConfig struct {
 	ProjectID       string         `yaml:"project_id" json:"project_id"`
 	CredentialsPath string         `yaml:"credentials_path" json:"credentials_path"`
+	APIKey          string         `yaml:"api_key,omitempty" json:"api_key,omitempty"`
 	BigQuery        BigQueryConfig `yaml:"bigquery" json:"bigquery"`
 	GCS             GCSConfig      `yaml:"gcs" json:"gcs"`
 	VertexAI        VertexAIConfig `yaml:"vertex_ai" json:"vertex_ai"`

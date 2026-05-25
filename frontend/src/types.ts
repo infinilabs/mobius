@@ -46,6 +46,7 @@ export interface GCSConfig {
 export interface GoogleCloudConfig {
   project_id: string;
   credentials_path: string;
+  api_key: string;
   bigquery: BigQueryConfig;
   gcs: GCSConfig;
   vertex_ai: VertexAIConfig;
