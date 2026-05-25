@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Plus, Search, FolderKanban, FileText, Database, Settings,
-  Trash2, Upload, RefreshCw, X, Archive,
+  Trash2, Upload, RefreshCw, X, Archive, Folder, ChevronUp,
 } from 'lucide-react';
 import {
   listProjects, createProject, getProject, updateProject, deleteProject,
   listProjectAssets, uploadProjectAsset, deleteProjectAsset, reindexProjectAssets,
-  getProjectMemory, updateProjectMemory, listEmployees,
+  getProjectMemory, updateProjectMemory, listEmployees, browseDirectories,
 } from '../api';
 import type { Project, ProjectAsset, Employee } from '../types';
 
@@ -372,6 +372,7 @@ function CreateProjectModal({ onClose, onCreated }: { onClose: () => void; onCre
   const [description, setDescription] = useState('');
   const [ownerId, setOwnerId] = useState('');
   const [sourcePath, setSourcePath] = useState('');
+  const [showFolderPicker, setShowFolderPicker] = useState(false);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [error, setError] = useState('');
 
@@ -421,7 +422,23 @@ function CreateProjectModal({ onClose, onCreated }: { onClose: () => void; onCre
           </div>
           <div>
             <label className="text-xs text-zinc-500 uppercase tracking-wider block mb-1">Import Path (optional)</label>
-            <input value={sourcePath} onChange={e => setSourcePath(e.target.value)} placeholder="/path/to/existing/repo" className="w-full px-3 py-2 rounded-lg border border-zinc-800 bg-zinc-900/50 text-sm text-zinc-200 outline-none font-mono" />
+            <div className="flex items-center gap-2">
+              <div className="flex-1 px-3 py-2 rounded-lg border border-zinc-800 bg-zinc-900/50 text-sm font-mono min-h-[36px] flex items-center">
+                {sourcePath ? (
+                  <span className="text-zinc-200 truncate">{sourcePath}</span>
+                ) : (
+                  <span className="text-zinc-600">No folder selected</span>
+                )}
+              </div>
+              <button onClick={() => setShowFolderPicker(true)} className="px-3 py-2 rounded-lg bg-zinc-800/50 text-zinc-400 hover:text-zinc-200 text-xs font-medium cursor-pointer transition-colors border border-zinc-700/40 shrink-0 flex items-center gap-1.5">
+                <Folder size={14} /> Browse
+              </button>
+              {sourcePath && (
+                <button onClick={() => setSourcePath('')} className="p-2 rounded-lg text-zinc-600 hover:text-zinc-300 cursor-pointer transition-colors">
+                  <X size={14} />
+                </button>
+              )}
+            </div>
             <p className="text-[10px] text-zinc-600 mt-1">Leave empty for a new template project</p>
           </div>
 
@@ -431,6 +448,86 @@ function CreateProjectModal({ onClose, onCreated }: { onClose: () => void; onCre
             <button onClick={onClose} className="px-4 py-2 rounded-lg text-zinc-400 hover:text-zinc-200 text-sm cursor-pointer transition-colors">Cancel</button>
             <button onClick={handleSubmit} disabled={!name} className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-medium cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed">Create</button>
           </div>
+        </div>
+      </div>
+
+      {showFolderPicker && (
+        <FolderPickerModal
+          onSelect={(path) => { setSourcePath(path); setShowFolderPicker(false); }}
+          onClose={() => setShowFolderPicker(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function FolderPickerModal({ onSelect, onClose }: { onSelect: (path: string) => void; onClose: () => void }) {
+  const [currentPath, setCurrentPath] = useState('');
+  const [parentPath, setParentPath] = useState('');
+  const [dirs, setDirs] = useState<{ name: string; path: string }[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const navigate = useCallback((path?: string) => {
+    setLoading(true);
+    setError('');
+    browseDirectories(path)
+      .then(data => {
+        setCurrentPath(data.current);
+        setParentPath(data.parent);
+        setDirs(data.dirs);
+      })
+      .catch(() => setError('Cannot access this directory'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { navigate(); }, [navigate]);
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60">
+      <div className="w-full max-w-lg rounded-xl border border-zinc-800/60 flex flex-col" style={{ background: '#111114', maxHeight: '70vh' }}>
+        <div className="flex items-center justify-between p-4 border-b border-zinc-800/40">
+          <h2 className="text-sm font-semibold text-zinc-200">Select Folder</h2>
+          <button onClick={onClose} className="text-zinc-500 hover:text-zinc-300 cursor-pointer"><X size={16} /></button>
+        </div>
+
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-zinc-800/40 bg-zinc-900/30">
+          <button
+            onClick={() => navigate(parentPath)}
+            disabled={currentPath === parentPath}
+            className="p-1.5 rounded text-zinc-500 hover:text-zinc-300 cursor-pointer transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            <ChevronUp size={16} />
+          </button>
+          <span className="text-xs text-zinc-400 font-mono truncate flex-1">{currentPath}</span>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-2 min-h-[200px]">
+          {loading ? (
+            <p className="text-xs text-zinc-600 text-center py-8">Loading...</p>
+          ) : error ? (
+            <p className="text-xs text-red-400 text-center py-8">{error}</p>
+          ) : dirs.length === 0 ? (
+            <p className="text-xs text-zinc-600 text-center py-8">No subdirectories</p>
+          ) : (
+            dirs.map(d => (
+              <button
+                key={d.path}
+                onClick={() => navigate(d.path)}
+                className="w-full text-left flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-zinc-800/40 cursor-pointer transition-colors"
+              >
+                <Folder size={15} className="text-amber-500/70 shrink-0" />
+                <span className="text-sm text-zinc-300 truncate">{d.name}</span>
+              </button>
+            ))
+          )}
+        </div>
+
+        <div className="flex justify-end gap-3 p-4 border-t border-zinc-800/40">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-zinc-400 hover:text-zinc-200 text-sm cursor-pointer transition-colors">Cancel</button>
+          <button onClick={() => onSelect(currentPath)} className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-medium cursor-pointer transition-colors">
+            Select This Folder
+          </button>
         </div>
       </div>
     </div>

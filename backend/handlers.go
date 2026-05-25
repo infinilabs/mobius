@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -397,5 +398,50 @@ func (h *APIHandler) DeleteEmployeeMemory(w http.ResponseWriter, r *http.Request
 
 	slog.Info("memory deleted via API", "memory_id", memoryID)
 	writeJSON(w, map[string]string{"status": "forgotten"})
+}
+
+func (h *APIHandler) BrowseDirectories(w http.ResponseWriter, r *http.Request) {
+	dir := r.URL.Query().Get("path")
+	if dir == "" {
+		var err error
+		dir, err = os.UserHomeDir()
+		if err != nil {
+			writeError(w, "cannot determine home directory", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	dir = filepath.Clean(dir)
+	if !filepath.IsAbs(dir) {
+		writeError(w, "path must be absolute", http.StatusBadRequest)
+		return
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		writeError(w, "cannot read directory: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	type dirEntry struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+	}
+	dirs := make([]dirEntry, 0)
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		dirs = append(dirs, dirEntry{
+			Name: e.Name(),
+			Path: filepath.Join(dir, e.Name()),
+		})
+	}
+
+	writeJSON(w, map[string]any{
+		"current": dir,
+		"parent":  filepath.Dir(dir),
+		"dirs":    dirs,
+	})
 }
 

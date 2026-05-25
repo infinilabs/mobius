@@ -253,6 +253,7 @@ func main() {
 	mux.Handle("/api/config", h(api.GetConfig))
 	mux.Handle("GET /api/settings", h(api.GetSettings))
 	mux.Handle("PUT /api/settings", h(api.UpdateSettings))
+	mux.Handle("GET /api/browse-directories", h(api.BrowseDirectories))
 
 	// Conversations
 	mux.Handle("GET /api/conversations", h(api.ListConversations))

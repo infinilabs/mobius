@@ -367,6 +367,12 @@ export async function updateProjectMemory(projectId: string, content: string): P
   await axios.put(`/api/projects/${projectId}/memory`, { content });
 }
 
+export async function browseDirectories(path?: string): Promise<{ current: string; parent: string; dirs: { name: string; path: string }[] }> {
+  const params = path ? `?path=${encodeURIComponent(path)}` : '';
+  const { data } = await axios.get(`/api/browse-directories${params}`);
+  return data;
+}
+
 export async function sendChatMessage(
   conversationId: string,
   message: string,
