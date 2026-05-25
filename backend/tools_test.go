@@ -174,6 +174,43 @@ func TestHasTag(t *testing.T) {
 	}
 }
 
+func TestBuildAgentTools_CEONoDuplicates(t *testing.T) {
+	ceo := makeEmployee("CEO", []string{"executive", "manager"}, nil, nil)
+	tools := buildAgentTools(ceo, nil)
+
+	counts := make(map[string]int)
+	for _, td := range tools {
+		counts[td.Name]++
+	}
+	for name, count := range counts {
+		if count > 1 {
+			t.Errorf("tool %q appears %d times, expected 1", name, count)
+		}
+	}
+}
+
+func TestBuildAgentTools_WithProjectContext(t *testing.T) {
+	worker := makeEmployee("Custom", []string{}, strPtr("mgr-001"), nil)
+	projectID := "proj-001"
+	task := &Task{ID: "task-001", ProjectID: &projectID}
+	tools := buildAgentTools(worker, task)
+
+	names := toolNames(tools)
+	assertContains(t, names, "write_project_file", "project task should have write_project_file")
+	assertContains(t, names, "read_project_file", "project task should have read_project_file")
+	assertContains(t, names, "search_project_assets", "project task should have search_project_assets")
+	assertContains(t, names, "list_project_assets", "project task should have list_project_assets")
+}
+
+func TestBuildAgentTools_WithoutProjectContext(t *testing.T) {
+	worker := makeEmployee("Custom", []string{}, strPtr("mgr-001"), nil)
+	tools := buildAgentTools(worker, nil)
+
+	names := toolNames(tools)
+	assertNotContains(t, names, "write_project_file", "no-project task should NOT have write_project_file")
+	assertNotContains(t, names, "read_project_file", "no-project task should NOT have read_project_file")
+}
+
 // helpers
 
 func toolNames(tools []ToolDef) map[string]bool {

@@ -482,16 +482,18 @@ func compactMobiusMD(project *Project, cfg *Config, content []byte) error {
 
 	var compacted strings.Builder
 	kept := 0
+	keptTotal := 0
 	for i := len(lines) - 1; i >= 0; i-- {
 		if kept >= cfg.Projects.MemoryCompactKeep {
 			break
 		}
+		keptTotal++
 		if strings.TrimSpace(lines[i]) != "" {
 			kept++
 		}
 	}
 
-	start := len(lines) - kept
+	start := len(lines) - keptTotal
 	if start < 0 {
 		start = 0
 	}
@@ -656,6 +658,10 @@ func (h *APIHandler) ArchiveOrDeleteProject(w http.ResponseWriter, r *http.Reque
 	if mode == "" {
 		mode = "archive"
 	}
+	if mode != "archive" && mode != "delete" {
+		writeError(w, "mode must be 'archive' or 'delete'", http.StatusBadRequest)
+		return
+	}
 
 	project, err := h.pgClient.GetProject(r.Context(), projectID)
 	if err != nil {
@@ -671,10 +677,8 @@ func (h *APIHandler) ArchiveOrDeleteProject(w http.ResponseWriter, r *http.Reque
 
 	if err := h.exportProjectToZip(r.Context(), project, zipPath); err != nil {
 		slog.Error("project zip export failed", "project", project.Name, "error", err)
-		if mode == "archive" {
-			writeError(w, "archive backup failed, aborting purge: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
+		writeError(w, "backup failed, aborting purge: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	if h.esClient != nil {
@@ -687,8 +691,14 @@ func (h *APIHandler) ArchiveOrDeleteProject(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	defer tx.Rollback(r.Context())
-	tx.Exec(r.Context(), "UPDATE tasks SET project_id = NULL WHERE project_id = $1", projectID)
-	tx.Exec(r.Context(), "DELETE FROM projects WHERE id = $1", projectID)
+	if _, err := tx.Exec(r.Context(), "UPDATE tasks SET project_id = NULL WHERE project_id = $1", projectID); err != nil {
+		writeError(w, "failed to nullify tasks: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if _, err := tx.Exec(r.Context(), "DELETE FROM projects WHERE id = $1", projectID); err != nil {
+		writeError(w, "failed to delete project: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if txErr = tx.Commit(r.Context()); txErr != nil {
 		writeError(w, "failed to purge project: "+txErr.Error(), http.StatusInternalServerError)
 		return
@@ -726,12 +736,15 @@ func (h *APIHandler) exportProjectToZip(ctx context.Context, project *Project, z
 	zw := zip.NewWriter(f)
 	defer zw.Close()
 
-	projectJSON, _ := json.MarshalIndent(project, "", "  ")
-	if w, err := zw.Create("project.json"); err != nil {
-		slog.Error("zip export: failed to create project.json", "error", err)
-	} else {
-		w.Write(projectJSON)
+	projectJSON, err := json.MarshalIndent(project, "", "  ")
+	if err != nil {
+		return fmt.Errorf("zip: marshal project: %w", err)
 	}
+	pw, err := zw.Create("project.json")
+	if err != nil {
+		return fmt.Errorf("zip: create project.json: %w", err)
+	}
+	pw.Write(projectJSON)
 
 	var tasks []Task
 	if h.pgClient != nil {
@@ -828,6 +841,10 @@ func (h *APIHandler) UpdateProjectMemory(w http.ResponseWriter, r *http.Request)
 		writeError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
+
+	mu := getProjectLock(project.Name)
+	mu.Lock()
+	defer mu.Unlock()
 
 	mobiusPath := filepath.Join(project.RootDir(h.config), "mobius.md")
 	if err := os.WriteFile(mobiusPath, []byte(body.Content), 0644); err != nil {

@@ -391,6 +391,9 @@ func (es *ESClient) UpdateConversationTitle(ctx context.Context, convID, title s
 		return fmt.Errorf("ES update conversation failed: %w", err)
 	}
 	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("ES update conversation error: %s", res.Status())
+	}
 	return nil
 }
 
@@ -734,6 +737,9 @@ func (es *ESClient) DeleteProjectAssets(ctx context.Context, projectID string) e
 		return fmt.Errorf("ES delete project assets failed: %w", err)
 	}
 	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("ES delete project assets error: %s", res.Status())
+	}
 	return nil
 }
 
@@ -824,6 +830,9 @@ func (es *ESClient) UpdateProjectAssetGCS(ctx context.Context, id, gcsURI, gcsSt
 		return fmt.Errorf("ES update asset GCS failed: %w", err)
 	}
 	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("ES update asset GCS error: %s", res.Status())
+	}
 	return nil
 }
 
@@ -885,6 +894,9 @@ func (es *ESClient) UpdateProjectAssetSummary(ctx context.Context, id, summary s
 		return fmt.Errorf("ES update asset summary failed: %w", err)
 	}
 	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("ES update asset summary error: %s", res.Status())
+	}
 	return nil
 }
 

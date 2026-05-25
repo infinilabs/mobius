@@ -105,6 +105,14 @@ func (s *ConversationStore) Get(id string) *Conversation {
 	return s.convs[id]
 }
 
+func (s *ConversationStore) SetProjectID(id, projectID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c, ok := s.convs[id]; ok && c.ProjectID == nil {
+		c.ProjectID = &projectID
+	}
+}
+
 func (s *ConversationStore) List() []ConversationSummary {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -234,6 +242,11 @@ func (pg *PGClient) UpsertConversationMeta(ctx context.Context, conv *Conversati
 	return nil
 }
 
+func (pg *PGClient) DeleteConversationMeta(ctx context.Context, id string) error {
+	_, err := pg.pool.Exec(ctx, "DELETE FROM conversations WHERE id = $1", id)
+	return err
+}
+
 func (pg *PGClient) ListConversationsMeta(ctx context.Context, projectID string) ([]ConversationSummary, error) {
 	query := "SELECT id, title, project_id, updated_at FROM conversations"
 	var args []any
@@ -293,7 +306,9 @@ func (h *APIHandler) CreateConversation(w http.ResponseWriter, r *http.Request) 
 			slog.Error("PG upsert conversation failed", "id", c.ID, "error", err)
 		}
 	}
-	SaveConversation(h.config, c, nil)
+	if err := SaveConversation(h.config, c, nil); err != nil {
+		slog.Error("disk save conversation failed", "id", c.ID, "error", err)
+	}
 
 	writeJSON(w, c)
 }
@@ -373,6 +388,17 @@ func (h *APIHandler) DeleteConversation(w http.ResponseWriter, r *http.Request) 
 		if err := h.esClient.DeleteConversation(r.Context(), id); err != nil {
 			slog.Error("ES delete conversation failed", "id", id, "error", err)
 		}
+	}
+
+	if h.pgClient != nil {
+		if err := h.pgClient.DeleteConversationMeta(r.Context(), id); err != nil {
+			slog.Error("PG delete conversation failed", "id", id, "error", err)
+		}
+	}
+
+	diskPath := conversationFilePath(h.config, id, nil)
+	if err := os.Remove(diskPath); err != nil && !os.IsNotExist(err) {
+		slog.Error("disk delete conversation failed", "id", id, "error", err)
 	}
 
 	for _, f := range files {

@@ -242,16 +242,18 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	conv = h.conversations.Get(req.ConversationID)
-	if req.ProjectID != "" && conv.ProjectID == nil {
-		conv.ProjectID = &req.ProjectID
+	if req.ProjectID != "" {
+		h.conversations.SetProjectID(req.ConversationID, req.ProjectID)
 	}
+	conv = h.conversations.Get(req.ConversationID)
 
 	var diskProject *Project
 	if conv.ProjectID != nil && h.pgClient != nil {
 		diskProject, _ = h.pgClient.GetProject(r.Context(), *conv.ProjectID)
 	}
-	SaveConversation(h.config, conv, diskProject)
+	if err := SaveConversation(h.config, conv, diskProject); err != nil {
+		slog.Error("disk save conversation failed", "id", conv.ID, "error", err)
+	}
 
 	if h.pgClient != nil {
 		h.pgClient.UpsertConversationMeta(r.Context(), conv)

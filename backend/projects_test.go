@@ -287,3 +287,88 @@ func TestExportProjectToZip_DotfileExclusions(t *testing.T) {
 		}
 	}
 }
+
+func TestCompactMobiusMD_PreservesHeader(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "compact-hdr")
+	os.MkdirAll(projectDir, 0755)
+
+	project := &Project{Name: "compact-hdr"}
+	cfg := &Config{}
+	cfg.Projects.applyDefaults(dir)
+	cfg.Projects.ProjectsDir = dir
+	cfg.Projects.MemoryMaxSize = 2048
+	cfg.Projects.MemoryCompactRatio = 0.8
+	cfg.Projects.MemoryCompactKeep = 3
+
+	var content strings.Builder
+	content.WriteString("# My Project\n\n## Key Decisions\n\n")
+	for i := 0; i < 30; i++ {
+		content.WriteString(fmt.Sprintf("- Decision %d: important thing\n", i))
+	}
+	original := content.String()
+
+	compactMobiusMD(project, cfg, []byte(original))
+
+	mobiusPath := filepath.Join(projectDir, "mobius.md")
+	result, err := os.ReadFile(mobiusPath)
+	if err != nil {
+		t.Fatalf("failed to read compacted file: %v", err)
+	}
+
+	resultStr := string(result)
+	if !strings.HasPrefix(resultStr, "# My Project\n") {
+		t.Error("header line should be preserved after compaction")
+	}
+	if !strings.Contains(resultStr, "## Key Decisions") {
+		t.Error("section header should be preserved")
+	}
+
+	lines := strings.Split(resultStr, "\n")
+	decisionCount := 0
+	for _, line := range lines {
+		if strings.HasPrefix(line, "- Decision") {
+			decisionCount++
+		}
+	}
+	if decisionCount < int(cfg.Projects.MemoryCompactKeep) {
+		t.Errorf("expected at least %d decisions kept, got %d", cfg.Projects.MemoryCompactKeep, decisionCount)
+	}
+
+	if len(result) > cfg.Projects.MemoryMaxSize {
+		t.Errorf("compacted size %d exceeds max %d", len(result), cfg.Projects.MemoryMaxSize)
+	}
+}
+
+func TestIsTextIndexable(t *testing.T) {
+	indexable := []string{"text", "code", "document"}
+	for _, ct := range indexable {
+		if !isTextIndexable(ct) {
+			t.Errorf("expected %q to be indexable", ct)
+		}
+	}
+
+	notIndexable := []string{"image", "video", "audio", "binary", "pdf"}
+	for _, ct := range notIndexable {
+		if isTextIndexable(ct) {
+			t.Errorf("expected %q to NOT be indexable", ct)
+		}
+	}
+}
+
+func TestProjectRootDir(t *testing.T) {
+	cfg := &Config{}
+	cfg.Projects.applyDefaults("/tmp/work")
+	cfg.Projects.ProjectsDir = "/data/projects"
+
+	native := &Project{Name: "my-app"}
+	if got := native.RootDir(cfg); got != "/data/projects/my-app" {
+		t.Errorf("native project rootDir = %q, want /data/projects/my-app", got)
+	}
+
+	src := "/home/user/repos/imported"
+	imported := &Project{Name: "imported", SourcePath: &src}
+	if got := imported.RootDir(cfg); got != src {
+		t.Errorf("imported project rootDir = %q, want %q", got, src)
+	}
+}

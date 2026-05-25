@@ -178,3 +178,71 @@ func TestResolveModelID_FallbackToHardcoded(t *testing.T) {
 		t.Errorf("expected fallback %s, got %s", defaultFallbackModel, modelID)
 	}
 }
+
+func TestApplyDefaults_SetsAllFields(t *testing.T) {
+	pc := ProjectConfig{}
+	pc.applyDefaults("/tmp/test")
+
+	if pc.ProjectsDir == "" {
+		t.Error("ProjectsDir should have a default")
+	}
+	if pc.MemoryMaxSize == 0 {
+		t.Error("MemoryMaxSize should have a default")
+	}
+	if pc.MemoryCompactRatio == 0 {
+		t.Error("MemoryCompactRatio should have a default")
+	}
+	if pc.MemoryCompactKeep == 0 {
+		t.Error("MemoryCompactKeep should have a default")
+	}
+	if pc.MemoryInjectLimit == 0 {
+		t.Error("MemoryInjectLimit should have a default")
+	}
+	if pc.MemoryDedupPrefix == 0 {
+		t.Error("MemoryDedupPrefix should have a default")
+	}
+	if pc.ContentMaxIndex == 0 {
+		t.Error("ContentMaxIndex should have a default")
+	}
+	if pc.ContentSummaryMax == 0 {
+		t.Error("ContentSummaryMax should have a default")
+	}
+	if pc.GCSMaxRetries == 0 {
+		t.Error("GCSMaxRetries should have a default")
+	}
+	if pc.ESShards == 0 {
+		t.Error("ESShards should have a default")
+	}
+}
+
+func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
+	pc := ProjectConfig{
+		MemoryMaxSize: 999,
+		ESShards:      5,
+	}
+	pc.applyDefaults("/tmp/test")
+
+	if pc.MemoryMaxSize != 999 {
+		t.Errorf("should preserve explicit MemoryMaxSize 999, got %d", pc.MemoryMaxSize)
+	}
+	if pc.ESShards != 5 {
+		t.Errorf("should preserve explicit ESShards 5, got %d", pc.ESShards)
+	}
+}
+
+func TestMaxUploadBytes_Default(t *testing.T) {
+	cfg := &Config{}
+	got := cfg.MaxUploadBytes()
+	if got != 20*1024*1024 {
+		t.Errorf("expected 20MB default, got %d", got)
+	}
+}
+
+func TestMaxUploadBytes_Explicit(t *testing.T) {
+	cfg := &Config{}
+	cfg.Upload.MaxFileSizeMB = 50
+	got := cfg.MaxUploadBytes()
+	if got != 50*1024*1024 {
+		t.Errorf("expected 50MB, got %d", got)
+	}
+}

@@ -499,7 +499,7 @@ func (pg *PGClient) UpdateSchedule(ctx context.Context, id string, cronExpr *str
 }
 
 var validTransitions = map[string]map[string]bool{
-	"todo":         {"blocked": true},
+	"todo":         {"ready": true, "blocked": true},
 	"ready":        {"in_progress": true, "blocked": true},
 	"in_progress":  {"needs_review": true, "ready": true, "blocked": true},
 	"needs_review": {"done": true, "ready": true, "blocked": true},
@@ -560,9 +560,6 @@ func (pg *PGClient) UpdateTaskStatus(ctx context.Context, id, newStatus, actorID
 		sets = "status = $1, updated_at = NOW(), completed_at = NOW()"
 	} else if newStatus == "ready" && currentStatus == "needs_review" {
 		sets = "status = $1, updated_at = NOW(), result = ''"
-		if len(feedback) > 0 && feedback[0] != "" {
-			pg.AddTaskComment(ctx, id, actorID, "REJECTED: "+feedback[0])
-		}
 	}
 
 	_, err = tx.Exec(ctx, fmt.Sprintf("UPDATE tasks SET %s WHERE id = $2", sets), args...)

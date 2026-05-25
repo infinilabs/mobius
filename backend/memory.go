@@ -106,7 +106,7 @@ If nothing new was decided, output exactly: NONE`, safeInput, safeResponse)
 	}
 
 	result, err := provider.ChatStream(ctx, req)
-	if err != nil || result == "" || strings.Contains(strings.ToUpper(result), "NONE") {
+	if err != nil || result == "" || strings.TrimSpace(strings.ToUpper(result)) == "NONE" {
 		return
 	}
 

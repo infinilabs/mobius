@@ -8,6 +8,7 @@ import (
 	"log/slog"
 
 	"cloud.google.com/go/storage"
+	"google.golang.org/api/iterator"
 )
 
 type GCSClient struct {
@@ -106,16 +107,21 @@ func (g *GCSClient) Delete(ctx context.Context, gcsURI string) error {
 
 func (g *GCSClient) DeletePrefix(ctx context.Context, prefix string) error {
 	it := g.client.Bucket(g.bucket).Objects(ctx, &storage.Query{Prefix: prefix})
+	var lastErr error
 	for {
 		attrs, err := it.Next()
-		if err != nil {
+		if errors.Is(err, iterator.Done) {
 			break
+		}
+		if err != nil {
+			return fmt.Errorf("GCS list objects during prefix delete: %w", err)
 		}
 		if delErr := g.client.Bucket(g.bucket).Object(attrs.Name).Delete(ctx); delErr != nil {
 			slog.Warn("GCS delete prefix item failed", "object", attrs.Name, "error", delErr)
+			lastErr = delErr
 		}
 	}
-	return nil
+	return lastErr
 }
 
 func (g *GCSClient) Close() error {

@@ -219,12 +219,12 @@ func buildAgentTools(agent *Employee, task *Task) []ToolDef {
 	tools = append(tools, submitTaskResultToolDef, listTeamToolDef)
 	tools = append(tools, storeMemoryToolDef, forgetMemoryToolDef)
 
-	if agent.Role == "CEO" {
+	if agent.Role == "CEO" || hasTag(agent.Tags, "manager") {
 		tools = append(tools, delegateTaskToolDef, reviewTaskToolDef)
 	}
 
 	if hasTag(agent.Tags, "manager") {
-		tools = append(tools, delegateTaskToolDef, hireEmployeeToolDef, reviewTaskToolDef)
+		tools = append(tools, hireEmployeeToolDef)
 	}
 
 	if task != nil && task.ProjectID != nil {
