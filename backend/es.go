@@ -17,6 +17,7 @@ const (
 	IdxConversations     = "mobius_conversations"
 	IdxMessages          = "mobius_messages"
 	IdxEmployeeMemories  = "mobius_employee_memories"
+	IdxProjectAssets     = "mobius_project_assets"
 )
 
 const maxMemoriesPerEmployee = 100
@@ -70,6 +71,7 @@ func NewESClient(url string) (*ESClient, error) {
 		{IdxEmployeeMemories, "schemas/elasticsearch/002_employee_memories.json"},
 		{IdxPrompts, "schemas/elasticsearch/mobius_prompts.json"},
 		{IdxSkills, "schemas/elasticsearch/mobius_skills.json"},
+		{IdxProjectAssets, "schemas/elasticsearch/003_project_assets.json"},
 	}
 	for _, idx := range esIndices {
 		if err := esClient.CreateIndexIfNotExist(ctx, idx.name, idx.schema); err != nil {
@@ -564,6 +566,326 @@ func (es *ESClient) OldestEmployeeMemory(ctx context.Context, employeeID string)
 		return nil, nil
 	}
 	return &result.Hits.Hits[0].Source, nil
+}
+
+// Project Asset operations
+
+func (es *ESClient) IndexProjectAsset(ctx context.Context, asset *ProjectAsset) error {
+	doc := map[string]any{
+		"id":                asset.ID,
+		"project_id":        asset.ProjectID,
+		"filename":          asset.Filename,
+		"relative_path":     asset.RelativePath,
+		"mime_type":         asset.MIMEType,
+		"size_bytes":        asset.SizeBytes,
+		"content":           asset.Content,
+		"content_summary":   asset.ContentSummary,
+		"content_truncated": asset.ContentTruncated,
+		"content_type":      asset.ContentType,
+		"gcs_uri":           asset.GCSURI,
+		"gcs_status":        asset.GCSStatus,
+		"checksum_sha256":   asset.Checksum,
+		"tags":              asset.Tags,
+		"created_by":        asset.CreatedByID,
+		"task_id":           asset.TaskID,
+		"created_at":        asset.CreatedAt,
+		"updated_at":        asset.UpdatedAt,
+	}
+
+	body, _ := json.Marshal(doc)
+	res, err := es.client.Index(IdxProjectAssets, bytes.NewReader(body),
+		es.client.Index.WithContext(ctx),
+		es.client.Index.WithDocumentID(asset.ID),
+	)
+	if err != nil {
+		return fmt.Errorf("ES index asset failed: %w", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("ES index asset error: %s", res.String())
+	}
+	return nil
+}
+
+func (es *ESClient) SearchProjectAssets(ctx context.Context, projectID, query, contentType string, size int) ([]ProjectAsset, error) {
+	var body map[string]any
+
+	if query == "" {
+		filter := []any{map[string]any{"term": map[string]any{"project_id": projectID}}}
+		if contentType != "" {
+			filter = append(filter, map[string]any{"term": map[string]any{"content_type": contentType}})
+		}
+		body = map[string]any{
+			"query": map[string]any{"bool": map[string]any{"filter": filter}},
+			"sort":  []any{map[string]any{"updated_at": "desc"}},
+			"size":  size,
+		}
+	} else {
+		filter := []any{map[string]any{"term": map[string]any{"project_id": projectID}}}
+		if contentType != "" {
+			filter = append(filter, map[string]any{"term": map[string]any{"content_type": contentType}})
+		}
+		body = map[string]any{
+			"query": map[string]any{
+				"bool": map[string]any{
+					"must": []any{
+						map[string]any{
+							"multi_match": map[string]any{
+								"query":  query,
+								"fields": []string{"content", "content_summary", "filename"},
+								"type":   "best_fields",
+							},
+						},
+					},
+					"filter": filter,
+				},
+			},
+			"size": size,
+		}
+	}
+
+	buf, _ := json.Marshal(body)
+	res, err := es.client.Search(
+		es.client.Search.WithContext(ctx),
+		es.client.Search.WithIndex(IdxProjectAssets),
+		es.client.Search.WithBody(bytes.NewReader(buf)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ES search assets failed: %w", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return nil, fmt.Errorf("ES search assets error: %s", res.String())
+	}
+
+	var result struct {
+		Hits struct {
+			Hits []struct {
+				Source ProjectAsset `json:"_source"`
+			} `json:"hits"`
+		} `json:"hits"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("ES decode assets failed: %w", err)
+	}
+
+	assets := make([]ProjectAsset, 0, len(result.Hits.Hits))
+	for _, hit := range result.Hits.Hits {
+		a := hit.Source
+		if a.Tags == nil {
+			a.Tags = []string{}
+		}
+		assets = append(assets, a)
+	}
+	return assets, nil
+}
+
+func (es *ESClient) GetProjectAsset(ctx context.Context, id string) (*ProjectAsset, error) {
+	res, err := es.client.Get(IdxProjectAssets, id,
+		es.client.Get.WithContext(ctx),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ES get asset failed: %w", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return nil, fmt.Errorf("ES get asset error: %s", res.String())
+	}
+
+	var result struct {
+		Source ProjectAsset `json:"_source"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("ES decode asset failed: %w", err)
+	}
+	if result.Source.Tags == nil {
+		result.Source.Tags = []string{}
+	}
+	return &result.Source, nil
+}
+
+func (es *ESClient) DeleteProjectAsset(ctx context.Context, id string) error {
+	res, err := es.client.Delete(IdxProjectAssets, id,
+		es.client.Delete.WithContext(ctx),
+	)
+	if err != nil {
+		return fmt.Errorf("ES delete asset failed: %w", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("ES delete asset error: %s", res.String())
+	}
+	return nil
+}
+
+func (es *ESClient) DeleteProjectAssets(ctx context.Context, projectID string) error {
+	query := map[string]any{
+		"query": map[string]any{
+			"term": map[string]any{"project_id": projectID},
+		},
+	}
+	buf, _ := json.Marshal(query)
+	res, err := es.client.DeleteByQuery(
+		[]string{IdxProjectAssets},
+		bytes.NewReader(buf),
+		es.client.DeleteByQuery.WithContext(ctx),
+	)
+	if err != nil {
+		return fmt.Errorf("ES delete project assets failed: %w", err)
+	}
+	defer res.Body.Close()
+	return nil
+}
+
+func (es *ESClient) CountProjectAssets(ctx context.Context, projectID string) (int, error) {
+	body := map[string]any{
+		"query": map[string]any{
+			"term": map[string]any{"project_id": projectID},
+		},
+	}
+	buf, _ := json.Marshal(body)
+	res, err := es.client.Count(
+		es.client.Count.WithContext(ctx),
+		es.client.Count.WithIndex(IdxProjectAssets),
+		es.client.Count.WithBody(bytes.NewReader(buf)),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("ES count assets failed: %w", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return 0, fmt.Errorf("ES count assets error: %s", res.String())
+	}
+
+	var result struct {
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return 0, fmt.Errorf("ES decode count failed: %w", err)
+	}
+	return result.Count, nil
+}
+
+func (es *ESClient) GetProjectAssetByPath(ctx context.Context, projectID, relativePath string) (*ProjectAsset, error) {
+	body := map[string]any{
+		"query": map[string]any{
+			"bool": map[string]any{
+				"filter": []any{
+					map[string]any{"term": map[string]any{"project_id": projectID}},
+					map[string]any{"term": map[string]any{"relative_path": relativePath}},
+				},
+			},
+		},
+		"size": 1,
+	}
+	buf, _ := json.Marshal(body)
+	res, err := es.client.Search(
+		es.client.Search.WithContext(ctx),
+		es.client.Search.WithIndex(IdxProjectAssets),
+		es.client.Search.WithBody(bytes.NewReader(buf)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ES get asset by path failed: %w", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return nil, fmt.Errorf("ES get asset by path error: %s", res.String())
+	}
+
+	var result struct {
+		Hits struct {
+			Hits []struct {
+				Source ProjectAsset `json:"_source"`
+			} `json:"hits"`
+		} `json:"hits"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	if len(result.Hits.Hits) == 0 {
+		return nil, nil
+	}
+	return &result.Hits.Hits[0].Source, nil
+}
+
+func (es *ESClient) UpdateProjectAssetGCS(ctx context.Context, id, gcsURI, gcsStatus string) error {
+	doc := map[string]any{
+		"doc": map[string]any{
+			"gcs_uri":    gcsURI,
+			"gcs_status": gcsStatus,
+			"updated_at": time.Now().Format(time.RFC3339),
+		},
+	}
+	body, _ := json.Marshal(doc)
+	res, err := es.client.Update(IdxProjectAssets, id, bytes.NewReader(body),
+		es.client.Update.WithContext(ctx),
+	)
+	if err != nil {
+		return fmt.Errorf("ES update asset GCS failed: %w", err)
+	}
+	defer res.Body.Close()
+	return nil
+}
+
+func (es *ESClient) ExportProjectAssets(ctx context.Context, projectID string) ([]ProjectAsset, error) {
+	body := map[string]any{
+		"query": map[string]any{
+			"term": map[string]any{"project_id": projectID},
+		},
+		"size": 10000,
+		"sort": []any{map[string]any{"created_at": "asc"}},
+	}
+	buf, _ := json.Marshal(body)
+	res, err := es.client.Search(
+		es.client.Search.WithContext(ctx),
+		es.client.Search.WithIndex(IdxProjectAssets),
+		es.client.Search.WithBody(bytes.NewReader(buf)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ES export assets failed: %w", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return nil, fmt.Errorf("ES export assets error: %s", res.String())
+	}
+
+	var result struct {
+		Hits struct {
+			Hits []struct {
+				Source ProjectAsset `json:"_source"`
+			} `json:"hits"`
+		} `json:"hits"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("ES decode export failed: %w", err)
+	}
+	assets := make([]ProjectAsset, 0, len(result.Hits.Hits))
+	for _, hit := range result.Hits.Hits {
+		a := hit.Source
+		if a.Tags == nil {
+			a.Tags = []string{}
+		}
+		assets = append(assets, a)
+	}
+	return assets, nil
+}
+
+func (es *ESClient) UpdateProjectAssetSummary(ctx context.Context, id, summary string) error {
+	doc := map[string]any{
+		"doc": map[string]any{
+			"content_summary": summary,
+			"updated_at":      time.Now().Format(time.RFC3339),
+		},
+	}
+	body, _ := json.Marshal(doc)
+	res, err := es.client.Update(IdxProjectAssets, id, bytes.NewReader(body),
+		es.client.Update.WithContext(ctx),
+	)
+	if err != nil {
+		return fmt.Errorf("ES update asset summary failed: %w", err)
+	}
+	defer res.Body.Close()
+	return nil
 }
 
 func (es *ESClient) IndexEmployeeMemoryDedup(ctx context.Context, employeeID, convID, text string) error {

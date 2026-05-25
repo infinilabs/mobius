@@ -62,7 +62,7 @@ func TestCanDelegate_WorkerToAnyone(t *testing.T) {
 
 func TestBuildAgentTools_CEO(t *testing.T) {
 	ceo := makeEmployee("CEO", []string{"executive"}, nil, nil)
-	tools := buildAgentTools(ceo)
+	tools := buildAgentTools(ceo, nil)
 
 	names := toolNames(tools)
 	assertContains(t, names, "delegate_task", "CEO should have delegate_task")
@@ -74,7 +74,7 @@ func TestBuildAgentTools_CEO(t *testing.T) {
 
 func TestBuildAgentTools_Manager(t *testing.T) {
 	mgr := makeEmployee("PM", []string{"manager"}, nil, nil)
-	tools := buildAgentTools(mgr)
+	tools := buildAgentTools(mgr, nil)
 
 	names := toolNames(tools)
 	assertContains(t, names, "delegate_task", "manager should have delegate_task")
@@ -85,7 +85,7 @@ func TestBuildAgentTools_Manager(t *testing.T) {
 
 func TestBuildAgentTools_Worker(t *testing.T) {
 	worker := makeEmployee("Custom", []string{}, strPtr("mgr-001"), nil)
-	tools := buildAgentTools(worker)
+	tools := buildAgentTools(worker, nil)
 
 	names := toolNames(tools)
 	assertContains(t, names, "submit_task_result", "worker should have submit_task_result")

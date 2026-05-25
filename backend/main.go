@@ -295,6 +295,25 @@ func main() {
 	mux.Handle("POST /api/employees/{id}/memories", h(api.AddEmployeeMemory))
 	mux.Handle("DELETE /api/employees/{id}/memories/{memoryId}", h(api.DeleteEmployeeMemory))
 
+	// Projects
+	mux.Handle("GET /api/projects", h(api.ListProjects))
+	mux.Handle("POST /api/projects", h(api.CreateProject))
+	mux.Handle("GET /api/projects/{id}", h(api.GetProjectHandler))
+	mux.Handle("PUT /api/projects/{id}", h(api.UpdateProject))
+	mux.Handle("DELETE /api/projects/{id}", h(api.ArchiveOrDeleteProject))
+
+	// Project Assets
+	mux.Handle("GET /api/projects/{id}/assets", h(api.ListProjectAssets))
+	mux.Handle("POST /api/projects/{id}/assets", h(api.UploadProjectAsset))
+	mux.Handle("GET /api/projects/{id}/assets/{assetId}", h(api.GetProjectAsset))
+	mux.Handle("PUT /api/projects/{id}/assets/{assetId}", h(api.UpdateProjectAsset))
+	mux.Handle("DELETE /api/projects/{id}/assets/{assetId}", h(api.DeleteProjectAsset))
+	mux.Handle("POST /api/projects/{id}/assets/reindex", h(api.ReindexProjectAssets))
+
+	// Project Memory
+	mux.Handle("GET /api/projects/{id}/memory", h(api.GetProjectMemory))
+	mux.Handle("PUT /api/projects/{id}/memory", h(api.UpdateProjectMemory))
+
 	// Delegation
 	mux.Handle("POST /api/employees/hire", h(api.HireEmployee))
 	mux.Handle("POST /api/tasks/delegate", h(api.DelegateTask))

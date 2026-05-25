@@ -2,10 +2,76 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"sync"
 
 	"gopkg.in/yaml.v3"
 )
+
+type ProjectConfig struct {
+	ProjectsDir      string   `yaml:"projects_dir" json:"projects_dir"`
+	ConversationsDir string   `yaml:"conversations_dir" json:"conversations_dir"`
+	TemplateDirs     []string `yaml:"template_dirs" json:"template_dirs"`
+
+	MemoryMaxSize      int     `yaml:"memory_max_size" json:"memory_max_size"`
+	MemoryCompactRatio float64 `yaml:"memory_compact_ratio" json:"memory_compact_ratio"`
+	MemoryCompactKeep  int     `yaml:"memory_compact_keep" json:"memory_compact_keep"`
+	MemoryInjectLimit  int     `yaml:"memory_inject_limit" json:"memory_inject_limit"`
+	MemoryDedupPrefix  int     `yaml:"memory_dedup_prefix" json:"memory_dedup_prefix"`
+
+	ContentMaxIndex   int `yaml:"content_max_index" json:"content_max_index"`
+	ContentSummaryMax int `yaml:"content_summary_max" json:"content_summary_max"`
+
+	GCSMaxRetries  int `yaml:"gcs_max_retries" json:"gcs_max_retries"`
+	GCSBaseBackoff int `yaml:"gcs_base_backoff_ms" json:"gcs_base_backoff_ms"`
+
+	ESShards   int `yaml:"es_shards" json:"es_shards"`
+	ESReplicas int `yaml:"es_replicas" json:"es_replicas"`
+}
+
+func (pc *ProjectConfig) applyDefaults(workdir string) {
+	if pc.ProjectsDir == "" {
+		pc.ProjectsDir = filepath.Join(workdir, "projects")
+	}
+	pc.ProjectsDir, _ = filepath.Abs(pc.ProjectsDir)
+	if pc.ConversationsDir == "" {
+		pc.ConversationsDir = filepath.Join(workdir, "conversations")
+	}
+	pc.ConversationsDir, _ = filepath.Abs(pc.ConversationsDir)
+	if len(pc.TemplateDirs) == 0 {
+		pc.TemplateDirs = []string{"reports", "code", "media", "data", "docs"}
+	}
+	if pc.MemoryMaxSize == 0 {
+		pc.MemoryMaxSize = 40 * 1024
+	}
+	if pc.MemoryCompactRatio == 0 {
+		pc.MemoryCompactRatio = 0.5
+	}
+	if pc.MemoryCompactKeep == 0 {
+		pc.MemoryCompactKeep = 20
+	}
+	if pc.MemoryInjectLimit == 0 {
+		pc.MemoryInjectLimit = 8000
+	}
+	if pc.MemoryDedupPrefix == 0 {
+		pc.MemoryDedupPrefix = 60
+	}
+	if pc.ContentMaxIndex == 0 {
+		pc.ContentMaxIndex = 100 * 1024
+	}
+	if pc.ContentSummaryMax == 0 {
+		pc.ContentSummaryMax = 2000
+	}
+	if pc.GCSMaxRetries == 0 {
+		pc.GCSMaxRetries = 3
+	}
+	if pc.GCSBaseBackoff == 0 {
+		pc.GCSBaseBackoff = 1000
+	}
+	if pc.ESShards == 0 {
+		pc.ESShards = 1
+	}
+}
 
 type PostgresConfig struct {
 	Host     string `yaml:"host" json:"host"`
@@ -126,6 +192,7 @@ type Config struct {
 	Postgres      PostgresConfig      `yaml:"postgres" json:"postgres"`
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch" json:"elasticsearch"`
 	GoogleCloud   GoogleCloudConfig   `yaml:"google_cloud" json:"google_cloud"`
+	Projects      ProjectConfig       `yaml:"projects,omitempty" json:"projects,omitempty"`
 
 	Upload struct {
 		MaxFileSizeMB int `yaml:"max_file_size_mb,omitempty" json:"max_file_size_mb,omitempty"`
@@ -195,6 +262,8 @@ func LoadConfig(path string) (*Config, error) {
 	if err := yaml.NewDecoder(f).Decode(&cfg); err != nil {
 		return nil, err
 	}
+	workdir, _ := os.Getwd()
+	cfg.Projects.applyDefaults(workdir)
 	return &cfg, nil
 }
 

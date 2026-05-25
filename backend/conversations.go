@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -31,15 +34,17 @@ type FileRef struct {
 type Conversation struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
+	ProjectID *string   `json:"project_id,omitempty"`
 	Messages  []Message `json:"messages"`
 	CreatedAt int64     `json:"created_at"`
 	UpdatedAt int64     `json:"updated_at"`
 }
 
 type ConversationSummary struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	UpdatedAt int64  `json:"updated_at"`
+	ID        string  `json:"id"`
+	Title     string  `json:"title"`
+	ProjectID *string `json:"project_id,omitempty"`
+	UpdatedAt int64   `json:"updated_at"`
 }
 
 type ConversationStore struct {
@@ -183,6 +188,81 @@ func (s *ConversationStore) Delete(id string) bool {
 	return true
 }
 
+// Disk persistence
+
+func conversationFilePath(cfg *Config, convID string, project *Project) string {
+	if project != nil {
+		return filepath.Join(project.RootDir(cfg), ".conversations", convID+".json")
+	}
+	return filepath.Join(cfg.Projects.ConversationsDir, convID+".json")
+}
+
+func SaveConversation(cfg *Config, conv *Conversation, project *Project) error {
+	path := conversationFilePath(cfg, conv.ID, project)
+	os.MkdirAll(filepath.Dir(path), 0755)
+	data, err := json.MarshalIndent(conv, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal conversation: %w", err)
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+func LoadConversation(cfg *Config, convID string, project *Project) (*Conversation, error) {
+	path := conversationFilePath(cfg, convID, project)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read conversation: %w", err)
+	}
+	var conv Conversation
+	if err := json.Unmarshal(data, &conv); err != nil {
+		return nil, fmt.Errorf("unmarshal conversation: %w", err)
+	}
+	return &conv, nil
+}
+
+// PG conversation metadata
+
+func (pg *PGClient) UpsertConversationMeta(ctx context.Context, conv *Conversation) error {
+	_, err := pg.pool.Exec(ctx, `
+		INSERT INTO conversations (id, title, project_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (id) DO UPDATE SET title = $2, project_id = $3, updated_at = $5
+	`, conv.ID, conv.Title, conv.ProjectID, conv.CreatedAt, conv.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("upsert conversation meta: %w", err)
+	}
+	return nil
+}
+
+func (pg *PGClient) ListConversationsMeta(ctx context.Context, projectID string) ([]ConversationSummary, error) {
+	query := "SELECT id, title, project_id, updated_at FROM conversations"
+	var args []any
+	if projectID != "" {
+		query += " WHERE project_id = $1"
+		args = append(args, projectID)
+	}
+	query += " ORDER BY updated_at DESC"
+
+	rows, err := pg.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list conversation meta: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ConversationSummary
+	for rows.Next() {
+		var s ConversationSummary
+		if err := rows.Scan(&s.ID, &s.Title, &s.ProjectID, &s.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan conversation meta: %w", err)
+		}
+		out = append(out, s)
+	}
+	if out == nil {
+		out = []ConversationSummary{}
+	}
+	return out, nil
+}
+
 // HTTP handlers
 
 func (h *APIHandler) ListConversations(w http.ResponseWriter, r *http.Request) {
@@ -208,6 +288,12 @@ func (h *APIHandler) CreateConversation(w http.ResponseWriter, r *http.Request) 
 			slog.Error("ES index conversation failed", "id", c.ID, "error", err)
 		}
 	}
+	if h.pgClient != nil {
+		if err := h.pgClient.UpsertConversationMeta(r.Context(), c); err != nil {
+			slog.Error("PG upsert conversation failed", "id", c.ID, "error", err)
+		}
+	}
+	SaveConversation(h.config, c, nil)
 
 	writeJSON(w, c)
 }

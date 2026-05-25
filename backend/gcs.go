@@ -104,6 +104,20 @@ func (g *GCSClient) Delete(ctx context.Context, gcsURI string) error {
 	return nil
 }
 
+func (g *GCSClient) DeletePrefix(ctx context.Context, prefix string) error {
+	it := g.client.Bucket(g.bucket).Objects(ctx, &storage.Query{Prefix: prefix})
+	for {
+		attrs, err := it.Next()
+		if err != nil {
+			break
+		}
+		if delErr := g.client.Bucket(g.bucket).Object(attrs.Name).Delete(ctx); delErr != nil {
+			slog.Warn("GCS delete prefix item failed", "object", attrs.Name, "error", delErr)
+		}
+	}
+	return nil
+}
+
 func (g *GCSClient) Close() error {
 	return g.client.Close()
 }

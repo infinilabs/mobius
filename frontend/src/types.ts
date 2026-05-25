@@ -81,6 +81,7 @@ export interface Conversation {
   id: string;
   title: string;
   messages: ChatMessage[];
+  project_id?: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -145,6 +146,8 @@ export interface Task {
   next_run_at?: string;
   repeat_times?: number | null;
   parent_task_id?: string | null;
+  project_id?: string | null;
+  project_name?: string;
   created_at: string;
   updated_at: string;
   completed_at?: string;
@@ -179,6 +182,40 @@ export interface EmployeeMemory {
   employee_id: string;
   conversation_id: string;
   memory_text: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  owner: EmployeeBrief | null;
+  status: 'active' | 'paused';
+  source_path?: string;
+  tags: string[];
+  task_count: number;
+  asset_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectAsset {
+  id: string;
+  project_id: string;
+  filename: string;
+  relative_path: string;
+  mime_type: string;
+  size_bytes: number;
+  content?: string;
+  content_summary?: string;
+  content_truncated: boolean;
+  content_type: 'text' | 'code' | 'document' | 'pdf' | 'image' | 'video' | 'audio' | 'binary';
+  gcs_uri?: string;
+  gcs_status: 'pending' | 'synced' | 'failed';
+  tags: string[];
+  created_by?: EmployeeBrief | null;
+  task_id?: string;
   created_at: string;
   updated_at: string;
 }

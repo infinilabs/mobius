@@ -1,6 +1,6 @@
 # Makefile for Mobius
 
-.PHONY: build-frontend build-backend build-all serve test clean \
+.PHONY: build-frontend build-backend build-all serve test sanity clean \
         docker-up docker-up-postgres docker-up-elasticsearch docker-down docker-status
 
 # Variables
@@ -40,6 +40,19 @@ test:
 	@echo "==> Running tests..."
 	cd backend && go test -v ./...
 	cd frontend && npm run test
+
+sanity:
+	@echo "==> [1/5] Go vet..."
+	cd backend && go vet ./...
+	@echo "==> [2/5] Go build..."
+	cd backend && go build ./...
+	@echo "==> [3/5] Go test (race detector)..."
+	cd backend && go test -race -count=1 ./...
+	@echo "==> [4/5] TypeScript type check..."
+	cd frontend && npx tsc --noEmit
+	@echo "==> [5/5] Frontend lint..."
+	cd frontend && npx eslint src --max-warnings 0
+	@echo "==> Sanity check passed."
 
 clean:
 	@echo "==> Cleaning up..."

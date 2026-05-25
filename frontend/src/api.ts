@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { SettingsData, Conversation, ConversationSummary, FileRef, Prompt, VertexModel, Employee, EmployeeMemory, Skill, Task, TaskComment } from './types';
+import type { SettingsData, Conversation, ConversationSummary, FileRef, Prompt, VertexModel, Employee, EmployeeMemory, Skill, Task, TaskComment, Project, ProjectAsset } from './types';
 import { log } from './logger';
 
 export async function fetchConfig(): Promise<{ project_id: string }> {
@@ -245,16 +245,17 @@ export async function delegateTask(delegation: {
 }
 
 // Tasks
-export async function listTasks(filters?: { status?: string; assignee_id?: string }): Promise<Task[]> {
+export async function listTasks(filters?: { status?: string; assignee_id?: string; project_id?: string }): Promise<Task[]> {
   const params = new URLSearchParams();
   if (filters?.status) params.set('status', filters.status);
   if (filters?.assignee_id) params.set('assignee_id', filters.assignee_id);
+  if (filters?.project_id) params.set('project_id', filters.project_id);
   const qs = params.toString();
   const { data } = await axios.get(`/api/tasks${qs ? `?${qs}` : ''}`);
   return data;
 }
 
-export async function createTask(task: { title: string; body?: string; priority?: string; assignee_id?: string; creator_id?: string; dependencies?: string[]; is_scheduled?: boolean; cron_expr?: string; repeat_times?: number }): Promise<Task> {
+export async function createTask(task: { title: string; body?: string; priority?: string; assignee_id?: string; creator_id?: string; dependencies?: string[]; is_scheduled?: boolean; cron_expr?: string; repeat_times?: number; project_id?: string }): Promise<Task> {
   const { data } = await axios.post('/api/tasks', task);
   return data;
 }
@@ -300,6 +301,70 @@ export async function updateTaskSchedule(taskId: string, schedule: {
 }): Promise<Task> {
   const { data } = await axios.put(`/api/tasks/${taskId}/schedule`, schedule);
   return data;
+}
+
+// Projects
+export async function listProjects(status?: string): Promise<Project[]> {
+  const params = status ? `?status=${encodeURIComponent(status)}` : '';
+  const { data } = await axios.get(`/api/projects${params}`);
+  return data;
+}
+
+export async function createProject(project: { name: string; description: string; owner_id?: string; tags?: string[]; source_path?: string }): Promise<Project> {
+  const { data } = await axios.post('/api/projects', project);
+  return data;
+}
+
+export async function getProject(id: string): Promise<Project> {
+  const { data } = await axios.get(`/api/projects/${id}`);
+  return data;
+}
+
+export async function updateProject(id: string, fields: { name?: string; description?: string; status?: string }): Promise<Project> {
+  const { data } = await axios.put(`/api/projects/${id}`, fields);
+  return data;
+}
+
+export async function deleteProject(id: string, mode: 'archive' | 'delete' = 'archive'): Promise<{ archive_path: string }> {
+  const { data } = await axios.delete(`/api/projects/${id}?mode=${mode}`);
+  return data;
+}
+
+// Project Assets
+export async function listProjectAssets(projectId: string, query?: string, type?: string): Promise<ProjectAsset[]> {
+  const params = new URLSearchParams();
+  if (query) params.set('q', query);
+  if (type) params.set('type', type);
+  const qs = params.toString();
+  const { data } = await axios.get(`/api/projects/${projectId}/assets${qs ? `?${qs}` : ''}`);
+  return data;
+}
+
+export async function uploadProjectAsset(projectId: string, file: File, path?: string): Promise<ProjectAsset> {
+  const form = new FormData();
+  form.append('file', file);
+  if (path) form.append('path', path);
+  const { data } = await axios.post(`/api/projects/${projectId}/assets`, form);
+  return data;
+}
+
+export async function deleteProjectAsset(projectId: string, assetId: string): Promise<void> {
+  await axios.delete(`/api/projects/${projectId}/assets/${assetId}`);
+}
+
+export async function reindexProjectAssets(projectId: string): Promise<{ indexed: number }> {
+  const { data } = await axios.post(`/api/projects/${projectId}/assets/reindex`);
+  return data;
+}
+
+// Project Memory
+export async function getProjectMemory(projectId: string): Promise<{ content: string }> {
+  const { data } = await axios.get(`/api/projects/${projectId}/memory`);
+  return data;
+}
+
+export async function updateProjectMemory(projectId: string, content: string): Promise<void> {
+  await axios.put(`/api/projects/${projectId}/memory`, { content });
 }
 
 export async function sendChatMessage(

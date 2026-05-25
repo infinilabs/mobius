@@ -3,8 +3,9 @@ import { Plus, X, MessageSquare, ChevronRight, AlertCircle, CheckCircle2, Clock,
 import {
   listTasks, createTask, getTask, updateTask, deleteTask, updateTaskStatus,
   listTaskComments, addTaskComment, listEmployees, listTaskRuns, updateTaskSchedule,
+  listProjects,
 } from '../api';
-import type { Task, TaskComment, Employee } from '../types';
+import type { Task, TaskComment, Employee, Project } from '../types';
 
 const STATUS_COLUMNS: { key: Task['status']; label: string; color: string }[] = [
   { key: 'scheduled',    label: 'Scheduled',     color: 'text-amber-400' },
@@ -42,22 +43,35 @@ function timeAgo(ts: string) {
 export default function TasksPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
+  const urlParams = new URLSearchParams(window.location.search);
+  const [projectFilter, setProjectFilter] = useState<string>(urlParams.get('project_id') || '');
+
   const refresh = useCallback(() => {
     setLoading(true);
-    listTasks()
+    const filters: { project_id?: string } = {};
+    if (projectFilter) filters.project_id = projectFilter;
+    listTasks(filters)
       .then(setTasks)
       .catch(() => setTasks([]))
       .finally(() => setLoading(false));
-  }, []);
+  }, [projectFilter]);
 
   useEffect(() => {
-    refresh();
+    setLoading(true);
+    const filters: { project_id?: string } = {};
+    if (projectFilter) filters.project_id = projectFilter;
+    listTasks(filters)
+      .then(setTasks)
+      .catch(() => setTasks([]))
+      .finally(() => setLoading(false));
     listEmployees().then(setEmployees).catch(() => {});
-  }, [refresh]);
+    listProjects().then(setProjects).catch(() => {});
+  }, [projectFilter]);
 
   const grouped: Record<Task['status'], Task[]> = {
     scheduled: [], todo: [], ready: [], in_progress: [], needs_review: [], done: [], blocked: [],
@@ -84,6 +98,27 @@ export default function TasksPage() {
         >
           <Plus size={16} /> Create Task
         </button>
+      </div>
+
+      {/* Project Filter */}
+      <div className="flex items-center gap-2 mb-4 shrink-0">
+        <span className="text-xs text-zinc-500">Filter:</span>
+        <select
+          value={projectFilter}
+          onChange={e => setProjectFilter(e.target.value)}
+          className="px-3 py-1.5 rounded-lg border border-zinc-800 bg-zinc-900/50 text-xs text-zinc-300 outline-none cursor-pointer"
+        >
+          <option value="">All Tasks</option>
+          <option value="none">No Project</option>
+          {projects.map(p => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
+        {projectFilter && (
+          <button onClick={() => setProjectFilter('')} className="text-zinc-500 hover:text-zinc-300 cursor-pointer">
+            <X size={14} />
+          </button>
+        )}
       </div>
 
       {/* Board */}
@@ -119,6 +154,8 @@ export default function TasksPage() {
       {showCreate && (
         <CreateTaskModal
           employees={employees}
+          projects={projects}
+          defaultProjectId={projectFilter && projectFilter !== 'none' ? projectFilter : ''}
           allTasks={tasks}
           onClose={() => setShowCreate(false)}
           onCreated={() => { setShowCreate(false); refresh(); }}
@@ -170,10 +207,15 @@ function TaskCard({ task, onClick }: { task: Task; onClick: () => void }) {
         </div>
       )}
 
-      <div className="flex items-center gap-2 mt-2">
+      <div className="flex items-center gap-2 mt-2 flex-wrap">
         <span className={`text-[10px] px-1.5 py-0.5 rounded border ${PRIORITY_STYLES[task.priority]}`}>
           {task.priority}
         </span>
+        {task.project_name && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/40 text-indigo-300 border border-indigo-700/40 truncate max-w-[100px]">
+            {task.project_name}
+          </span>
+        )}
         {task.dependencies.length > 0 && task.status === 'todo' && (
           <span className="text-[10px] text-amber-400 flex items-center gap-0.5">
             <AlertCircle size={10} /> {task.dependencies.length} dep{task.dependencies.length > 1 ? 's' : ''}
@@ -206,8 +248,10 @@ function TaskCard({ task, onClick }: { task: Task; onClick: () => void }) {
   );
 }
 
-function CreateTaskModal({ employees, allTasks, onClose, onCreated }: {
+function CreateTaskModal({ employees, projects, defaultProjectId, allTasks, onClose, onCreated }: {
   employees: Employee[];
+  projects: Project[];
+  defaultProjectId: string;
   allTasks: Task[];
   onClose: () => void;
   onCreated: () => void;
@@ -217,6 +261,7 @@ function CreateTaskModal({ employees, allTasks, onClose, onCreated }: {
   const [priority, setPriority] = useState('medium');
   const [assigneeId, setAssigneeId] = useState('');
   const [creatorId, setCreatorId] = useState('');
+  const [projectId, setProjectId] = useState(defaultProjectId);
   const [deps, setDeps] = useState<string[]>([]);
   const [isScheduled, setIsScheduled] = useState(false);
   const [cronExpr, setCronExpr] = useState('');
@@ -240,6 +285,7 @@ function CreateTaskModal({ employees, allTasks, onClose, onCreated }: {
         is_scheduled: isScheduled || undefined,
         cron_expr: isScheduled ? cronExpr.trim() : undefined,
         repeat_times: isScheduled && repeatTimes ? parseInt(repeatTimes, 10) : undefined,
+        project_id: projectId || undefined,
       });
       onCreated();
     } catch (e: unknown) {
@@ -324,6 +370,20 @@ function CreateTaskModal({ employees, allTasks, onClose, onCreated }: {
               <option value="">None</option>
               {employees.map(e => (
                 <option key={e.id} value={e.id}>{e.name} — {e.role}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-xs text-zinc-500 uppercase tracking-wider block mb-1">Project</label>
+            <select
+              value={projectId}
+              onChange={e => setProjectId(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-zinc-800 bg-zinc-900/50 text-sm text-zinc-200 outline-none cursor-pointer"
+            >
+              <option value="">No Project (global)</option>
+              {projects.map(p => (
+                <option key={p.id} value={p.id}>{p.name}</option>
               ))}
             </select>
           </div>
@@ -556,6 +616,11 @@ function TaskDetailModal({ taskId, employees, onClose, onChanged }: {
             <span className={`text-xs font-medium ${statusCol?.color ?? 'text-zinc-400'}`}>
               {statusCol?.label ?? task.status}
             </span>
+            {task.project_name && (
+              <span className="text-xs text-indigo-300 bg-indigo-900/30 px-2 py-0.5 rounded border border-indigo-700/40">
+                {task.project_name}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             {task.status !== 'done' && (

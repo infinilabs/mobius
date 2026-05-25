@@ -18,6 +18,7 @@ type ChatRequest struct {
 	Files          []FileRef `json:"files,omitempty"`
 	AgentID        string    `json:"agent_id,omitempty"`
 	ModelID        string    `json:"model_id,omitempty"`
+	ProjectID      string    `json:"project_id,omitempty"`
 }
 
 func NewGenAIClient(ctx context.Context, cfg *Config) (*genai.Client, error) {
@@ -123,10 +124,24 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 	// Build tools for this agent
 	var tools []ToolDef
 	if agent != nil {
-		tools = buildAgentTools(agent)
+		tools = buildAgentTools(agent, nil)
 
 		if hasTag(agent.Tags, "manager") || agent.Role == "CEO" {
 			systemPrompt += managerDirectives()
+		}
+
+		if req.ProjectID != "" && h.pgClient != nil {
+			project, perr := h.pgClient.GetProject(r.Context(), req.ProjectID)
+			if perr == nil {
+				mobiusMD := readProjectMemory(project, h.config)
+				if mobiusMD != "" {
+					injected := mobiusMD
+					if len(injected) > h.config.Projects.MemoryInjectLimit {
+						injected = injected[:h.config.Projects.MemoryInjectLimit]
+					}
+					systemPrompt += "\n\n## Project Context: " + project.Name + "\n" + injected
+				}
+			}
 		}
 
 		if h.esClient != nil {
@@ -187,6 +202,9 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 			if agent == nil {
 				return map[string]any{"error": "no agent context for tool execution"}
 			}
+			if req.ProjectID != "" && call.Args != nil {
+				call.Args["_project_id"] = req.ProjectID
+			}
 			return h.executeToolCall(r.Context(), call, agent, conv.ID)
 		},
 		OnToolEvent: func(name, status string) {
@@ -222,6 +240,21 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 				slog.Error("ES update conversation metadata failed", "error", err)
 			}
 		}
+	}
+
+	conv = h.conversations.Get(req.ConversationID)
+	if req.ProjectID != "" && conv.ProjectID == nil {
+		conv.ProjectID = &req.ProjectID
+	}
+
+	var diskProject *Project
+	if conv.ProjectID != nil && h.pgClient != nil {
+		diskProject, _ = h.pgClient.GetProject(r.Context(), *conv.ProjectID)
+	}
+	SaveConversation(h.config, conv, diskProject)
+
+	if h.pgClient != nil {
+		h.pgClient.UpsertConversationMeta(r.Context(), conv)
 	}
 
 	if agent != nil && h.esClient != nil && fullResponse != "" &&

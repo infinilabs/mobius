@@ -28,6 +28,8 @@ type Task struct {
 	NextRunAt    *time.Time     `json:"next_run_at,omitempty"`
 	RepeatTimes  *int           `json:"repeat_times,omitempty"`
 	ParentTaskID *string        `json:"parent_task_id,omitempty"`
+	ProjectID    *string        `json:"project_id,omitempty"`
+	ProjectName  string         `json:"project_name,omitempty"`
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
 	CompletedAt  *time.Time     `json:"completed_at,omitempty"`
@@ -43,16 +45,18 @@ type TaskComment struct {
 
 // PG operations
 
-func (pg *PGClient) ListTasks(ctx context.Context, status, assigneeID string) ([]Task, error) {
+func (pg *PGClient) ListTasks(ctx context.Context, status, assigneeID, projectID string) ([]Task, error) {
 	query := `
 		SELECT t.id, t.title, t.body, t.status, t.priority, t.result,
 		       t.failure_count, t.created_at, t.updated_at, t.completed_at,
 		       t.assignee_id, a.name, a.title, a.role,
 		       t.creator_id, c.name, c.title, c.role,
-		       t.is_scheduled, t.cron_expr, t.next_run_at, t.repeat_times, t.parent_task_id
+		       t.is_scheduled, t.cron_expr, t.next_run_at, t.repeat_times, t.parent_task_id,
+		       t.project_id, p.name
 		FROM tasks t
 		LEFT JOIN employees a ON a.id = t.assignee_id
 		LEFT JOIN employees c ON c.id = t.creator_id
+		LEFT JOIN projects p ON p.id = t.project_id
 	`
 
 	var conditions []string
@@ -67,6 +71,13 @@ func (pg *PGClient) ListTasks(ctx context.Context, status, assigneeID string) ([
 	if assigneeID != "" {
 		conditions = append(conditions, fmt.Sprintf("t.assignee_id = $%d", argN))
 		args = append(args, assigneeID)
+		argN++
+	}
+	if projectID == "none" {
+		conditions = append(conditions, "t.project_id IS NULL")
+	} else if projectID != "" {
+		conditions = append(conditions, fmt.Sprintf("t.project_id = $%d", argN))
+		args = append(args, projectID)
 		argN++
 	}
 
@@ -89,6 +100,7 @@ func (pg *PGClient) ListTasks(ctx context.Context, status, assigneeID string) ([
 		var t Task
 		var assigneeID, assigneeName, assigneeTitle, assigneeRole *string
 		var creatorID, creatorName, creatorTitle, creatorRole *string
+		var projectName *string
 
 		if err := rows.Scan(
 			&t.ID, &t.Title, &t.Body, &t.Status, &t.Priority, &t.Result,
@@ -96,6 +108,7 @@ func (pg *PGClient) ListTasks(ctx context.Context, status, assigneeID string) ([
 			&assigneeID, &assigneeName, &assigneeTitle, &assigneeRole,
 			&creatorID, &creatorName, &creatorTitle, &creatorRole,
 			&t.IsScheduled, &t.CronExpr, &t.NextRunAt, &t.RepeatTimes, &t.ParentTaskID,
+			&t.ProjectID, &projectName,
 		); err != nil {
 			return nil, fmt.Errorf("scan task: %w", err)
 		}
@@ -105,6 +118,9 @@ func (pg *PGClient) ListTasks(ctx context.Context, status, assigneeID string) ([
 		}
 		if creatorID != nil {
 			t.Creator = &EmployeeBrief{ID: *creatorID, Name: *creatorName, Title: *creatorTitle, Role: *creatorRole}
+		}
+		if projectName != nil {
+			t.ProjectName = *projectName
 		}
 		t.Dependencies = []string{}
 		tasks = append(tasks, t)
@@ -144,16 +160,19 @@ func (pg *PGClient) GetTask(ctx context.Context, id string) (*Task, error) {
 	var t Task
 	var assigneeID, assigneeName, assigneeTitle, assigneeRole *string
 	var creatorID, creatorName, creatorTitle, creatorRole *string
+	var projectName *string
 
 	err := pg.pool.QueryRow(ctx, `
 		SELECT t.id, t.title, t.body, t.status, t.priority, t.result,
 		       t.failure_count, t.created_at, t.updated_at, t.completed_at,
 		       t.assignee_id, a.name, a.title, a.role,
 		       t.creator_id, c.name, c.title, c.role,
-		       t.is_scheduled, t.cron_expr, t.next_run_at, t.repeat_times, t.parent_task_id
+		       t.is_scheduled, t.cron_expr, t.next_run_at, t.repeat_times, t.parent_task_id,
+		       t.project_id, p.name
 		FROM tasks t
 		LEFT JOIN employees a ON a.id = t.assignee_id
 		LEFT JOIN employees c ON c.id = t.creator_id
+		LEFT JOIN projects p ON p.id = t.project_id
 		WHERE t.id = $1
 	`, id).Scan(
 		&t.ID, &t.Title, &t.Body, &t.Status, &t.Priority, &t.Result,
@@ -161,6 +180,7 @@ func (pg *PGClient) GetTask(ctx context.Context, id string) (*Task, error) {
 		&assigneeID, &assigneeName, &assigneeTitle, &assigneeRole,
 		&creatorID, &creatorName, &creatorTitle, &creatorRole,
 		&t.IsScheduled, &t.CronExpr, &t.NextRunAt, &t.RepeatTimes, &t.ParentTaskID,
+		&t.ProjectID, &projectName,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get task: %w", err)
@@ -171,6 +191,9 @@ func (pg *PGClient) GetTask(ctx context.Context, id string) (*Task, error) {
 	}
 	if creatorID != nil {
 		t.Creator = &EmployeeBrief{ID: *creatorID, Name: *creatorName, Title: *creatorTitle, Role: *creatorRole}
+	}
+	if projectName != nil {
+		t.ProjectName = *projectName
 	}
 
 	depRows, err := pg.pool.Query(ctx,
@@ -227,10 +250,10 @@ func (pg *PGClient) CreateTask(ctx context.Context, t *Task, depIDs []string) er
 	}
 
 	err = tx.QueryRow(ctx, `
-		INSERT INTO tasks (title, body, status, priority, assignee_id, creator_id)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO tasks (title, body, status, priority, assignee_id, creator_id, project_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, created_at, updated_at
-	`, t.Title, t.Body, status, priority, assigneeID, creatorID).Scan(
+	`, t.Title, t.Body, status, priority, assigneeID, creatorID, t.ProjectID).Scan(
 		&t.ID, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert task: %w", err)
@@ -348,11 +371,11 @@ func (pg *PGClient) CreateScheduledTask(ctx context.Context, t *Task) error {
 
 	err := pg.pool.QueryRow(ctx, `
 		INSERT INTO tasks (title, body, status, priority, assignee_id, creator_id,
-		                   is_scheduled, cron_expr, next_run_at, repeat_times)
-		VALUES ($1, $2, 'scheduled', $3, $4, $5, TRUE, $6, $7, $8)
+		                   is_scheduled, cron_expr, next_run_at, repeat_times, project_id)
+		VALUES ($1, $2, 'scheduled', $3, $4, $5, TRUE, $6, $7, $8, $9)
 		RETURNING id, created_at, updated_at
 	`, t.Title, t.Body, priority, assigneeID, creatorID,
-		t.CronExpr, t.NextRunAt, t.RepeatTimes).Scan(&t.ID, &t.CreatedAt, &t.UpdatedAt)
+		t.CronExpr, t.NextRunAt, t.RepeatTimes, t.ProjectID).Scan(&t.ID, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert scheduled task: %w", err)
 	}
@@ -377,10 +400,10 @@ func (pg *PGClient) CreateChildTask(ctx context.Context, tx pgx.Tx, child *Task,
 	}
 
 	err := tx.QueryRow(ctx, `
-		INSERT INTO tasks (title, body, status, priority, assignee_id, creator_id, parent_task_id)
-		VALUES ($1, $2, 'ready', $3, $4, $5, $6)
+		INSERT INTO tasks (title, body, status, priority, assignee_id, creator_id, parent_task_id, project_id)
+		VALUES ($1, $2, 'ready', $3, $4, $5, $6, $7)
 		RETURNING id, created_at, updated_at
-	`, child.Title, child.Body, priority, assigneeID, creatorID, parentID).Scan(
+	`, child.Title, child.Body, priority, assigneeID, creatorID, parentID, child.ProjectID).Scan(
 		&child.ID, &child.CreatedAt, &child.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert child task: %w", err)
@@ -675,8 +698,9 @@ func (h *APIHandler) ListTasks(w http.ResponseWriter, r *http.Request) {
 
 	status := r.URL.Query().Get("status")
 	assigneeID := r.URL.Query().Get("assignee_id")
+	projectID := r.URL.Query().Get("project_id")
 
-	tasks, err := h.pgClient.ListTasks(r.Context(), status, assigneeID)
+	tasks, err := h.pgClient.ListTasks(r.Context(), status, assigneeID, projectID)
 	if err != nil {
 		writeError(w, "failed to list tasks: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -715,6 +739,7 @@ func (h *APIHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		IsScheduled  bool     `json:"is_scheduled"`
 		CronExpr     string   `json:"cron_expr"`
 		RepeatTimes  *int     `json:"repeat_times"`
+		ProjectID    string   `json:"project_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, "invalid request body", http.StatusBadRequest)
@@ -736,6 +761,13 @@ func (h *APIHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.CreatorID != "" {
 		t.Creator = &EmployeeBrief{ID: body.CreatorID}
+	}
+	if body.ProjectID != "" {
+		if _, err := h.pgClient.GetProject(r.Context(), body.ProjectID); err != nil {
+			writeError(w, "project not found: "+body.ProjectID, http.StatusBadRequest)
+			return
+		}
+		t.ProjectID = &body.ProjectID
 	}
 
 	if body.IsScheduled {

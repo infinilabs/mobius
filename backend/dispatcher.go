@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -217,7 +219,7 @@ func (d *TaskDispatcher) sweepScheduledTasks(ctx context.Context) {
 
 	rows, err := tx.Query(ctx, `
 		SELECT id, title, body, priority, assignee_id, creator_id,
-		       cron_expr, repeat_times, next_run_at
+		       cron_expr, repeat_times, next_run_at, project_id
 		FROM tasks
 		WHERE is_scheduled = TRUE
 		  AND next_run_at IS NOT NULL
@@ -240,6 +242,7 @@ func (d *TaskDispatcher) sweepScheduledTasks(ctx context.Context) {
 		CronExpr    string
 		RepeatTimes *int
 		NextRunAt   time.Time
+		ProjectID   *string
 	}
 	var templates []tpl
 
@@ -247,7 +250,7 @@ func (d *TaskDispatcher) sweepScheduledTasks(ctx context.Context) {
 		var t tpl
 		if err := rows.Scan(&t.ID, &t.Title, &t.Body, &t.Priority,
 			&t.AssigneeID, &t.CreatorID, &t.CronExpr, &t.RepeatTimes,
-			&t.NextRunAt); err == nil {
+			&t.NextRunAt, &t.ProjectID); err == nil {
 			templates = append(templates, t)
 		}
 	}
@@ -318,6 +321,7 @@ func (d *TaskDispatcher) sweepScheduledTasks(ctx context.Context) {
 		if t.CreatorID != nil {
 			child.Creator = &EmployeeBrief{ID: *t.CreatorID}
 		}
+		child.ProjectID = t.ProjectID
 
 		if err := d.pgClient.CreateChildTask(ctx, tx, child, t.ID); err != nil {
 			slog.Error("scheduler: failed to create child task", "template_id", t.ID, "error", err)
@@ -363,6 +367,20 @@ func (d *TaskDispatcher) executeAgentTask(ctx context.Context, t Task) {
 		systemPrompt += managerDirectives()
 	}
 
+	if t.ProjectID != nil && d.pgClient != nil {
+		project, perr := d.pgClient.GetProject(ctx, *t.ProjectID)
+		if perr == nil {
+			mobiusMD := readProjectMemory(project, d.config)
+			if mobiusMD != "" {
+				injected := mobiusMD
+				if len(injected) > d.config.Projects.MemoryInjectLimit {
+					injected = injected[:d.config.Projects.MemoryInjectLimit]
+				}
+				systemPrompt += "\n\n## Project Context: " + project.Name + "\n" + injected
+			}
+		}
+	}
+
 	if d.esClient != nil {
 		mList, _, _ := d.esClient.SearchEmployeeMemories(ctx, assignee.ID, t.Body, 3)
 		if len(mList) > 0 {
@@ -402,14 +420,14 @@ func (d *TaskDispatcher) executeAgentTask(ctx context.Context, t Task) {
 		return
 	}
 
-	tools := buildAgentTools(assignee)
+	tools := buildAgentTools(assignee, &t)
 	llmReq := &LLMRequest{
 		Model:    modelID,
 		Messages: messages,
 		Tools:    tools,
 		OnText:   func(string) {},
 		OnToolCall: func(call ToolCall) map[string]any {
-			return d.dispatcherToolCall(ctx, call, assignee, t.ID)
+			return d.dispatcherToolCall(ctx, call, assignee, &t)
 		},
 	}
 
@@ -430,10 +448,11 @@ func (d *TaskDispatcher) executeAgentTask(ctx context.Context, t Task) {
 	}
 }
 
-func (d *TaskDispatcher) dispatcherToolCall(ctx context.Context, call ToolCall, agent *Employee, taskID string) map[string]any {
+func (d *TaskDispatcher) dispatcherToolCall(ctx context.Context, call ToolCall, agent *Employee, currentTask *Task) map[string]any {
+	taskID := currentTask.ID
 	switch call.Name {
 	case "delegate_task":
-		return d.execDelegateFromDispatcher(ctx, call.Args, agent)
+		return d.execDelegateFromDispatcher(ctx, call.Args, agent, currentTask)
 	case "hire_employee":
 		return d.execHireFromDispatcher(ctx, call.Args, agent)
 	case "submit_task_result":
@@ -471,12 +490,137 @@ func (d *TaskDispatcher) dispatcherToolCall(ctx context.Context, call ToolCall, 
 			return map[string]any{"error": "failed to forget: " + err.Error()}
 		}
 		return map[string]any{"status": "forgotten", "memory_id": memoryID}
+	case "write_project_file":
+		return d.execWriteProjectFile(ctx, call.Args, currentTask)
+	case "read_project_file":
+		return d.execReadProjectFile(ctx, call.Args, currentTask)
+	case "search_project_assets":
+		return d.execSearchProjectAssets(ctx, call.Args, currentTask)
+	case "list_project_assets":
+		return d.execListProjectAssets(ctx, currentTask)
 	default:
 		return map[string]any{"error": "unknown tool: " + call.Name}
 	}
 }
 
-func (d *TaskDispatcher) execDelegateFromDispatcher(ctx context.Context, args map[string]any, creator *Employee) map[string]any {
+func (d *TaskDispatcher) execWriteProjectFile(ctx context.Context, args map[string]any, task *Task) map[string]any {
+	if task.ProjectID == nil {
+		return map[string]any{"error": "no project context"}
+	}
+	path, _ := args["path"].(string)
+	content, _ := args["content"].(string)
+	if path == "" || content == "" {
+		return map[string]any{"error": "path and content are required"}
+	}
+	if err := validateProjectPath(path); err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+
+	project, err := d.pgClient.GetProject(ctx, *task.ProjectID)
+	if err != nil {
+		return map[string]any{"error": "project not found"}
+	}
+
+	fullPath := filepath.Join(project.RootDir(d.config), path)
+	os.MkdirAll(filepath.Dir(fullPath), 0755)
+	if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
+		return map[string]any{"error": "write failed: " + err.Error()}
+	}
+
+	if d.esClient != nil {
+		mimeType := "text/plain"
+		ct := classifyContentType(mimeType)
+		now := time.Now().Format(time.RFC3339)
+		maxIdx := d.config.Projects.ContentMaxIndex
+		indexContent := content
+		truncated := false
+		if len(content) > maxIdx {
+			indexContent = content[:maxIdx]
+			truncated = true
+		}
+		asset := &ProjectAsset{
+			ID: generateID(), ProjectID: *task.ProjectID,
+			Filename: filepath.Base(path), RelativePath: path,
+			MIMEType: mimeType, SizeBytes: int64(len(content)),
+			Content: indexContent, ContentTruncated: truncated,
+			ContentType: ct, GCSStatus: "pending",
+			Tags: []string{}, CreatedByID: task.Assignee.ID, TaskID: task.ID,
+			CreatedAt: now, UpdatedAt: now,
+		}
+		d.esClient.IndexProjectAsset(ctx, asset)
+	}
+
+	return map[string]any{"status": "written", "path": path, "bytes": len(content)}
+}
+
+func (d *TaskDispatcher) execReadProjectFile(ctx context.Context, args map[string]any, task *Task) map[string]any {
+	if task.ProjectID == nil {
+		return map[string]any{"error": "no project context"}
+	}
+	path, _ := args["path"].(string)
+	if path == "" {
+		return map[string]any{"error": "path is required"}
+	}
+	if err := validateProjectPath(path); err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+
+	project, err := d.pgClient.GetProject(ctx, *task.ProjectID)
+	if err != nil {
+		return map[string]any{"error": "project not found"}
+	}
+
+	fullPath := filepath.Join(project.RootDir(d.config), path)
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return map[string]any{"error": "read failed: " + err.Error()}
+	}
+	return map[string]any{"content": string(data), "path": path, "bytes": len(data)}
+}
+
+func (d *TaskDispatcher) execSearchProjectAssets(ctx context.Context, args map[string]any, task *Task) map[string]any {
+	if task.ProjectID == nil || d.esClient == nil {
+		return map[string]any{"error": "no project context or ES unavailable"}
+	}
+	query, _ := args["query"].(string)
+	contentType, _ := args["type"].(string)
+	assets, err := d.esClient.SearchProjectAssets(ctx, *task.ProjectID, query, contentType, 10)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	var results []map[string]any
+	for _, a := range assets {
+		results = append(results, map[string]any{
+			"filename": a.Filename, "path": a.RelativePath, "type": a.ContentType, "size": a.SizeBytes,
+		})
+	}
+	if results == nil {
+		results = []map[string]any{}
+	}
+	return map[string]any{"results": results, "count": len(results)}
+}
+
+func (d *TaskDispatcher) execListProjectAssets(ctx context.Context, task *Task) map[string]any {
+	if task.ProjectID == nil || d.esClient == nil {
+		return map[string]any{"error": "no project context or ES unavailable"}
+	}
+	assets, err := d.esClient.SearchProjectAssets(ctx, *task.ProjectID, "", "", 100)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	var results []map[string]any
+	for _, a := range assets {
+		results = append(results, map[string]any{
+			"filename": a.Filename, "path": a.RelativePath, "type": a.ContentType, "size": a.SizeBytes,
+		})
+	}
+	if results == nil {
+		results = []map[string]any{}
+	}
+	return map[string]any{"results": results, "count": len(results)}
+}
+
+func (d *TaskDispatcher) execDelegateFromDispatcher(ctx context.Context, args map[string]any, creator *Employee, currentTask *Task) map[string]any {
 	assigneeID, _ := args["assignee_id"].(string)
 	title, _ := args["title"].(string)
 	goal, _ := args["goal"].(string)
@@ -509,6 +653,13 @@ func (d *TaskDispatcher) execDelegateFromDispatcher(ctx context.Context, args ma
 		Priority: priority,
 		Creator:  &EmployeeBrief{ID: creator.ID, Name: creator.Name, Title: creator.Title, Role: creator.Role},
 		Assignee: &EmployeeBrief{ID: assignee.ID, Name: assignee.Name, Title: assignee.Title, Role: assignee.Role},
+	}
+	projectID, _ := args["project_id"].(string)
+	if projectID == "" && currentTask.ProjectID != nil {
+		projectID = *currentTask.ProjectID
+	}
+	if projectID != "" {
+		t.ProjectID = &projectID
 	}
 	if err := d.pgClient.CreateTask(ctx, t, nil); err != nil {
 		return map[string]any{"error": "failed to create task: " + err.Error()}

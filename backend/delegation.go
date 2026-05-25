@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
+	"time"
 )
 
 func (h *APIHandler) executeToolCall(
@@ -29,9 +32,126 @@ func (h *APIHandler) executeToolCall(
 		return h.execStoreMemory(ctx, call.Args, agent, conversationID)
 	case "forget_memory":
 		return h.execForgetMemory(ctx, call.Args)
+	case "write_project_file":
+		return h.execWriteProjectFile(ctx, call.Args)
+	case "read_project_file":
+		return h.execReadProjectFile(ctx, call.Args)
+	case "search_project_assets":
+		return h.execSearchProjectAssets(ctx, call.Args)
+	case "list_project_assets":
+		return h.execListProjectAssets(ctx, call.Args)
 	default:
 		return map[string]any{"error": "unknown tool: " + call.Name}
 	}
+}
+
+func (h *APIHandler) execWriteProjectFile(ctx context.Context, args map[string]any) map[string]any {
+	projectID, _ := args["_project_id"].(string)
+	if projectID == "" || h.pgClient == nil {
+		return map[string]any{"error": "no project context"}
+	}
+	path, _ := args["path"].(string)
+	content, _ := args["content"].(string)
+	if path == "" || content == "" {
+		return map[string]any{"error": "path and content are required"}
+	}
+	if err := validateProjectPath(path); err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	project, err := h.pgClient.GetProject(ctx, projectID)
+	if err != nil {
+		return map[string]any{"error": "project not found"}
+	}
+	fullPath := filepath.Join(project.RootDir(h.config), path)
+	os.MkdirAll(filepath.Dir(fullPath), 0755)
+	if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
+		return map[string]any{"error": "write failed: " + err.Error()}
+	}
+
+	if h.esClient != nil {
+		ct := classifyContentType("text/plain")
+		now := time.Now().Format(time.RFC3339)
+		maxIdx := h.config.Projects.ContentMaxIndex
+		indexContent := content
+		truncated := false
+		if len(content) > maxIdx {
+			indexContent = content[:maxIdx]
+			truncated = true
+		}
+		asset := &ProjectAsset{
+			ID: generateID(), ProjectID: projectID,
+			Filename: filepath.Base(path), RelativePath: path,
+			MIMEType: "text/plain", SizeBytes: int64(len(content)),
+			Content: indexContent, ContentTruncated: truncated,
+			ContentType: ct, GCSStatus: "pending",
+			Tags: []string{}, CreatedAt: now, UpdatedAt: now,
+		}
+		h.esClient.IndexProjectAsset(ctx, asset)
+	}
+	return map[string]any{"status": "written", "path": path, "bytes": len(content)}
+}
+
+func (h *APIHandler) execReadProjectFile(ctx context.Context, args map[string]any) map[string]any {
+	projectID, _ := args["_project_id"].(string)
+	if projectID == "" || h.pgClient == nil {
+		return map[string]any{"error": "no project context"}
+	}
+	path, _ := args["path"].(string)
+	if path == "" {
+		return map[string]any{"error": "path is required"}
+	}
+	if err := validateProjectPath(path); err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	project, err := h.pgClient.GetProject(ctx, projectID)
+	if err != nil {
+		return map[string]any{"error": "project not found"}
+	}
+	data, err := os.ReadFile(filepath.Join(project.RootDir(h.config), path))
+	if err != nil {
+		return map[string]any{"error": "read failed: " + err.Error()}
+	}
+	return map[string]any{"content": string(data), "path": path, "bytes": len(data)}
+}
+
+func (h *APIHandler) execSearchProjectAssets(ctx context.Context, args map[string]any) map[string]any {
+	projectID, _ := args["_project_id"].(string)
+	if projectID == "" || h.esClient == nil {
+		return map[string]any{"error": "no project context or ES unavailable"}
+	}
+	query, _ := args["query"].(string)
+	contentType, _ := args["type"].(string)
+	assets, err := h.esClient.SearchProjectAssets(ctx, projectID, query, contentType, 10)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	var results []map[string]any
+	for _, a := range assets {
+		results = append(results, map[string]any{"filename": a.Filename, "path": a.RelativePath, "type": a.ContentType, "size": a.SizeBytes})
+	}
+	if results == nil {
+		results = []map[string]any{}
+	}
+	return map[string]any{"results": results, "count": len(results)}
+}
+
+func (h *APIHandler) execListProjectAssets(ctx context.Context, args map[string]any) map[string]any {
+	projectID, _ := args["_project_id"].(string)
+	if projectID == "" || h.esClient == nil {
+		return map[string]any{"error": "no project context or ES unavailable"}
+	}
+	assets, err := h.esClient.SearchProjectAssets(ctx, projectID, "", "", 100)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	var results []map[string]any
+	for _, a := range assets {
+		results = append(results, map[string]any{"filename": a.Filename, "path": a.RelativePath, "type": a.ContentType, "size": a.SizeBytes})
+	}
+	if results == nil {
+		results = []map[string]any{}
+	}
+	return map[string]any{"results": results, "count": len(results)}
 }
 
 func (h *APIHandler) execStoreMemory(ctx context.Context, args map[string]any, agent *Employee, convID string) map[string]any {
@@ -361,6 +481,7 @@ func (h *APIHandler) DelegateTask(w http.ResponseWriter, r *http.Request) {
 		Priority       string   `json:"priority"`
 		ConversationID string   `json:"conversation_id"`
 		Dependencies   []string `json:"dependencies"`
+		ProjectID      string   `json:"project_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, "invalid request body", http.StatusBadRequest)
@@ -404,6 +525,9 @@ func (h *APIHandler) DelegateTask(w http.ResponseWriter, r *http.Request) {
 		Priority: priority,
 		Creator:  &EmployeeBrief{ID: creator.ID, Name: creator.Name, Title: creator.Title, Role: creator.Role},
 		Assignee: &EmployeeBrief{ID: assignee.ID, Name: assignee.Name, Title: assignee.Title, Role: assignee.Role},
+	}
+	if body.ProjectID != "" {
+		t.ProjectID = &body.ProjectID
 	}
 
 	deps := body.Dependencies

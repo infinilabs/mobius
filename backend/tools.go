@@ -32,6 +32,10 @@ var delegateTaskToolDef = ToolDef{
 				"description": "Task priority",
 				"enum":        []string{"low", "medium", "high", "urgent"},
 			},
+			"project_id": map[string]any{
+				"type":        "string",
+				"description": "Optional project UUID. Omit to inherit from current task's project.",
+			},
 		},
 		"required": []string{"assignee_id", "title", "goal"},
 	},
@@ -146,7 +150,70 @@ var forgetMemoryToolDef = ToolDef{
 	},
 }
 
-func buildAgentTools(agent *Employee) []ToolDef {
+var writeFileToolDef = ToolDef{
+	Name:        "write_project_file",
+	Description: "Write or overwrite a file in the current project's folder. Automatically indexes the file for search.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path": map[string]any{
+				"type":        "string",
+				"description": "Relative path within the project, e.g. 'reports/analysis.md'",
+			},
+			"content": map[string]any{
+				"type":        "string",
+				"description": "File content to write",
+			},
+		},
+		"required": []string{"path", "content"},
+	},
+}
+
+var readFileToolDef = ToolDef{
+	Name:        "read_project_file",
+	Description: "Read a file from the current project's folder.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path": map[string]any{
+				"type":        "string",
+				"description": "Relative path within the project, e.g. 'reports/analysis.md'",
+			},
+		},
+		"required": []string{"path"},
+	},
+}
+
+var searchAssetsToolDef = ToolDef{
+	Name:        "search_project_assets",
+	Description: "Search for files in the current project by content or filename.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"query": map[string]any{
+				"type":        "string",
+				"description": "Search query to match against file content and names",
+			},
+			"type": map[string]any{
+				"type":        "string",
+				"description": "Filter by content type",
+				"enum":        []string{"text", "code", "document", "image", "video", "audio", "binary"},
+			},
+		},
+		"required": []string{"query"},
+	},
+}
+
+var listAssetsToolDef = ToolDef{
+	Name:        "list_project_assets",
+	Description: "List all files in the current project.",
+	Parameters: map[string]any{
+		"type":       "object",
+		"properties": map[string]any{},
+	},
+}
+
+func buildAgentTools(agent *Employee, task *Task) []ToolDef {
 	var tools []ToolDef
 
 	tools = append(tools, submitTaskResultToolDef, listTeamToolDef)
@@ -158,6 +225,10 @@ func buildAgentTools(agent *Employee) []ToolDef {
 
 	if hasTag(agent.Tags, "manager") {
 		tools = append(tools, delegateTaskToolDef, hireEmployeeToolDef, reviewTaskToolDef)
+	}
+
+	if task != nil && task.ProjectID != nil {
+		tools = append(tools, writeFileToolDef, readFileToolDef, searchAssetsToolDef, listAssetsToolDef)
 	}
 
 	return tools

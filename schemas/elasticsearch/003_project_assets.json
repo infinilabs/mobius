@@ -1,0 +1,51 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "analysis": {
+      "analyzer": {
+        "asset_analyzer": {
+          "type": "custom",
+          "tokenizer": "standard",
+          "filter": ["lowercase", "stop", "snowball"]
+        },
+        "filename_analyzer": {
+          "type": "custom",
+          "tokenizer": "standard",
+          "filter": ["lowercase"],
+          "char_filter": ["path_separator"]
+        }
+      },
+      "char_filter": {
+        "path_separator": {
+          "type": "pattern_replace",
+          "pattern": "[/\\\\._-]",
+          "replacement": " "
+        }
+      }
+    }
+  },
+  "mappings": {
+    "properties": {
+      "id":                { "type": "keyword" },
+      "project_id":        { "type": "keyword" },
+      "filename":          { "type": "text", "analyzer": "filename_analyzer",
+                             "fields": { "raw": { "type": "keyword" } } },
+      "relative_path":     { "type": "keyword" },
+      "mime_type":         { "type": "keyword" },
+      "size_bytes":        { "type": "long" },
+      "content":           { "type": "text", "analyzer": "asset_analyzer" },
+      "content_summary":   { "type": "text", "analyzer": "asset_analyzer" },
+      "content_truncated": { "type": "boolean" },
+      "content_type":      { "type": "keyword" },
+      "gcs_uri":           { "type": "keyword" },
+      "gcs_status":        { "type": "keyword" },
+      "checksum_sha256":   { "type": "keyword" },
+      "tags":              { "type": "keyword" },
+      "created_by":        { "type": "keyword" },
+      "task_id":           { "type": "keyword" },
+      "created_at":        { "type": "date" },
+      "updated_at":        { "type": "date" }
+    }
+  }
+}

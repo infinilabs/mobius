@@ -85,8 +85,12 @@ func absorbMemoryFromExchange(ctx context.Context, cfg *Config, providers *Provi
 	prompt := fmt.Sprintf(`You extract concise facts from conversations.
 
 Review this exchange:
-User: %s
-Assistant: %s
+<user_message>
+%s
+</user_message>
+<assistant_response>
+%s
+</assistant_response>
 
 If a new technical decision, convention, constraint, or user preference was established, output it as a single concise sentence (max 200 characters).
 Examples:
