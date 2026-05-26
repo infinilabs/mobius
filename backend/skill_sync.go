@@ -228,11 +228,14 @@ func buildMobiusSkillMD(name, description, version, category string, tags []stri
 // GitRepoSource syncs skills from a local Git repository with SKILL.md files.
 // Works for anthropics/skills, addyosmani/agent-skills, vercel-labs/agent-skills,
 // trailofbits/skills, and any repo following the SKILL.md convention.
+// Set AnyMD to true to scan all *.md files (not just SKILL.md), useful for
+// repos like agency-agents where files are named per-agent.
 type GitRepoSource struct {
 	SourceName string
 	BasePath   string
-	Category   string // default category if not derivable from directory
+	Category   string   // default category if not derivable from directory
 	SkillsDirs []string // subdirectories to scan (e.g. ["skills", "plugins"])
+	AnyMD      bool     // scan all *.md files, not just SKILL.md
 }
 
 type genericFrontmatter struct {
@@ -258,8 +261,22 @@ func (g *GitRepoSource) Sync(ctx context.Context, targetDir string) (added, upda
 			continue
 		}
 
+		dirCategory := g.Category
+		if dirCategory == "" {
+			dirCategory = subdir
+		}
+
 		walkErr := filepath.WalkDir(scanDir, func(path string, d os.DirEntry, walkErr error) error {
-			if walkErr != nil || d.IsDir() || d.Name() != "SKILL.md" {
+			if walkErr != nil || d.IsDir() {
+				return nil
+			}
+			if g.AnyMD {
+				if !strings.HasSuffix(d.Name(), ".md") || strings.EqualFold(d.Name(), "README.md") ||
+					strings.EqualFold(d.Name(), "CONTRIBUTING.md") || strings.EqualFold(d.Name(), "SECURITY.md") ||
+					strings.EqualFold(d.Name(), "LICENSE") {
+					return nil
+				}
+			} else if d.Name() != "SKILL.md" {
 				return nil
 			}
 
@@ -268,7 +285,7 @@ func (g *GitRepoSource) Sync(ctx context.Context, targetDir string) (added, upda
 				return nil
 			}
 
-			a, u := g.processSkill(data, path, scanDir, targetDir)
+			a, u := g.processSkill(data, path, scanDir, targetDir, dirCategory)
 			added += a
 			updated += u
 			return nil
@@ -281,7 +298,7 @@ func (g *GitRepoSource) Sync(ctx context.Context, targetDir string) (added, upda
 	return added, updated, nil
 }
 
-func (g *GitRepoSource) processSkill(data []byte, path, scanRoot, targetDir string) (added, updated int) {
+func (g *GitRepoSource) processSkill(data []byte, path, scanRoot, targetDir, categoryHint string) (added, updated int) {
 	content := string(data)
 	if !strings.HasPrefix(content, "---\n") {
 		return 0, 0
@@ -301,7 +318,13 @@ func (g *GitRepoSource) processSkill(data []byte, path, scanRoot, targetDir stri
 		return 0, 0
 	}
 
-	category := g.Category
+	category := categoryHint
+	if category == "" {
+		rel, _ := filepath.Rel(scanRoot, filepath.Dir(path))
+		if rel != "" && rel != "." {
+			category = strings.Split(rel, string(filepath.Separator))[0]
+		}
+	}
 	version := gfm.Version
 	if version == "" {
 		version = gfm.Metadata.Version
@@ -366,7 +389,7 @@ func (h *APIHandler) runFullSync(ctx context.Context) *SyncResult {
 	}
 
 	if h.esClient != nil {
-		a, u, err := syncSkillsFromDisk(ctx, h.esClient, h.skillsDir)
+		a, u, err := syncSkillsFromDisk(ctx, h.esClient, h.pgClient, h.skillsDir)
 		if err != nil {
 			slog.Error("disk→ES sync failed after upstream", "error", err)
 		}

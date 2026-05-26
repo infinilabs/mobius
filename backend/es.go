@@ -504,6 +504,28 @@ func (es *ESClient) DeleteEmployeeMemory(ctx context.Context, id string) error {
 	return nil
 }
 
+func (es *ESClient) DeleteEmployeeMemories(ctx context.Context, employeeID string) error {
+	query := map[string]any{
+		"query": map[string]any{
+			"term": map[string]any{"employee_id": employeeID},
+		},
+	}
+	buf, _ := json.Marshal(query)
+	res, err := es.client.DeleteByQuery(
+		[]string{IdxEmployeeMemories},
+		bytes.NewReader(buf),
+		es.client.DeleteByQuery.WithContext(ctx),
+	)
+	if err != nil {
+		return fmt.Errorf("ES delete employee memories failed: %w", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("ES delete employee memories error: %s", res.Status())
+	}
+	return nil
+}
+
 func (es *ESClient) CountEmployeeMemories(ctx context.Context, employeeID string) (int, error) {
 	body := map[string]any{
 		"query": map[string]any{

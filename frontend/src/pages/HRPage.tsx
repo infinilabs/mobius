@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   Users, Plus, Trash2, X, Pencil, ChevronDown, ChevronRight,
   Brain, Wrench, UserCog, Tag, Filter, RotateCcw, Database, Search,
+  ChevronUp,
 } from 'lucide-react';
 import { listEmployees, createEmployee, updateEmployee, deleteEmployee, setEmployeeManager, listModels, listEmployeeSkills, resetEmployeeSkills, listEmployeeMemories, addEmployeeMemory, deleteEmployeeMemory } from '../api';
 import type { Employee, EmployeeModel, EmployeeMemory, VertexModel, Skill } from '../types';
@@ -41,6 +42,12 @@ export default function HRPage() {
   const [editTarget, setEditTarget] = useState<Employee | null>(null);
   const [models, setModels] = useState<VertexModel[]>([]);
   const [filterTag, setFilterTag] = useState<string>('');
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
+  const toggleNode = useCallback((id: string) => setExpandedNodes(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) { next.delete(id); } else { next.add(id); }
+    return next;
+  }), []);
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -80,6 +87,14 @@ export default function HRPage() {
   const highlightIds = new Set(
     filterTag ? employees.filter(e => e.tags.includes(filterTag)).map(e => e.id) : []
   );
+  const forceExpandedIds = new Set<string>();
+  if (filterTag) {
+    for (const emp of employees) {
+      if (emp.tags.includes(filterTag) && emp.manager_id) {
+        forceExpandedIds.add(emp.manager_id);
+      }
+    }
+  }
 
   return (
     <div className="p-8 max-w-[1400px] mx-auto">
@@ -170,9 +185,13 @@ export default function HRPage() {
                     <OrgTreeNode
                       key={root.employee.id}
                       node={root}
+                      depth={0}
                       selected={selected}
                       onSelect={setSelected}
                       highlightIds={highlightIds}
+                      expandedNodes={expandedNodes}
+                      forceExpandedIds={forceExpandedIds}
+                      toggleNode={toggleNode}
                     />
                   ))}
                 </div>
@@ -197,47 +216,122 @@ export default function HRPage() {
   );
 }
 
-function OrgTreeNode({ node, selected, onSelect, highlightIds }: {
+function OrgNodeCard({ emp, isSelected, isHighlighted, onClick }: {
+  emp: Employee; isSelected: boolean; isHighlighted: boolean; onClick: () => void;
+}) {
+  const color = ROLE_COLORS[emp.role] || ROLE_COLORS.Custom;
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-2.5 px-4 py-3 rounded-xl border cursor-pointer transition-all ${
+        isHighlighted ? 'glow-breathe' :
+        isSelected ? 'border-cyan-500/40 shadow-lg' : 'border-zinc-800/40 hover:border-zinc-700/60'
+      }`}
+      style={{ background: isSelected ? '#0e749015' : '#0a0a0d', minWidth: 160 }}
+    >
+      <div
+        className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold shrink-0"
+        style={{ background: `${color}20`, color, border: `2px solid ${color}40` }}
+      >
+        {emp.name[0]}
+      </div>
+      <div className="text-left min-w-0">
+        <p className="text-xs font-semibold text-zinc-200 truncate">{emp.name}</p>
+        <p className="text-[10px] text-zinc-500 truncate">{emp.title}</p>
+      </div>
+    </button>
+  );
+}
+
+function OrgTreeNode({ node, depth, selected, onSelect, highlightIds, expandedNodes, forceExpandedIds, toggleNode }: {
   node: TreeNode;
+  depth: number;
   selected: Employee | null;
   onSelect: (e: Employee) => void;
   highlightIds: Set<string>;
+  expandedNodes: Set<string>;
+  forceExpandedIds: Set<string>;
+  toggleNode: (id: string) => void;
 }) {
   const emp = node.employee;
-  const color = ROLE_COLORS[emp.role] || ROLE_COLORS.Custom;
   const isSelected = selected?.id === emp.id;
   const isHighlighted = highlightIds.has(emp.id);
+  const hasChildren = node.children.length > 0;
+  const collapsible = depth >= 1 && hasChildren;
+  const isExpanded = collapsible && (expandedNodes.has(emp.id) || forceExpandedIds.has(emp.id));
 
   return (
     <div className="flex flex-col items-center">
-      {/* Node card */}
-      <button
-        onClick={() => onSelect(emp)}
-        className={`flex items-center gap-2.5 px-4 py-3 rounded-xl border cursor-pointer transition-all ${
-          isHighlighted ? 'glow-breathe' :
-          isSelected ? 'border-cyan-500/40 shadow-lg' : 'border-zinc-800/40 hover:border-zinc-700/60'
-        }`}
-        style={{ background: isSelected ? '#0e749015' : '#0a0a0d', minWidth: 160 }}
-      >
-        <div
-          className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold shrink-0"
-          style={{ background: `${color}20`, color, border: `2px solid ${color}40` }}
-        >
-          {emp.name[0]}
-        </div>
-        <div className="text-left min-w-0">
-          <p className="text-xs font-semibold text-zinc-200 truncate">{emp.name}</p>
-          <p className="text-[10px] text-zinc-500 truncate">{emp.title}</p>
-        </div>
-      </button>
+      <OrgNodeCard emp={emp} isSelected={isSelected} isHighlighted={isHighlighted} onClick={() => onSelect(emp)} />
 
-      {/* Children */}
-      {node.children.length > 0 && (
+      {/* Collapsible toggle for layer-2 nodes */}
+      {collapsible && (
+        <div className="flex flex-col items-center">
+          <div className="w-px h-4" style={{ background: '#3f3f46' }} />
+          <button
+            onClick={() => toggleNode(emp.id)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-800/40 hover:border-zinc-600/60 cursor-pointer transition-all text-[10px] font-medium"
+            style={{ background: '#0a0a0d' }}
+          >
+            {isExpanded
+              ? <><ChevronUp size={10} className="text-cyan-400" /><span className="text-zinc-400">{node.children.length} reports</span></>
+              : <><ChevronRight size={10} className="text-zinc-500" /><span className="text-zinc-500">{node.children.length} reports</span></>
+            }
+          </button>
+
+          {isExpanded && (
+            <>
+              <div className="w-px h-4" style={{ background: '#3f3f46' }} />
+              <div
+                className="grid gap-2 p-3 rounded-xl border border-zinc-800/30"
+                style={{
+                  background: '#09090b',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))',
+                  maxWidth: 800,
+                  width: '100%',
+                }}
+              >
+                {node.children.map(child => {
+                  const c = child.employee;
+                  const cColor = ROLE_COLORS[c.role] || ROLE_COLORS.Custom;
+                  const cSelected = selected?.id === c.id;
+                  const cHighlighted = highlightIds.has(c.id);
+                  return (
+                    <button
+                      key={c.id}
+                      onClick={() => onSelect(c)}
+                      className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border cursor-pointer transition-all text-left ${
+                        cHighlighted ? 'glow-breathe' :
+                        cSelected ? 'border-cyan-500/40' : 'border-zinc-800/30 hover:border-zinc-700/50'
+                      }`}
+                      style={{ background: cSelected ? '#0e749015' : '#111114' }}
+                    >
+                      <div
+                        className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0"
+                        style={{ background: `${cColor}20`, color: cColor, border: `1.5px solid ${cColor}40` }}
+                      >
+                        {c.name[0]}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-medium text-zinc-300 truncate">{c.name}</p>
+                        <p className="text-[9px] text-zinc-600 truncate">{c.title}</p>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Normal tree rendering for non-collapsible children (depth 0 only) */}
+      {hasChildren && !collapsible && (
         <div className="flex flex-col items-center">
           <div className="w-px h-6" style={{ background: '#3f3f46' }} />
-
           {node.children.length === 1 ? (
-            <OrgTreeNode node={node.children[0]} selected={selected} onSelect={onSelect} highlightIds={highlightIds} />
+            <OrgTreeNode node={node.children[0]} depth={depth + 1} selected={selected} onSelect={onSelect}
+              highlightIds={highlightIds} expandedNodes={expandedNodes} forceExpandedIds={forceExpandedIds} toggleNode={toggleNode} />
           ) : (
             <div className="flex items-start">
               {node.children.map((child, i) => (
@@ -247,7 +341,8 @@ function OrgTreeNode({ node, selected, onSelect, highlightIds }: {
                     <div className="w-px h-6" style={{ background: '#3f3f46' }} />
                     <div className={`h-px flex-1 ${i === node.children.length - 1 ? 'bg-transparent' : ''}`} style={i < node.children.length - 1 ? { background: '#3f3f46' } : undefined} />
                   </div>
-                  <OrgTreeNode node={child} selected={selected} onSelect={onSelect} highlightIds={highlightIds} />
+                  <OrgTreeNode node={child} depth={depth + 1} selected={selected} onSelect={onSelect}
+                    highlightIds={highlightIds} expandedNodes={expandedNodes} forceExpandedIds={forceExpandedIds} toggleNode={toggleNode} />
                 </div>
               ))}
             </div>

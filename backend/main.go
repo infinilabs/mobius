@@ -155,11 +155,13 @@ func main() {
 	defaultRepos := []struct {
 		name, path, category string
 		dirs                 []string
+		anyMD                bool
 	}{
-		{"anthropic", "../anthropic-skills", "anthropic", []string{"skills"}},
-		{"addyosmani", "../addyosmani-skills", "engineering", []string{"skills"}},
-		{"vercel", "../vercel-skills", "frontend", []string{"skills"}},
-		{"trailofbits", "../trailofbits-skills", "security", []string{"plugins", ".codex/skills"}},
+		{"anthropic", "../anthropic-skills", "anthropic", []string{"skills"}, false},
+		{"addyosmani", "../addyosmani-skills", "engineering", []string{"skills"}, false},
+		{"vercel", "../vercel-skills", "frontend", []string{"skills"}, false},
+		{"trailofbits", "../trailofbits-skills", "security", []string{"plugins", ".codex/skills"}, false},
+		{"agency-agents", "../agency-agents", "", []string{"marketing", "design", "product", "engineering", "testing"}, true},
 	}
 	for _, r := range defaultRepos {
 		if _, err := os.Stat(r.path); err == nil {
@@ -168,6 +170,7 @@ func main() {
 				BasePath:   r.path,
 				Category:   r.category,
 				SkillsDirs: r.dirs,
+				AnyMD:      r.anyMD,
 			})
 			slog.Info("skill sync source configured", "source", r.name, "path", r.path)
 		}
@@ -204,8 +207,17 @@ func main() {
 			}
 		}
 
+		for _, src := range api.syncSources {
+			a, u, syncErr := src.Sync(ctx, skillsDir)
+			if syncErr != nil {
+				slog.Warn("startup upstream sync failed", "source", src.Name(), "error", syncErr)
+			} else if a+u > 0 {
+				slog.Info("startup upstream sync", "source", src.Name(), "added", a, "updated", u)
+			}
+		}
+
 		if _, err := os.Stat(skillsDir); err == nil {
-			added, updated, syncErr := syncSkillsFromDisk(ctx, esClient, skillsDir)
+			added, updated, syncErr := syncSkillsFromDisk(ctx, esClient, pgClient, skillsDir)
 			if syncErr != nil {
 				slog.Error("failed to sync skills from disk", "error", syncErr)
 			} else if added+updated > 0 {
@@ -392,7 +404,7 @@ func main() {
 			for {
 				select {
 				case <-ticker.C:
-					added, updated, err := syncSkillsFromDisk(syncCtx, esClient, skillsDir)
+					added, updated, err := syncSkillsFromDisk(syncCtx, esClient, pgClient, skillsDir)
 					if err != nil {
 						slog.Error("disk sync failed", "error", err)
 					} else if added+updated > 0 {

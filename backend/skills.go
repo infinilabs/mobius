@@ -245,7 +245,7 @@ func (es *ESClient) DeleteSkill(ctx context.Context, id string) error {
 
 // Disk → ES sync
 
-func syncSkillsFromDisk(ctx context.Context, esClient *ESClient, dir string) (added, updated int, err error) {
+func syncSkillsFromDisk(ctx context.Context, esClient *ESClient, pgClient *PGClient, dir string) (added, updated int, err error) {
 	existing, err := esClient.SearchSkills(ctx, "")
 	if err != nil {
 		return 0, 0, fmt.Errorf("load existing skills: %w", err)
@@ -375,6 +375,20 @@ func syncSkillsFromDisk(ctx context.Context, esClient *ESClient, dir string) (ad
 		}
 	}
 
+	for _, orig := range existing {
+		if _, stillOnDisk := esMap[orig.ID]; stillOnDisk {
+			continue
+		}
+		if delErr := esClient.DeleteSkill(ctx, orig.ID); delErr != nil {
+			slog.Warn("failed to delete orphan skill from ES", "id", orig.ID, "name", orig.Name, "error", delErr)
+			continue
+		}
+		if pgClient != nil {
+			pgClient.pool.Exec(ctx, "DELETE FROM skill_assignments WHERE skill_id=$1", orig.ID)
+		}
+		slog.Info("orphan skill removed", "id", orig.ID, "name", orig.Name)
+	}
+
 	return added, updated, nil
 }
 
@@ -420,12 +434,8 @@ func (pg *PGClient) ListEmployeeSkillIDs(ctx context.Context, employeeID string)
 	return ids, nil
 }
 
-func (pg *PGClient) SeedDefaultSkillAssignments(ctx context.Context, es *ESClient) error {
-	if es == nil {
-		return nil
-	}
-
-	defaults := map[string][]string{
+func founderSkillDefaults() map[string][]string {
+	return map[string][]string{
 		"Elong": {
 			"task-decomposition",
 			"planning-and-task-breakdown",
@@ -456,19 +466,15 @@ func (pg *PGClient) SeedDefaultSkillAssignments(ctx context.Context, es *ESClien
 			"source-driven-development",
 			"mcp-builder",
 		},
-		"Allen": {
-			"test-driven-development",
-			"systematic-debugging",
-			"code-review-and-quality",
-			"debugging-and-error-recovery",
-			"browser-testing-with-devtools",
-			"webapp-testing",
-			"ci-cd-and-automation",
-			"doubt-driven-development",
-			"mutation-testing",
-			"coverage-analysis",
-		},
 	}
+}
+
+func (pg *PGClient) SeedDefaultSkillAssignments(ctx context.Context, es *ESClient) error {
+	if es == nil {
+		return nil
+	}
+
+	defaults := founderSkillDefaults()
 
 	for empName, skillNames := range defaults {
 		var empID string
@@ -481,6 +487,24 @@ func (pg *PGClient) SeedDefaultSkillAssignments(ctx context.Context, es *ESClien
 			skillID := skillIDFromName(sn)
 			if _, lookupErr := es.GetSkill(ctx, skillID); lookupErr != nil {
 				slog.Warn("default skill not in ES, skipping assignment", "employee", empName, "skill", sn, "id", skillID)
+				continue
+			}
+			pg.pool.Exec(ctx,
+				"INSERT INTO skill_assignments (employee_id, skill_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+				empID, skillID)
+		}
+	}
+
+	rows, err := pg.pool.Query(ctx, "SELECT id, name FROM employees")
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var empID, empName string
+			if rows.Scan(&empID, &empName) != nil {
+				continue
+			}
+			skillID := skillIDFromName(empName)
+			if _, lookupErr := es.GetSkill(ctx, skillID); lookupErr != nil {
 				continue
 			}
 			pg.pool.Exec(ctx,
@@ -510,50 +534,7 @@ func (pg *PGClient) ResetEmployeeSkills(ctx context.Context, es *ESClient, emplo
 		return fmt.Errorf("reset is only available for founders")
 	}
 
-	defaults := map[string][]string{
-		"Elong": {
-			"task-decomposition",
-			"planning-and-task-breakdown",
-			"idea-refine",
-			"spec-driven-development",
-			"shipping-and-launch",
-			"one-three-one-rule",
-		},
-		"Steve": {
-			"writing-plans",
-			"code-review",
-			"frontend-ui-engineering",
-			"web-design-guidelines",
-			"interview-me",
-			"documentation-and-adrs",
-			"frontend-design",
-		},
-		"Linas": {
-			"systematic-debugging",
-			"test-driven-development",
-			"codebase-inspection",
-			"spike",
-			"incremental-implementation",
-			"performance-optimization",
-			"code-simplification",
-			"api-and-interface-design",
-			"security-and-hardening",
-			"source-driven-development",
-			"mcp-builder",
-		},
-		"Allen": {
-			"test-driven-development",
-			"systematic-debugging",
-			"code-review-and-quality",
-			"debugging-and-error-recovery",
-			"browser-testing-with-devtools",
-			"webapp-testing",
-			"ci-cd-and-automation",
-			"doubt-driven-development",
-			"mutation-testing",
-			"coverage-analysis",
-		},
-	}
+	defaults := founderSkillDefaults()
 
 	skillNames, ok := defaults[empName]
 	if !ok {
@@ -749,6 +730,13 @@ func (h *APIHandler) DeleteSkill(w http.ResponseWriter, r *http.Request) {
 	if err := h.esClient.DeleteSkill(r.Context(), id); err != nil {
 		writeError(w, "failed to delete skill: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	if h.pgClient != nil {
+		if _, err := h.pgClient.pool.Exec(r.Context(),
+			"DELETE FROM skill_assignments WHERE skill_id=$1", id); err != nil {
+			slog.Warn("failed to clean up skill assignments", "skill_id", id, "error", err)
+		}
 	}
 
 	if h.skillsDir != "" && skill != nil {
