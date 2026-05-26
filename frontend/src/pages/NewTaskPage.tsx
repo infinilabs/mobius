@@ -61,13 +61,14 @@ export default function NewTaskPage({ conversationId, onConversationCreated, ini
         const target = chatEligible.find(e => e.id === targetId);
         if (target) { setChatTarget({ kind: 'agent', agent: target }); return; }
       }
-      if (!chatTarget) {
+      setChatTarget(prev => {
+        if (prev) return prev;
         const ceo = chatEligible.find(e => e.role === 'CEO');
-        if (ceo) setChatTarget({ kind: 'agent', agent: ceo });
-      }
+        return ceo ? { kind: 'agent', agent: ceo } : prev;
+      });
     }).catch(() => {});
     listModels().then(setRegisteredModels).catch(() => {});
-    fetchSettings().then(s => { if (s.upload?.max_file_size_mb) setMaxFileSizeMB(s.upload.max_file_size_mb); }).catch(() => {});
+    fetchSettings().then(s => { if (s.chat_upload?.max_file_size_mb) setMaxFileSizeMB(s.chat_upload.max_file_size_mb); }).catch(() => {});
   }, [initialAgentId]);
 
   useEffect(() => {

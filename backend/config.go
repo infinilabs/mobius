@@ -82,7 +82,8 @@ type PostgresConfig struct {
 }
 
 type ElasticsearchConfig struct {
-	URL string `yaml:"url" json:"url"`
+	URL    string      `yaml:"url" json:"url"`
+	Events EventConfig `yaml:"events,omitempty" json:"events,omitempty"`
 }
 
 type VertexModel struct {
@@ -160,14 +161,42 @@ func (v *VertexAIConfig) DefaultLLM() (modelID, location string) {
 	return v.LLMModelID, v.LLMLocation
 }
 
+type EventConfig struct {
+	BufferSize     int    `yaml:"buffer_size" json:"buffer_size"`
+	BatchSize      int    `yaml:"batch_size" json:"batch_size"`
+	FlushIntervalS int    `yaml:"flush_interval_s" json:"flush_interval_s"`
+	RetentionDays  int    `yaml:"retention_days" json:"retention_days"`
+	ArchiveCron    string `yaml:"archive_cron" json:"archive_cron"`
+}
+
+func (ec *EventConfig) applyDefaults() {
+	if ec.BufferSize == 0 {
+		ec.BufferSize = 5000
+	}
+	if ec.BatchSize == 0 {
+		ec.BatchSize = 50
+	}
+	if ec.FlushIntervalS == 0 {
+		ec.FlushIntervalS = 5
+	}
+	if ec.RetentionDays == 0 {
+		ec.RetentionDays = 90
+	}
+	if ec.ArchiveCron == "" {
+		ec.ArchiveCron = "0 3 * * *"
+	}
+}
+
 type BigQueryConfig struct {
-	Dataset string `yaml:"dataset" json:"dataset"`
+	Dataset    string `yaml:"dataset" json:"dataset"`
+	EventTable string `yaml:"event_table" json:"event_table"`
 }
 
 type GCSConfig struct {
 	Bucket                 string `yaml:"bucket" json:"bucket"`
 	Location               string `yaml:"location" json:"location"`
 	PublicAccessPrevention bool   `yaml:"public_access_prevention" json:"public_access_prevention"`
+	EventArchivePrefix     string `yaml:"event_archive_prefix" json:"event_archive_prefix"`
 }
 
 type GoogleCloudConfig struct {
@@ -197,7 +226,7 @@ type Config struct {
 
 	Upload struct {
 		MaxFileSizeMB int `yaml:"max_file_size_mb,omitempty" json:"max_file_size_mb,omitempty"`
-	} `yaml:"upload,omitempty" json:"upload,omitempty"`
+	} `yaml:"chat_upload,omitempty" json:"chat_upload,omitempty"`
 
 	SkillSync struct {
 		HermesPath string `yaml:"hermes_path,omitempty" json:"hermes_path,omitempty"`
@@ -218,7 +247,7 @@ type SettingsData struct {
 	Postgres      PostgresConfig      `json:"postgres"`
 	Elasticsearch ElasticsearchConfig `json:"elasticsearch"`
 	GoogleCloud   GoogleCloudConfig   `json:"google_cloud"`
-	Upload        UploadConfig        `json:"upload"`
+	Upload        UploadConfig        `json:"chat_upload"`
 }
 
 func (c *Config) MaxUploadBytes() int64 {
@@ -265,6 +294,7 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	workdir, _ := os.Getwd()
 	cfg.Projects.applyDefaults(workdir)
+	cfg.Elasticsearch.Events.applyDefaults()
 	return &cfg, nil
 }
 

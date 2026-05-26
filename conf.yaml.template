@@ -14,8 +14,14 @@ postgres:
 
 elasticsearch:
   url: "http://localhost:9200"
+  events:
+    buffer_size: 5000
+    batch_size: 50
+    flush_interval_s: 5
+    retention_days: 90
+    archive_cron: "0 3 * * *"
 
-upload:
+chat_upload:
   max_file_size_mb: 20
 
 google_cloud:
@@ -24,10 +30,12 @@ google_cloud:
   api_key: ""           # optional: AI Studio API key for Gemini models (overrides service account for Gemini)
   bigquery:
     dataset: "mobius"
+    event_table: "events"
   gcs:
     bucket: "mobius"
     location: "us-central1"
     public_access_prevention: true
+    event_archive_prefix: "events/archived"
   vertex_ai:
     models:
       - id: "gemini-3.1-pro"

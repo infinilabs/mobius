@@ -60,7 +60,7 @@ export interface SettingsData {
   postgres: PostgresConfig;
   elasticsearch: ElasticsearchConfig;
   google_cloud: GoogleCloudConfig;
-  upload: UploadConfig;
+  chat_upload: UploadConfig;
 }
 
 export interface FileRef {

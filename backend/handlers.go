@@ -26,6 +26,7 @@ type APIHandler struct {
 	gcsClient     *GCSClient
 	pgClient      *PGClient
 	providers     *ProviderRegistry
+	events        *EventPipeline
 	health        *HealthChecker
 	skillsDir     string
 	syncSources   []SkillSyncSource
@@ -34,7 +35,7 @@ type APIHandler struct {
 	lastSyncResult *SyncResult
 }
 
-func NewAPIHandler(cfg *Config, configPath string, genaiClient *genai.Client, esClient *ESClient, gcsClient *GCSClient, pgClient *PGClient, skillsDir string, providers *ProviderRegistry) *APIHandler {
+func NewAPIHandler(cfg *Config, configPath string, genaiClient *genai.Client, esClient *ESClient, gcsClient *GCSClient, pgClient *PGClient, skillsDir string, providers *ProviderRegistry, events *EventPipeline) *APIHandler {
 	h := &APIHandler{
 		config:        cfg,
 		configPath:    configPath,
@@ -45,6 +46,7 @@ func NewAPIHandler(cfg *Config, configPath string, genaiClient *genai.Client, es
 		gcsClient:     gcsClient,
 		pgClient:      pgClient,
 		providers:     providers,
+		events:        events,
 		health:        NewHealthChecker(5 * time.Second),
 		skillsDir:     skillsDir,
 	}
@@ -74,7 +76,26 @@ func (h *APIHandler) registerProbes() {
 	})
 
 	h.health.Register("bigquery", func(ctx context.Context) ServiceStatus {
-		return StatusUnconfigured("Not connected yet")
+		if h.events == nil || h.events.bqClient == nil {
+			return StatusUnconfigured("Not connected")
+		}
+		if err := h.events.bqClient.Ping(ctx); err != nil {
+			return StatusUnavailable(err.Error())
+		}
+		return StatusOK()
+	})
+
+	h.health.Register("event_pipeline", func(ctx context.Context) ServiceStatus {
+		if h.events == nil {
+			return StatusUnconfigured("Not configured")
+		}
+		queueLen := len(h.events.queue)
+		queueCap := cap(h.events.queue)
+		usage := float64(queueLen) / float64(queueCap) * 100
+		if usage > 80 {
+			return ServiceStatus{Status: "degraded", Error: fmt.Sprintf("queue %.0f%% full (%d/%d)", usage, queueLen, queueCap)}
+		}
+		return StatusOK()
 	})
 
 	h.health.Register("gcs", func(ctx context.Context) ServiceStatus {
@@ -136,6 +157,12 @@ func (h *APIHandler) Shutdown(ctx context.Context) {
 
 	if h.pgClient != nil {
 		h.pgClient.Close()
+	}
+
+	if h.events != nil && h.events.bqClient != nil {
+		if err := h.events.bqClient.Close(); err != nil {
+			slog.Error("BQ client close failed", "error", err)
+		}
 	}
 
 	slog.Info("APIHandler shutdown complete")

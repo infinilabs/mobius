@@ -102,6 +102,16 @@ func main() {
 		}
 	}
 
+	var bqClient *BQClient
+	if cfg.GoogleCloud.BigQuery.Dataset != "" {
+		bqClient, err = NewBQClient(ctx, cfg)
+		if err != nil {
+			slog.Error("failed to init BigQuery client", "error", err)
+			slog.Warn("BigQuery event analytics unavailable")
+			bqClient = nil
+		}
+	}
+
 	var pgClient *PGClient
 	pgClient, err = NewPGClient(ctx, cfg.Postgres)
 	if err != nil {
@@ -140,7 +150,15 @@ func main() {
 		providers.Register("claude", NewClaudeProvider(gc.ProjectID, "us-east5"))
 	}
 
-	api := NewAPIHandler(cfg, configPath, vertexClient, esClient, gcsClient, pgClient, skillsDir, providers)
+	var eventPipeline *EventPipeline
+	if esClient != nil || bqClient != nil {
+		eventPipeline = NewEventPipeline(esClient, bqClient, cfg.Elasticsearch.Events)
+		slog.Info("event pipeline initialized",
+			"buffer", cfg.Elasticsearch.Events.BufferSize,
+			"batch", cfg.Elasticsearch.Events.BatchSize)
+	}
+
+	api := NewAPIHandler(cfg, configPath, vertexClient, esClient, gcsClient, pgClient, skillsDir, providers, eventPipeline)
 
 	// Skill sync sources
 	hermesPath := cfg.SkillSync.HermesPath
@@ -367,6 +385,10 @@ func main() {
 	mux.Handle("POST /api/models", h(api.AddModel))
 	mux.Handle("DELETE /api/models/{id}", h(api.RemoveModel))
 
+	// Events
+	mux.Handle("GET /api/events", h(api.ListEvents))
+	mux.Handle("GET /api/events/stats", h(api.EventStats))
+
 	// Chat
 	mux.Handle("POST /api/chat", h(api.Chat))
 
@@ -402,9 +424,19 @@ func main() {
 
 	syncCtx, syncCancel := context.WithCancel(context.Background())
 
+	// Event pipeline goroutine
+	if eventPipeline != nil {
+		go eventPipeline.Start(syncCtx)
+	}
+
+	// Event archiver (GCS + ES pruning)
+	if esClient != nil && gcsClient != nil {
+		go StartArchiver(syncCtx, cfg, esClient, gcsClient)
+	}
+
 	// Background task dispatcher
 	if pgClient != nil {
-		dispatcher := NewTaskDispatcher(pgClient, esClient, providers, 5, cfg)
+		dispatcher := NewTaskDispatcher(pgClient, esClient, providers, 5, cfg, eventPipeline)
 		go dispatcher.Start(syncCtx)
 	}
 

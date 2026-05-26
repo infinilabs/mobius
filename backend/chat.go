@@ -300,6 +300,26 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 		h.pgClient.UpsertConversationMeta(r.Context(), conv)
 	}
 
+	if h.events != nil && len(conv.Messages) <= 2 {
+		var agentName, agentID string
+		if agent != nil {
+			agentName = agent.Name
+			agentID = agent.ID
+		}
+		var projID *string
+		if req.ProjectID != "" {
+			projID = &req.ProjectID
+		}
+		convID := req.ConversationID
+		h.events.Publish(newEvent("conversation_started",
+			strPtrOrNil(agentID), projID, nil,
+			map[string]any{
+				"employee_name":   agentName,
+				"model_id":        modelID,
+				"conversation_id": convID,
+			}))
+	}
+
 	if agent != nil && h.esClient != nil && fullResponse != "" &&
 		len(req.Message)+len(fullResponse) > 100 {
 		go absorbMemoryFromExchange(context.Background(), h.config, h.providers,

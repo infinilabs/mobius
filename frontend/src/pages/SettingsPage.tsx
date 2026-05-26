@@ -34,7 +34,7 @@ export default function SettingsPage() {
           gcs: { bucket: '', location: 'us-central1', public_access_prevention: true },
           vertex_ai: { llm_model_id: 'gemini-3.1-pro-preview', llm_location: 'global', img_model_id: '', img_location: 'us-central1', video_model_id: '', video_location: 'us-central1' },
         },
-        upload: { max_file_size_mb: 20 },
+        chat_upload: { max_file_size_mb: 20 },
       }))
       .finally(() => setLoading(false));
     fetchHealth().then(h => setHealth(h.services || {})).catch(() => {});
@@ -176,8 +176,8 @@ export default function SettingsPage() {
 
       {/* Upload Limits */}
       <ConfigSection icon={<Upload size={16} />} title="Upload Limits" desc="File size limits for chat attachments" color="#a1a1aa">
-        <ConfigInput label="Max File Size (MB)" value={String(settings.upload.max_file_size_mb)} type="number"
-          onChange={v => setSettings({ ...settings, upload: { ...settings.upload, max_file_size_mb: parseInt(v) || 20 } })} />
+        <ConfigInput label="Max File Size (MB)" value={String(settings.chat_upload.max_file_size_mb)} type="number"
+          onChange={v => setSettings({ ...settings, chat_upload: { ...settings.chat_upload, max_file_size_mb: parseInt(v) || 20 } })} />
       </ConfigSection>
 
       {/* Ad Account Connections */}

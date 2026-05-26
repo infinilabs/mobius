@@ -17,8 +17,6 @@ func makeEmployee(role string, tags []string, managerID *string, reports []Emplo
 	}
 }
 
-func strPtr(s string) *string { return &s }
-
 func TestCanDelegate_CEOToAnyone(t *testing.T) {
 	ceo := makeEmployee("CEO", []string{"executive"}, nil, nil)
 	worker := makeEmployee("Custom", []string{}, strPtr("other-mgr"), nil)

@@ -19,13 +19,14 @@ type TaskDispatcher struct {
 	esClient       *ESClient
 	providers      *ProviderRegistry
 	config         *Config
+	events         *EventPipeline
 	maxConcurrency int
 	staleTimeout   time.Duration
 	sem            chan struct{}
 	wg             sync.WaitGroup
 }
 
-func NewTaskDispatcher(pg *PGClient, es *ESClient, pr *ProviderRegistry, maxConcurrency int, cfg *Config) *TaskDispatcher {
+func NewTaskDispatcher(pg *PGClient, es *ESClient, pr *ProviderRegistry, maxConcurrency int, cfg *Config, events *EventPipeline) *TaskDispatcher {
 	if maxConcurrency <= 0 {
 		maxConcurrency = 5
 	}
@@ -34,6 +35,7 @@ func NewTaskDispatcher(pg *PGClient, es *ESClient, pr *ProviderRegistry, maxConc
 		esClient:       es,
 		providers:      pr,
 		config:         cfg,
+		events:         events,
 		maxConcurrency: maxConcurrency,
 		staleTimeout:   5 * time.Minute,
 		sem:            make(chan struct{}, maxConcurrency),
@@ -536,6 +538,11 @@ func (d *TaskDispatcher) dispatcherToolCall(ctx context.Context, call ToolCall, 
 		if err := d.esClient.IndexEmployeeMemoryDedup(ctx, agent.ID, taskID, text); err != nil {
 			return map[string]any{"error": "failed to store memory: " + err.Error()}
 		}
+		if d.events != nil {
+			d.events.Publish(newEvent("memory_stored",
+				&agent.ID, nil, &taskID,
+				map[string]any{"memory_text": truncateStr(text, 200)}))
+		}
 		return map[string]any{"status": "remembered", "memory_text": text}
 	case "forget_memory":
 		memoryID, _ := call.Args["memory_id"].(string)
@@ -606,6 +613,15 @@ func (d *TaskDispatcher) execWriteProjectFile(ctx context.Context, args map[stri
 			CreatedAt: now, UpdatedAt: now,
 		}
 		d.esClient.IndexProjectAsset(ctx, asset)
+	}
+
+	if d.events != nil {
+		d.events.Publish(newEvent("file_written",
+			&task.Assignee.ID, task.ProjectID, &task.ID,
+			map[string]any{
+				"path":       path,
+				"size_bytes": len(content),
+			}))
 	}
 
 	return map[string]any{"status": "written", "path": path, "bytes": len(content)}
@@ -725,6 +741,18 @@ func (d *TaskDispatcher) execRunProjectCommand(ctx context.Context, args map[str
 	}
 
 	slog.Info("project command executed", "task_id", task.ID, "command", command, "exit_code", exitCode)
+
+	if d.events != nil {
+		d.events.Publish(newEvent("command_execution",
+			&task.Assignee.ID, task.ProjectID, &task.ID,
+			map[string]any{
+				"command":        command,
+				"exit_code":      exitCode,
+				"stdout_preview": truncateStr(out, 200),
+				"success":        exitCode == 0,
+			}))
+	}
+
 	return map[string]any{
 		"stdout":    out,
 		"stderr":    errOut,
@@ -784,6 +812,18 @@ func (d *TaskDispatcher) execDelegateFromDispatcher(ctx context.Context, args ma
 		}
 	}
 
+	if d.events != nil {
+		d.events.Publish(newEvent("task_delegated",
+			&creator.ID, currentTask.ProjectID, &currentTask.ID,
+			map[string]any{
+				"child_task_id":     t.ID,
+				"delegated_to_id":   assignee.ID,
+				"delegated_to_name": assignee.Name,
+				"title":             title,
+				"priority":          priority,
+			}))
+	}
+
 	slog.Info("dispatcher: task delegated", "task_id", t.ID, "from", creator.Name, "to", assignee.Name)
 	return map[string]any{"status": "created", "task_id": t.ID, "assignee": assignee.Name}
 }
@@ -822,6 +862,17 @@ func (d *TaskDispatcher) execHireFromDispatcher(ctx context.Context, args map[st
 		return map[string]any{"error": "failed to hire: " + err.Error()}
 	}
 
+	if d.events != nil {
+		d.events.Publish(newEvent("employee_hired",
+			&manager.ID, nil, nil,
+			map[string]any{
+				"hired_employee_id": emp.ID,
+				"name":              name,
+				"title":             title,
+				"manager_name":      manager.Name,
+			}))
+	}
+
 	slog.Info("dispatcher: employee hired", "id", emp.ID, "name", name, "manager", manager.Name)
 	return map[string]any{"status": "hired", "employee_id": emp.ID, "name": name, "reports_to": manager.Name}
 }
@@ -847,6 +898,15 @@ func (d *TaskDispatcher) execSubmitFromDispatcher(ctx context.Context, args map[
 		d.pgClient.AddTaskComment(ctx, taskID, "", "CONTEXT: "+summary)
 	}
 
+	if d.events != nil {
+		d.events.Publish(newEvent("task_submitted",
+			&currentTask.Assignee.ID, currentTask.ProjectID, &currentTask.ID,
+			map[string]any{
+				"result_preview": truncateStr(result, 200),
+				"result_length":  len(result),
+			}))
+	}
+
 	slog.Info("dispatcher: task submitted", "task_id", taskID)
 	return map[string]any{"status": "submitted_for_review", "task_id": taskID}
 }
@@ -865,6 +925,11 @@ func (d *TaskDispatcher) execReviewFromDispatcher(ctx context.Context, args map[
 		if err := d.pgClient.UpdateTaskStatus(ctx, taskID, "done", reviewer.ID); err != nil {
 			return map[string]any{"error": "failed to approve: " + err.Error()}
 		}
+		if d.events != nil {
+			d.events.Publish(newEvent("task_approved",
+				&reviewer.ID, nil, &taskID,
+				map[string]any{"reviewer_name": reviewer.Name}))
+		}
 		return map[string]any{"status": "approved", "task_id": taskID}
 	case "REJECT":
 		if feedback == "" {
@@ -875,6 +940,11 @@ func (d *TaskDispatcher) execReviewFromDispatcher(ctx context.Context, args map[
 		}
 		if _, err := d.pgClient.AddTaskComment(ctx, taskID, reviewer.ID, "REJECTED: "+feedback); err != nil {
 			slog.Error("dispatcher: failed to add rejection comment", "task_id", taskID, "error", err)
+		}
+		if d.events != nil {
+			d.events.Publish(newEvent("task_rejected",
+				&reviewer.ID, nil, &taskID,
+				map[string]any{"reviewer_name": reviewer.Name, "feedback": feedback}))
 		}
 		return map[string]any{"status": "rejected", "task_id": taskID, "feedback": feedback}
 	default:
