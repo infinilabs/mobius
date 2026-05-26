@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 )
@@ -456,6 +459,13 @@ func (d *TaskDispatcher) executeAgentTask(parentCtx context.Context, t Task) {
 	messages = append(messages, LLMMessage{Role: "model", Text: fmt.Sprintf("I'm %s, %s. Ready.", assignee.Name, assignee.Title)})
 	messages = append(messages, LLMMessage{Role: "user", Text: fmt.Sprintf("Please complete this task:\n\n%s", t.Body)})
 
+	if t.Status == "needs_review" && t.Result != "" {
+		messages = append(messages, LLMMessage{
+			Role: "user",
+			Text: fmt.Sprintf("A team member has submitted this work for your review:\n\n%s\n\nReview it carefully. Use verify_deliverable to inspect files produced, then read_project_file to check quality. Only then approve or reject.", t.Result),
+		})
+	}
+
 	modelID := resolveModelID(d.config, assignee)
 
 	provider := d.providers.ResolveProvider(modelID)
@@ -503,6 +513,8 @@ func (d *TaskDispatcher) dispatcherToolCall(ctx context.Context, call ToolCall, 
 		return d.execSubmitFromDispatcher(ctx, call.Args, currentTask)
 	case "review_task":
 		return d.execReviewFromDispatcher(ctx, call.Args, agent)
+	case "verify_deliverable":
+		return d.execVerifyDeliverable(ctx, call.Args)
 	case "list_team":
 		emp, err := d.pgClient.GetEmployee(ctx, agent.ID)
 		if err != nil {
@@ -542,6 +554,8 @@ func (d *TaskDispatcher) dispatcherToolCall(ctx context.Context, call ToolCall, 
 		return d.execSearchProjectAssets(ctx, call.Args, currentTask)
 	case "list_project_assets":
 		return d.execListProjectAssets(ctx, currentTask)
+	case "run_project_command":
+		return d.execRunProjectCommand(ctx, call.Args, currentTask)
 	default:
 		return map[string]any{"error": "unknown tool: " + call.Name}
 	}
@@ -664,6 +678,61 @@ func (d *TaskDispatcher) execListProjectAssets(ctx context.Context, task *Task) 
 	return map[string]any{"results": results, "count": len(results)}
 }
 
+const maxCommandOutput = 4000
+
+func (d *TaskDispatcher) execRunProjectCommand(ctx context.Context, args map[string]any, task *Task) map[string]any {
+	if task.ProjectID == nil {
+		return map[string]any{"error": "no project context"}
+	}
+	command, _ := args["command"].(string)
+	if command == "" {
+		return map[string]any{"error": "command is required"}
+	}
+
+	project, err := d.pgClient.GetProject(ctx, *task.ProjectID)
+	if err != nil {
+		return map[string]any{"error": "project not found"}
+	}
+
+	cmdCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(cmdCtx, "sh", "-c", command)
+	cmd.Dir = project.RootDir(d.config)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	runErr := cmd.Run()
+
+	out := stdout.String()
+	if len(out) > maxCommandOutput {
+		out = out[:maxCommandOutput] + "\n... (truncated)"
+	}
+	errOut := stderr.String()
+	if len(errOut) > maxCommandOutput {
+		errOut = errOut[:maxCommandOutput] + "\n... (truncated)"
+	}
+
+	exitCode := 0
+	if runErr != nil {
+		if exitErr, ok := runErr.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			return map[string]any{"error": "command execution failed: " + runErr.Error()}
+		}
+	}
+
+	slog.Info("project command executed", "task_id", task.ID, "command", command, "exit_code", exitCode)
+	return map[string]any{
+		"stdout":    out,
+		"stderr":    errOut,
+		"exit_code": exitCode,
+		"success":   exitCode == 0,
+	}
+}
+
 func (d *TaskDispatcher) execDelegateFromDispatcher(ctx context.Context, args map[string]any, creator *Employee, currentTask *Task) map[string]any {
 	assigneeID, _ := args["assignee_id"].(string)
 	title, _ := args["title"].(string)
@@ -707,6 +776,12 @@ func (d *TaskDispatcher) execDelegateFromDispatcher(ctx context.Context, args ma
 	}
 	if err := d.pgClient.CreateTask(ctx, t, nil); err != nil {
 		return map[string]any{"error": "failed to create task: " + err.Error()}
+	}
+
+	if currentTask.Body != "" {
+		if summary := d.summarizeForHandoff(ctx, currentTask.Body, currentTask.Result, "delegated"); summary != "" {
+			d.pgClient.AddTaskComment(ctx, t.ID, "", "CONTEXT (from parent): "+summary)
+		}
 	}
 
 	slog.Info("dispatcher: task delegated", "task_id", t.ID, "from", creator.Name, "to", assignee.Name)
@@ -768,6 +843,10 @@ func (d *TaskDispatcher) execSubmitFromDispatcher(ctx context.Context, args map[
 		return map[string]any{"error": "failed to submit: " + err.Error()}
 	}
 
+	if summary := d.summarizeForHandoff(ctx, currentTask.Body, result, "submitted"); summary != "" {
+		d.pgClient.AddTaskComment(ctx, taskID, "", "CONTEXT: "+summary)
+	}
+
 	slog.Info("dispatcher: task submitted", "task_id", taskID)
 	return map[string]any{"status": "submitted_for_review", "task_id": taskID}
 }
@@ -801,6 +880,57 @@ func (d *TaskDispatcher) execReviewFromDispatcher(ctx context.Context, args map[
 	default:
 		return map[string]any{"error": "action must be APPROVE or REJECT"}
 	}
+}
+
+func (d *TaskDispatcher) execVerifyDeliverable(ctx context.Context, args map[string]any) map[string]any {
+	taskID, _ := args["task_id"].(string)
+	if taskID == "" {
+		return map[string]any{"error": "task_id is required"}
+	}
+
+	task, err := d.pgClient.GetTask(ctx, taskID)
+	if err != nil {
+		return map[string]any{"error": "task not found: " + err.Error()}
+	}
+
+	result := map[string]any{
+		"task_id": taskID,
+		"status":  task.Status,
+		"result":  task.Result,
+	}
+
+	if d.esClient == nil {
+		result["files"] = []map[string]any{}
+		return result
+	}
+
+	assets, err := d.esClient.SearchAssetsByTask(ctx, taskID)
+	if err != nil {
+		result["files"] = []map[string]any{}
+		result["files_error"] = err.Error()
+		return result
+	}
+
+	var files []map[string]any
+	for _, a := range assets {
+		preview := a.Content
+		if len(preview) > 500 {
+			preview = preview[:500] + "..."
+		}
+		files = append(files, map[string]any{
+			"filename": a.Filename,
+			"path":     a.RelativePath,
+			"type":     a.ContentType,
+			"size":     a.SizeBytes,
+			"preview":  preview,
+		})
+	}
+	if files == nil {
+		files = []map[string]any{}
+	}
+	result["files"] = files
+	result["file_count"] = len(files)
+	return result
 }
 
 func (d *TaskDispatcher) failTask(ctx context.Context, taskID, reason string) {
@@ -839,4 +969,46 @@ func (d *TaskDispatcher) failTask(ctx context.Context, taskID, reason string) {
 	if err := tx.Commit(ctx); err != nil {
 		slog.Error("failTask: commit failed", "task_id", taskID, "error", err)
 	}
+}
+
+func (d *TaskDispatcher) summarizeForHandoff(ctx context.Context, taskBody, result, event string) string {
+	if d.config == nil {
+		return ""
+	}
+	settings := d.config.GetSettings()
+	modelID, _ := settings.GoogleCloud.VertexAI.DefaultLLM()
+	if modelID == "" {
+		return ""
+	}
+	provider := d.providers.ResolveProvider(modelID)
+	if provider == nil {
+		return ""
+	}
+
+	input := truncateForExtraction(taskBody, maxExtractionInputLen)
+	output := truncateForExtraction(result, maxExtractionInputLen)
+
+	prompt := fmt.Sprintf(`Summarize this task handoff in one concise paragraph (max 300 characters).
+
+Event: %s
+Task goal:
+%s
+
+Deliverable:
+%s
+
+Include: what was accomplished, key decisions made, and any open issues. Be specific and factual.`, event, input, output)
+
+	req := &LLMRequest{
+		Model:    modelID,
+		Messages: []LLMMessage{{Role: "user", Text: prompt}},
+		OnText:   func(string) {},
+	}
+
+	summary, err := provider.ChatStream(ctx, req)
+	if err != nil {
+		slog.Warn("handoff summarization failed", "event", event, "error", err)
+		return ""
+	}
+	return strings.TrimSpace(summary)
 }

@@ -213,6 +213,36 @@ var listAssetsToolDef = ToolDef{
 	},
 }
 
+var runCommandToolDef = ToolDef{
+	Name:        "run_project_command",
+	Description: "Execute a shell command in the project directory. Use for running tests, builds, linters, or any verification command. Returns stdout, stderr, and exit code. Timeout: 2 minutes.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"command": map[string]any{
+				"type":        "string",
+				"description": "The shell command to execute, e.g. 'go test ./...', 'npm test', 'make build'",
+			},
+		},
+		"required": []string{"command"},
+	},
+}
+
+var verifyDeliverableToolDef = ToolDef{
+	Name:        "verify_deliverable",
+	Description: "Inspect what files a task produced. Returns the list of project files created or modified by the task, with sizes and content previews. Use this BEFORE approving a task to verify actual work was done.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"task_id": map[string]any{
+				"type":        "string",
+				"description": "UUID of the task whose deliverables to inspect",
+			},
+		},
+		"required": []string{"task_id"},
+	},
+}
+
 func buildAgentTools(agent *Employee, task *Task) []ToolDef {
 	var tools []ToolDef
 
@@ -220,7 +250,7 @@ func buildAgentTools(agent *Employee, task *Task) []ToolDef {
 	tools = append(tools, storeMemoryToolDef, forgetMemoryToolDef)
 
 	if agent.Role == "CEO" || hasTag(agent.Tags, "manager") {
-		tools = append(tools, delegateTaskToolDef, reviewTaskToolDef)
+		tools = append(tools, delegateTaskToolDef, reviewTaskToolDef, verifyDeliverableToolDef)
 	}
 
 	if hasTag(agent.Tags, "manager") {
@@ -228,7 +258,7 @@ func buildAgentTools(agent *Employee, task *Task) []ToolDef {
 	}
 
 	if task != nil && task.ProjectID != nil {
-		tools = append(tools, writeFileToolDef, readFileToolDef, searchAssetsToolDef, listAssetsToolDef)
+		tools = append(tools, writeFileToolDef, readFileToolDef, searchAssetsToolDef, listAssetsToolDef, runCommandToolDef)
 	}
 
 	return tools
@@ -284,10 +314,13 @@ func titleOverlap(a, b string) bool {
 func managerDirectives() string {
 	return "\n\n## SYSTEM DIRECTIVE: Quality Gate\n" +
 		"As a manager, you review work from your team. When a task has status 'needs_review':\n" +
-		"1. Inspect the result carefully — check code, specs, or analysis for correctness.\n" +
-		"2. Do NOT blindly approve. Verify the deliverable meets the goal.\n" +
-		"3. If quality issues exist: call review_task with action=\"REJECT\" and specific feedback.\n" +
-		"4. If the work is complete and correct: call review_task with action=\"APPROVE\"." +
+		"1. Call verify_deliverable to see what files were produced.\n" +
+		"2. Read key deliverable files with read_project_file to check code quality.\n" +
+		"3. Run tests with run_project_command (e.g. 'go test ./...', 'npm test', 'pytest') to verify correctness.\n" +
+		"4. If tests fail or quality issues exist: call review_task with action=\"REJECT\" and specific feedback.\n" +
+		"5. If the work is correct AND tests pass: call review_task with action=\"APPROVE\".\n" +
+		"Do NOT approve without running tests. Reading code alone is not sufficient — you must execute verification.\n" +
+		"If you lack the expertise to verify, delegate a verification task to a QA/testing team member." +
 		"\n\n## SYSTEM DIRECTIVE: Delegation & Hiring\n" +
 		"You are a manager. You do NOT do implementation work yourself. Your job is to delegate.\n\n" +
 		"### Step 1: Check your existing team\n" +
