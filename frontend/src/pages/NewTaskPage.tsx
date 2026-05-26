@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Send, Sparkles, BarChart3, ImagePlus, Activity,
   Rocket, Target, Zap, Paperclip, X, Bot, User, Loader2,
@@ -25,9 +26,11 @@ const QUICK_ACTIONS = [
 interface Props {
   conversationId: string | null;
   onConversationCreated: (id: string) => void;
+  initialAgentId?: string;
+  initialProjectId?: string;
 }
 
-export default function NewTaskPage({ conversationId, onConversationCreated }: Props) {
+export default function NewTaskPage({ conversationId, onConversationCreated, initialAgentId, initialProjectId }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
@@ -45,13 +48,27 @@ export default function NewTaskPage({ conversationId, onConversationCreated }: P
 
   useEffect(() => {
     listEmployees().then(emps => {
-      setAgents(emps);
-      const ceo = emps.find(e => e.role === 'CEO');
-      if (ceo) setChatTarget({ kind: 'agent', agent: ceo });
+      const chatEligible = emps.filter(e =>
+        e.role === 'CEO' || e.tags.includes('manager') || e.tags.includes('founder')
+      ).sort((a, b) => {
+        if (a.role === 'CEO') return -1;
+        if (b.role === 'CEO') return 1;
+        return a.name.localeCompare(b.name);
+      });
+      setAgents(chatEligible);
+      const targetId = initialAgentId;
+      if (targetId) {
+        const target = chatEligible.find(e => e.id === targetId);
+        if (target) { setChatTarget({ kind: 'agent', agent: target }); return; }
+      }
+      if (!chatTarget) {
+        const ceo = chatEligible.find(e => e.role === 'CEO');
+        if (ceo) setChatTarget({ kind: 'agent', agent: ceo });
+      }
     }).catch(() => {});
     listModels().then(setRegisteredModels).catch(() => {});
     fetchSettings().then(s => { if (s.upload?.max_file_size_mb) setMaxFileSizeMB(s.upload.max_file_size_mb); }).catch(() => {});
-  }, []);
+  }, [initialAgentId]);
 
   useEffect(() => {
     return () => { Object.values(previewUrls).forEach(url => URL.revokeObjectURL(url)); };
@@ -142,8 +159,9 @@ export default function NewTaskPage({ conversationId, onConversationCreated }: P
       filesToSend,
       chatTarget?.kind === 'agent' ? chatTarget.agent.id : undefined,
       chatTarget?.kind === 'model' ? chatTarget.model.model_id : undefined,
+      initialProjectId,
     );
-  }, [input, conversationId, attachedFiles, onConversationCreated, thinking, chatTarget]);
+  }, [input, conversationId, attachedFiles, onConversationCreated, thinking, chatTarget, initialProjectId]);
 
   const addFileWithPreview = useCallback(async (file: File): Promise<FileRef | null> => {
     if (file.size > maxFileSizeMB * 1024 * 1024) {
@@ -587,15 +605,21 @@ function ChatInput({ input, setInput, onSend, streaming, attachedFiles, setAttac
   onAutoSend: (ref: FileRef) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [menuPos, setMenuPos] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
   const [showCamera, setShowCamera] = useState(false);
   const [pasting, setPasting] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+      const target = e.target as Node;
+      if (menuRef.current?.contains(target)) return;
+      if (dropdownRef.current?.contains(target)) return;
+      setMenuOpen(false);
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
@@ -686,7 +710,20 @@ function ChatInput({ input, setInput, onSend, streaming, attachedFiles, setAttac
           {hasItems && (
             <div className="relative" ref={menuRef}>
               <button
-                onClick={() => setMenuOpen(!menuOpen)}
+                ref={triggerRef}
+                onClick={() => {
+                  if (!menuOpen && triggerRef.current) {
+                    const rect = triggerRef.current.getBoundingClientRect();
+                    const spaceAbove = rect.top;
+                    const spaceBelow = window.innerHeight - rect.bottom;
+                    if (spaceAbove > spaceBelow) {
+                      setMenuPos({ left: rect.left, bottom: window.innerHeight - rect.top + 8, top: undefined });
+                    } else {
+                      setMenuPos({ left: rect.left, bottom: undefined, top: rect.bottom + 8 });
+                    }
+                  }
+                  setMenuOpen(!menuOpen);
+                }}
                 className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border border-zinc-800/50 hover:border-zinc-700/60 transition-colors cursor-pointer"
                 style={{ background: '#09090b' }}
               >
@@ -700,9 +737,9 @@ function ChatInput({ input, setInput, onSend, streaming, attachedFiles, setAttac
                 </svg>
               </button>
 
-              {menuOpen && (
-                <div className="absolute bottom-full left-0 mb-2 z-50 rounded-xl border border-zinc-800/60 shadow-xl overflow-hidden min-w-[220px] max-h-[360px] overflow-y-auto"
-                  style={{ background: '#0a0a0d' }}>
+              {menuOpen && menuPos && createPortal(
+                <div ref={dropdownRef} className="fixed z-[9999] rounded-xl border border-zinc-800/60 shadow-xl min-w-[220px] overflow-y-auto"
+                  style={{ background: '#0a0a0d', left: menuPos.left, top: menuPos.top, bottom: menuPos.bottom, maxHeight: menuPos.top != null ? `calc(100vh - ${menuPos.top}px - 16px)` : menuPos.bottom != null ? `calc(100vh - ${menuPos.bottom}px - 16px)` : 400 }}>
                   {agents.length > 0 && (
                     <>
                       <div className="px-3 py-2 border-b border-zinc-800/40">
@@ -753,7 +790,8 @@ function ChatInput({ input, setInput, onSend, streaming, attachedFiles, setAttac
                       </div>
                     </>
                   )}
-                </div>
+                </div>,
+                document.body,
               )}
             </div>
           )}

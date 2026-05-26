@@ -382,8 +382,9 @@ export async function sendChatMessage(
   files?: FileRef[],
   agentId?: string,
   modelId?: string,
+  projectId?: string,
 ): Promise<void> {
-  log.info('chat', 'sending message', { conversationId, length: message.length, files: files?.length ?? 0, agentId, modelId });
+  log.info('chat', 'sending message', { conversationId, length: message.length, files: files?.length ?? 0, agentId, modelId, projectId });
 
   let response: Response;
   try {
@@ -396,6 +397,7 @@ export async function sendChatMessage(
         files: files?.length ? files : undefined,
         agent_id: agentId || undefined,
         model_id: modelId || undefined,
+        project_id: projectId || undefined,
       }),
     });
   } catch (err) {

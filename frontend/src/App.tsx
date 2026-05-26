@@ -52,6 +52,8 @@ function App() {
 
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [chatAgentId, setChatAgentId] = useState<string | undefined>();
+  const [chatProjectId, setChatProjectId] = useState<string | undefined>();
 
   const refreshConversations = useCallback(() => {
     listConversations().then(setConversations).catch(() => {});
@@ -70,11 +72,15 @@ function App() {
     log.info('app', 'new task');
     setActivePage('new-task');
     setActiveConversationId(null);
+    setChatAgentId(undefined);
+    setChatProjectId(undefined);
   };
 
   const handleConversationCreated = (id: string) => {
     log.info('app', 'conversation created', { id });
     setActiveConversationId(id);
+    setChatAgentId(undefined);
+    setChatProjectId(undefined);
     refreshConversations();
   };
 
@@ -82,6 +88,8 @@ function App() {
     log.info('app', 'selected conversation', { id });
     setActivePage('new-task');
     setActiveConversationId(id);
+    setChatAgentId(undefined);
+    setChatProjectId(undefined);
   };
 
   const handleRename = async (id: string, title: string) => {
@@ -225,11 +233,18 @@ function App() {
             <NewTaskPage
               conversationId={activeConversationId}
               onConversationCreated={handleConversationCreated}
+              initialAgentId={chatAgentId}
+              initialProjectId={chatProjectId}
             />
           )}
           {activePage === 'cockpit' && <div className="overflow-y-auto h-full"><CockpitPage /></div>}
           {activePage === 'tasks' && <div className="overflow-y-auto h-full"><TasksPage /></div>}
-          {activePage === 'projects' && <div className="overflow-y-auto h-full"><ProjectsPage /></div>}
+          {activePage === 'projects' && <div className="overflow-y-auto h-full"><ProjectsPage onNavigateToChat={(convId, agentId, projectId) => {
+            setActiveConversationId(convId);
+            setChatAgentId(agentId);
+            setChatProjectId(projectId);
+            setActivePage('new-task');
+          }} /></div>}
           {activePage === 'hr' && <div className="overflow-y-auto h-full"><HRPage /></div>}
           {activePage === 'skills' && <div className="overflow-y-auto h-full"><SkillsPage /></div>}
           {activePage === 'agent-workspace' && <div className="overflow-y-auto h-full"><AgentWorkspacePage /></div>}

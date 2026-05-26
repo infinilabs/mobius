@@ -213,6 +213,273 @@ var listAssetsToolDef = ToolDef{
 	},
 }
 
+var listTasksToolDef = ToolDef{
+	Name:        "list_tasks",
+	Description: "List tasks with optional filters. Returns task id, title, status, priority, assignee, and project.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"status": map[string]any{
+				"type":        "string",
+				"description": "Filter by status: todo, ready, in_progress, needs_review, done, blocked",
+			},
+			"assignee_id": map[string]any{
+				"type":        "string",
+				"description": "Filter by assignee employee UUID",
+			},
+			"project_id": map[string]any{
+				"type":        "string",
+				"description": "Filter by project UUID",
+			},
+		},
+	},
+}
+
+var listProjectsToolDef = ToolDef{
+	Name:        "list_projects",
+	Description: "List all projects. Returns project id, name, owner, status, task count, and asset count.",
+	Parameters: map[string]any{
+		"type":       "object",
+		"properties": map[string]any{},
+	},
+}
+
+var listEmployeesToolDef = ToolDef{
+	Name:        "list_employees",
+	Description: "List all employees. Returns id, name, title, role, tags, and manager.",
+	Parameters: map[string]any{
+		"type":       "object",
+		"properties": map[string]any{},
+	},
+}
+
+var getEmployeeToolDef = ToolDef{
+	Name:        "get_employee",
+	Description: "Get detailed information about a specific employee, including their skills, models, reports, and manager.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"employee_id": map[string]any{
+				"type":        "string",
+				"description": "UUID of the employee",
+			},
+		},
+		"required": []string{"employee_id"},
+	},
+}
+
+var updateTaskStatusToolDef = ToolDef{
+	Name:        "update_task_status",
+	Description: "Move a task to a new status. Valid transitions: todo→ready, ready→in_progress, in_progress→needs_review, needs_review→done/ready, blocked→ready. Rejecting (needs_review→ready) requires feedback.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"task_id": map[string]any{
+				"type":        "string",
+				"description": "UUID of the task",
+			},
+			"status": map[string]any{
+				"type":        "string",
+				"description": "Target status",
+				"enum":        []string{"todo", "ready", "in_progress", "needs_review", "done", "blocked"},
+			},
+			"feedback": map[string]any{
+				"type":        "string",
+				"description": "Required when rejecting (needs_review → ready). Specific feedback for revision.",
+			},
+		},
+		"required": []string{"task_id", "status"},
+	},
+}
+
+// --- Prompt tools ---
+
+var listPromptsToolDef = ToolDef{
+	Name:        "list_prompts",
+	Description: "Search or list saved prompt templates.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"query": map[string]any{"type": "string", "description": "Search query (optional, lists all if empty)"},
+		},
+	},
+}
+
+var createPromptToolDef = ToolDef{
+	Name:        "create_prompt",
+	Description: "Create a new prompt template.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"title":   map[string]any{"type": "string", "description": "Prompt title"},
+			"content": map[string]any{"type": "string", "description": "Prompt content/template text"},
+			"tags":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags for categorization"},
+		},
+		"required": []string{"title", "content"},
+	},
+}
+
+var updatePromptToolDef = ToolDef{
+	Name:        "update_prompt",
+	Description: "Update an existing prompt template.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"prompt_id": map[string]any{"type": "string", "description": "UUID of the prompt"},
+			"title":     map[string]any{"type": "string", "description": "New title (optional)"},
+			"content":   map[string]any{"type": "string", "description": "New content (optional)"},
+			"tags":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "New tags (optional)"},
+		},
+		"required": []string{"prompt_id"},
+	},
+}
+
+var deletePromptToolDef = ToolDef{
+	Name:        "delete_prompt",
+	Description: "Delete a prompt template.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"prompt_id": map[string]any{"type": "string", "description": "UUID of the prompt to delete"},
+		},
+		"required": []string{"prompt_id"},
+	},
+}
+
+// --- Skill tools ---
+
+var listSkillsToolDef = ToolDef{
+	Name:        "list_skills",
+	Description: "Search or list skills from the catalog.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"query": map[string]any{"type": "string", "description": "Search query (optional, lists all if empty)"},
+		},
+	},
+}
+
+var assignSkillToolDef = ToolDef{
+	Name:        "assign_skill",
+	Description: "Assign a catalog skill to an employee.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"employee_id": map[string]any{"type": "string", "description": "UUID of the employee"},
+			"skill_id":    map[string]any{"type": "string", "description": "UUID of the catalog skill"},
+		},
+		"required": []string{"employee_id", "skill_id"},
+	},
+}
+
+var unassignSkillToolDef = ToolDef{
+	Name:        "unassign_skill",
+	Description: "Remove a catalog skill from an employee.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"employee_id": map[string]any{"type": "string", "description": "UUID of the employee"},
+			"skill_id":    map[string]any{"type": "string", "description": "UUID of the catalog skill to remove"},
+		},
+		"required": []string{"employee_id", "skill_id"},
+	},
+}
+
+// --- Employee tools ---
+
+var updateEmployeeToolDef = ToolDef{
+	Name:        "update_employee",
+	Description: "Update an employee's details: title, backstory, tags, or role.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"employee_id": map[string]any{"type": "string", "description": "UUID of the employee"},
+			"title":       map[string]any{"type": "string", "description": "New title (optional)"},
+			"backstory":   map[string]any{"type": "string", "description": "New backstory (optional)"},
+			"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "New tags (optional)"},
+		},
+		"required": []string{"employee_id"},
+	},
+}
+
+// --- Task tools ---
+
+var updateTaskToolDef = ToolDef{
+	Name:        "update_task",
+	Description: "Update a task's title, body, priority, or assignee.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"task_id":     map[string]any{"type": "string", "description": "UUID of the task"},
+			"title":       map[string]any{"type": "string", "description": "New title (optional)"},
+			"body":        map[string]any{"type": "string", "description": "New body/description (optional)"},
+			"priority":    map[string]any{"type": "string", "description": "New priority: low, medium, high, urgent (optional)"},
+			"assignee_id": map[string]any{"type": "string", "description": "New assignee employee UUID (optional)"},
+		},
+		"required": []string{"task_id"},
+	},
+}
+
+var addTaskCommentToolDef = ToolDef{
+	Name:        "add_task_comment",
+	Description: "Add a comment to a task's history.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"task_id": map[string]any{"type": "string", "description": "UUID of the task"},
+			"content": map[string]any{"type": "string", "description": "Comment text"},
+		},
+		"required": []string{"task_id", "content"},
+	},
+}
+
+var getTaskToolDef = ToolDef{
+	Name:        "get_task",
+	Description: "Get detailed information about a specific task, including status, result, and comments.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"task_id": map[string]any{"type": "string", "description": "UUID of the task"},
+		},
+		"required": []string{"task_id"},
+	},
+}
+
+// --- Project tools ---
+
+var updateProjectToolDef = ToolDef{
+	Name:        "update_project",
+	Description: "Update a project's description or status.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"project_id":  map[string]any{"type": "string", "description": "UUID of the project"},
+			"description": map[string]any{"type": "string", "description": "New description (optional)"},
+			"status":      map[string]any{"type": "string", "description": "New status: active or paused (optional)"},
+		},
+		"required": []string{"project_id"},
+	},
+}
+
+var createProjectToolDef = ToolDef{
+	Name:        "create_project",
+	Description: "Create a new project. You become the project owner. Use this when the user explicitly asks to create a project, or suggest it when a task is complex enough to warrant its own project workspace.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name": map[string]any{
+				"type":        "string",
+				"description": "Short, lowercase, hyphen-separated project name (e.g. 'q3-campaign', 'backend-rewrite')",
+			},
+			"description": map[string]any{
+				"type":        "string",
+				"description": "Brief description of the project's purpose and scope",
+			},
+		},
+		"required": []string{"name"},
+	},
+}
+
 var runCommandToolDef = ToolDef{
 	Name:        "run_project_command",
 	Description: "Execute a shell command in the project directory. Use for running tests, builds, linters, or any verification command. Returns stdout, stderr, and exit code. Timeout: 2 minutes.",
@@ -248,6 +515,14 @@ func buildAgentTools(agent *Employee, task *Task) []ToolDef {
 
 	tools = append(tools, submitTaskResultToolDef, listTeamToolDef)
 	tools = append(tools, storeMemoryToolDef, forgetMemoryToolDef)
+
+	if agent.Role == "CEO" || hasTag(agent.Tags, "manager") || hasTag(agent.Tags, "founder") {
+		tools = append(tools, createProjectToolDef, updateProjectToolDef)
+		tools = append(tools, listTasksToolDef, getTaskToolDef, updateTaskToolDef, updateTaskStatusToolDef, addTaskCommentToolDef)
+		tools = append(tools, listProjectsToolDef, listEmployeesToolDef, getEmployeeToolDef, updateEmployeeToolDef)
+		tools = append(tools, listSkillsToolDef, assignSkillToolDef, unassignSkillToolDef)
+		tools = append(tools, listPromptsToolDef, createPromptToolDef, updatePromptToolDef, deletePromptToolDef)
+	}
 
 	if agent.Role == "CEO" || hasTag(agent.Tags, "manager") {
 		tools = append(tools, delegateTaskToolDef, reviewTaskToolDef, verifyDeliverableToolDef)

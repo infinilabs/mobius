@@ -166,6 +166,11 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 			systemPrompt += managerDirectives()
 		}
 
+		systemPrompt += "\n\n## Project Management\n" +
+			"You can create projects with the create_project tool. You will be the project owner.\n" +
+			"- When the user explicitly asks to create a project, do it. Only 'name' is required — ask for it if not provided. Description and other details can be added later.\n" +
+			"- When a task is complex (multi-step, multi-file, or will produce artifacts that need tracking), suggest creating a project for it. Always confirm with the user before creating."
+
 		if req.ProjectID != "" && h.pgClient != nil {
 			project, perr := h.pgClient.GetProject(r.Context(), req.ProjectID)
 			if perr == nil {

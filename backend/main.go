@@ -197,6 +197,18 @@ func main() {
 			slog.Error("failed to hydrate conversations from ES", "error", err)
 		}
 
+		if pgClient != nil {
+			metas, merr := pgClient.ListConversationsMeta(ctx, "")
+			if merr == nil {
+				for _, m := range metas {
+					if m.ProjectID != nil {
+						api.conversations.SetProjectID(m.ID, *m.ProjectID)
+					}
+				}
+				slog.Info("conversation project_ids backfilled from PG", "count", len(metas))
+			}
+		}
+
 		promptsDir := "prompts"
 		if _, err := os.Stat(promptsDir); os.IsNotExist(err) {
 			promptsDir = "../prompts"

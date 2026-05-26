@@ -32,6 +32,42 @@ func (h *APIHandler) executeToolCall(
 		return h.execStoreMemory(ctx, call.Args, agent, conversationID)
 	case "forget_memory":
 		return h.execForgetMemory(ctx, call.Args)
+	case "create_project":
+		return h.execCreateProject(ctx, call.Args, agent, conversationID)
+	case "list_tasks":
+		return h.execListTasksTool(ctx, call.Args)
+	case "list_projects":
+		return h.execListProjectsTool(ctx)
+	case "list_employees":
+		return h.execListEmployeesTool(ctx)
+	case "get_employee":
+		return h.execGetEmployeeTool(ctx, call.Args)
+	case "update_task_status":
+		return h.execUpdateTaskStatusTool(ctx, call.Args, agent)
+	case "get_task":
+		return h.execGetTaskTool(ctx, call.Args)
+	case "update_task":
+		return h.execUpdateTaskTool(ctx, call.Args)
+	case "add_task_comment":
+		return h.execAddTaskCommentTool(ctx, call.Args, agent)
+	case "update_project":
+		return h.execUpdateProjectTool(ctx, call.Args)
+	case "update_employee":
+		return h.execUpdateEmployeeTool(ctx, call.Args)
+	case "list_skills":
+		return h.execListSkillsTool(ctx, call.Args)
+	case "assign_skill":
+		return h.execAssignSkillTool(ctx, call.Args)
+	case "unassign_skill":
+		return h.execUnassignSkillTool(ctx, call.Args)
+	case "list_prompts":
+		return h.execListPromptsTool(ctx, call.Args)
+	case "create_prompt":
+		return h.execCreatePromptTool(ctx, call.Args)
+	case "update_prompt":
+		return h.execUpdatePromptTool(ctx, call.Args)
+	case "delete_prompt":
+		return h.execDeletePromptTool(ctx, call.Args)
 	case "write_project_file":
 		return h.execWriteProjectFile(ctx, call.Args)
 	case "read_project_file":
@@ -152,6 +188,463 @@ func (h *APIHandler) execListProjectAssets(ctx context.Context, args map[string]
 		results = []map[string]any{}
 	}
 	return map[string]any{"results": results, "count": len(results)}
+}
+
+func (h *APIHandler) execCreateProject(ctx context.Context, args map[string]any, agent *Employee, conversationID string) map[string]any {
+	if h.pgClient == nil {
+		return map[string]any{"error": "database not available"}
+	}
+	name, _ := args["name"].(string)
+	if name == "" {
+		return map[string]any{"error": "name is required"}
+	}
+	description, _ := args["description"].(string)
+
+	p := &Project{
+		Name:        name,
+		Description: description,
+		Owner:       &EmployeeBrief{ID: agent.ID, Name: agent.Name, Title: agent.Title, Role: agent.Role},
+	}
+	if err := h.pgClient.CreateProject(ctx, p, h.config); err != nil {
+		return map[string]any{"error": "failed to create project: " + err.Error()}
+	}
+
+	if conversationID != "" {
+		h.conversations.SetProjectID(conversationID, p.ID)
+		if h.pgClient != nil {
+			conv := h.conversations.Get(conversationID)
+			if conv != nil {
+				h.pgClient.UpsertConversationMeta(ctx, conv)
+			}
+		}
+	}
+
+	slog.Info("project created via chat", "project_id", p.ID, "name", name, "owner", agent.Name)
+	return map[string]any{
+		"status":     "created",
+		"project_id": p.ID,
+		"name":       p.Name,
+		"owner":      agent.Name,
+	}
+}
+
+func (h *APIHandler) execListTasksTool(ctx context.Context, args map[string]any) map[string]any {
+	if h.pgClient == nil {
+		return map[string]any{"error": "database not available"}
+	}
+	status, _ := args["status"].(string)
+	assigneeID, _ := args["assignee_id"].(string)
+	projectID, _ := args["project_id"].(string)
+
+	tasks, err := h.pgClient.ListTasks(ctx, status, assigneeID, projectID)
+	if err != nil {
+		return map[string]any{"error": "failed to list tasks: " + err.Error()}
+	}
+	var results []map[string]any
+	for _, t := range tasks {
+		entry := map[string]any{
+			"id": t.ID, "title": t.Title, "status": t.Status, "priority": t.Priority,
+		}
+		if t.Assignee != nil {
+			entry["assignee"] = t.Assignee.Name
+			entry["assignee_id"] = t.Assignee.ID
+		}
+		if t.ProjectName != "" {
+			entry["project"] = t.ProjectName
+		}
+		results = append(results, entry)
+	}
+	if results == nil {
+		results = []map[string]any{}
+	}
+	return map[string]any{"tasks": results, "count": len(results)}
+}
+
+func (h *APIHandler) execListProjectsTool(ctx context.Context) map[string]any {
+	if h.pgClient == nil {
+		return map[string]any{"error": "database not available"}
+	}
+	projects, err := h.pgClient.ListProjects(ctx, "")
+	if err != nil {
+		return map[string]any{"error": "failed to list projects: " + err.Error()}
+	}
+	var results []map[string]any
+	for _, p := range projects {
+		entry := map[string]any{
+			"id": p.ID, "name": p.Name, "status": p.Status,
+			"task_count": p.TaskCount, "asset_count": p.AssetCount,
+		}
+		if p.Owner != nil {
+			entry["owner"] = p.Owner.Name
+		}
+		results = append(results, entry)
+	}
+	if results == nil {
+		results = []map[string]any{}
+	}
+	return map[string]any{"projects": results, "count": len(results)}
+}
+
+func (h *APIHandler) execListEmployeesTool(ctx context.Context) map[string]any {
+	if h.pgClient == nil {
+		return map[string]any{"error": "database not available"}
+	}
+	employees, err := h.pgClient.ListEmployees(ctx)
+	if err != nil {
+		return map[string]any{"error": "failed to list employees: " + err.Error()}
+	}
+	var results []map[string]any
+	for _, e := range employees {
+		entry := map[string]any{
+			"id": e.ID, "name": e.Name, "title": e.Title, "role": e.Role, "tags": e.Tags,
+		}
+		if e.ManagerID != nil {
+			entry["manager_id"] = *e.ManagerID
+		}
+		results = append(results, entry)
+	}
+	if results == nil {
+		results = []map[string]any{}
+	}
+	return map[string]any{"employees": results, "count": len(results)}
+}
+
+func (h *APIHandler) execGetEmployeeTool(ctx context.Context, args map[string]any) map[string]any {
+	if h.pgClient == nil {
+		return map[string]any{"error": "database not available"}
+	}
+	id, _ := args["employee_id"].(string)
+	if id == "" {
+		return map[string]any{"error": "employee_id is required"}
+	}
+	emp, err := h.pgClient.GetEmployee(ctx, id)
+	if err != nil {
+		return map[string]any{"error": "employee not found: " + err.Error()}
+	}
+	var reports []map[string]any
+	for _, r := range emp.Reports {
+		reports = append(reports, map[string]any{"id": r.ID, "name": r.Name, "title": r.Title})
+	}
+	if reports == nil {
+		reports = []map[string]any{}
+	}
+	result := map[string]any{
+		"id": emp.ID, "name": emp.Name, "title": emp.Title, "role": emp.Role,
+		"tags": emp.Tags, "backstory": emp.Backstory, "reports": reports,
+	}
+	if emp.ManagerID != nil {
+		result["manager_id"] = *emp.ManagerID
+	}
+	return result
+}
+
+func (h *APIHandler) execUpdateTaskStatusTool(ctx context.Context, args map[string]any, actor *Employee) map[string]any {
+	if h.pgClient == nil {
+		return map[string]any{"error": "database not available"}
+	}
+	taskID, _ := args["task_id"].(string)
+	status, _ := args["status"].(string)
+	feedback, _ := args["feedback"].(string)
+	if taskID == "" || status == "" {
+		return map[string]any{"error": "task_id and status are required"}
+	}
+	if err := h.pgClient.UpdateTaskStatus(ctx, taskID, status, actor.ID); err != nil {
+		return map[string]any{"error": "failed to update status: " + err.Error()}
+	}
+	if feedback != "" && status == "ready" {
+		h.pgClient.AddTaskComment(ctx, taskID, actor.ID, "REJECTED: "+feedback)
+	}
+	return map[string]any{"status": "updated", "task_id": taskID, "new_status": status}
+}
+
+func (h *APIHandler) execGetTaskTool(ctx context.Context, args map[string]any) map[string]any {
+	if h.pgClient == nil {
+		return map[string]any{"error": "database not available"}
+	}
+	taskID, _ := args["task_id"].(string)
+	if taskID == "" {
+		return map[string]any{"error": "task_id is required"}
+	}
+	t, err := h.pgClient.GetTask(ctx, taskID)
+	if err != nil {
+		return map[string]any{"error": "task not found: " + err.Error()}
+	}
+	result := map[string]any{
+		"id": t.ID, "title": t.Title, "body": t.Body,
+		"status": t.Status, "priority": t.Priority, "result": t.Result,
+	}
+	if t.Assignee != nil {
+		result["assignee"] = map[string]any{"id": t.Assignee.ID, "name": t.Assignee.Name}
+	}
+	if t.Creator != nil {
+		result["creator"] = map[string]any{"id": t.Creator.ID, "name": t.Creator.Name}
+	}
+	if t.ProjectName != "" {
+		result["project"] = t.ProjectName
+	}
+	comments, _ := h.pgClient.ListTaskComments(ctx, taskID)
+	var cmts []map[string]any
+	for _, c := range comments {
+		author := "System"
+		if c.Author != nil {
+			author = c.Author.Name
+		}
+		cmts = append(cmts, map[string]any{"author": author, "content": c.Content, "created_at": c.CreatedAt})
+	}
+	if cmts != nil {
+		result["comments"] = cmts
+	}
+	return result
+}
+
+func (h *APIHandler) execUpdateTaskTool(ctx context.Context, args map[string]any) map[string]any {
+	if h.pgClient == nil {
+		return map[string]any{"error": "database not available"}
+	}
+	taskID, _ := args["task_id"].(string)
+	if taskID == "" {
+		return map[string]any{"error": "task_id is required"}
+	}
+	var title, body, priority, assigneeID *string
+	if v, ok := args["title"].(string); ok && v != "" {
+		title = &v
+	}
+	if v, ok := args["body"].(string); ok && v != "" {
+		body = &v
+	}
+	if v, ok := args["priority"].(string); ok && v != "" {
+		priority = &v
+	}
+	if v, ok := args["assignee_id"].(string); ok && v != "" {
+		assigneeID = &v
+	}
+	if err := h.pgClient.UpdateTask(ctx, taskID, title, body, priority, assigneeID, nil); err != nil {
+		return map[string]any{"error": "failed to update task: " + err.Error()}
+	}
+	return map[string]any{"status": "updated", "task_id": taskID}
+}
+
+func (h *APIHandler) execAddTaskCommentTool(ctx context.Context, args map[string]any, agent *Employee) map[string]any {
+	if h.pgClient == nil {
+		return map[string]any{"error": "database not available"}
+	}
+	taskID, _ := args["task_id"].(string)
+	content, _ := args["content"].(string)
+	if taskID == "" || content == "" {
+		return map[string]any{"error": "task_id and content are required"}
+	}
+	comment, err := h.pgClient.AddTaskComment(ctx, taskID, agent.ID, content)
+	if err != nil {
+		return map[string]any{"error": "failed to add comment: " + err.Error()}
+	}
+	return map[string]any{"status": "added", "comment_id": comment.ID}
+}
+
+func (h *APIHandler) execUpdateProjectTool(ctx context.Context, args map[string]any) map[string]any {
+	if h.pgClient == nil {
+		return map[string]any{"error": "database not available"}
+	}
+	projectID, _ := args["project_id"].(string)
+	if projectID == "" {
+		return map[string]any{"error": "project_id is required"}
+	}
+	var description, status *string
+	if v, ok := args["description"].(string); ok && v != "" {
+		description = &v
+	}
+	if v, ok := args["status"].(string); ok && v != "" {
+		status = &v
+	}
+	if err := h.pgClient.UpdateProject(ctx, projectID, nil, description, status); err != nil {
+		return map[string]any{"error": "failed to update project: " + err.Error()}
+	}
+	return map[string]any{"status": "updated", "project_id": projectID}
+}
+
+func (h *APIHandler) execUpdateEmployeeTool(ctx context.Context, args map[string]any) map[string]any {
+	if h.pgClient == nil {
+		return map[string]any{"error": "database not available"}
+	}
+	empID, _ := args["employee_id"].(string)
+	if empID == "" {
+		return map[string]any{"error": "employee_id is required"}
+	}
+	emp, err := h.pgClient.GetEmployee(ctx, empID)
+	if err != nil {
+		return map[string]any{"error": "employee not found: " + err.Error()}
+	}
+	if v, ok := args["title"].(string); ok && v != "" {
+		emp.Title = v
+	}
+	if v, ok := args["backstory"].(string); ok && v != "" {
+		emp.Backstory = v
+	}
+	if v, ok := args["tags"]; ok {
+		if tagSlice, ok := v.([]any); ok {
+			var tags []string
+			for _, t := range tagSlice {
+				if s, ok := t.(string); ok {
+					tags = append(tags, s)
+				}
+			}
+			emp.Tags = tags
+		}
+	}
+	if err := h.pgClient.UpdateEmployee(ctx, empID, emp); err != nil {
+		return map[string]any{"error": "failed to update employee: " + err.Error()}
+	}
+	return map[string]any{"status": "updated", "employee_id": empID, "name": emp.Name}
+}
+
+func (h *APIHandler) execListSkillsTool(ctx context.Context, args map[string]any) map[string]any {
+	if h.esClient == nil {
+		return map[string]any{"error": "Elasticsearch not available"}
+	}
+	query, _ := args["query"].(string)
+	skills, err := h.esClient.SearchSkills(ctx, query)
+	if err != nil {
+		return map[string]any{"error": "failed to search skills: " + err.Error()}
+	}
+	var results []map[string]any
+	for _, s := range skills {
+		results = append(results, map[string]any{
+			"id": s.ID, "name": s.Name, "category": s.Category, "description": s.Description, "tags": s.Tags,
+		})
+	}
+	if results == nil {
+		results = []map[string]any{}
+	}
+	return map[string]any{"skills": results, "count": len(results)}
+}
+
+func (h *APIHandler) execAssignSkillTool(ctx context.Context, args map[string]any) map[string]any {
+	if h.pgClient == nil {
+		return map[string]any{"error": "database not available"}
+	}
+	empID, _ := args["employee_id"].(string)
+	skillID, _ := args["skill_id"].(string)
+	if empID == "" || skillID == "" {
+		return map[string]any{"error": "employee_id and skill_id are required"}
+	}
+	if err := h.pgClient.AssignSkill(ctx, empID, skillID); err != nil {
+		return map[string]any{"error": "failed to assign skill: " + err.Error()}
+	}
+	return map[string]any{"status": "assigned", "employee_id": empID, "skill_id": skillID}
+}
+
+func (h *APIHandler) execUnassignSkillTool(ctx context.Context, args map[string]any) map[string]any {
+	if h.pgClient == nil {
+		return map[string]any{"error": "database not available"}
+	}
+	empID, _ := args["employee_id"].(string)
+	skillID, _ := args["skill_id"].(string)
+	if empID == "" || skillID == "" {
+		return map[string]any{"error": "employee_id and skill_id are required"}
+	}
+	if err := h.pgClient.UnassignSkill(ctx, empID, skillID); err != nil {
+		return map[string]any{"error": "failed to unassign skill: " + err.Error()}
+	}
+	return map[string]any{"status": "unassigned", "employee_id": empID, "skill_id": skillID}
+}
+
+func (h *APIHandler) execListPromptsTool(ctx context.Context, args map[string]any) map[string]any {
+	if h.esClient == nil {
+		return map[string]any{"error": "Elasticsearch not available"}
+	}
+	query, _ := args["query"].(string)
+	prompts, err := h.esClient.SearchPrompts(ctx, query)
+	if err != nil {
+		return map[string]any{"error": "failed to search prompts: " + err.Error()}
+	}
+	var results []map[string]any
+	for _, p := range prompts {
+		results = append(results, map[string]any{
+			"id": p.ID, "title": p.Title, "tags": p.Tags,
+		})
+	}
+	if results == nil {
+		results = []map[string]any{}
+	}
+	return map[string]any{"prompts": results, "count": len(results)}
+}
+
+func (h *APIHandler) execCreatePromptTool(ctx context.Context, args map[string]any) map[string]any {
+	if h.esClient == nil {
+		return map[string]any{"error": "Elasticsearch not available"}
+	}
+	title, _ := args["title"].(string)
+	content, _ := args["content"].(string)
+	if title == "" || content == "" {
+		return map[string]any{"error": "title and content are required"}
+	}
+	var tags []string
+	if v, ok := args["tags"].([]any); ok {
+		for _, t := range v {
+			if s, ok := t.(string); ok {
+				tags = append(tags, s)
+			}
+		}
+	}
+	if tags == nil {
+		tags = []string{}
+	}
+	now := time.Now().UnixMilli()
+	p := &Prompt{
+		ID: generateID(), Title: title, Content: content, Tags: tags,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := h.esClient.IndexPrompt(ctx, p); err != nil {
+		return map[string]any{"error": "failed to create prompt: " + err.Error()}
+	}
+	return map[string]any{"status": "created", "prompt_id": p.ID, "title": p.Title}
+}
+
+func (h *APIHandler) execUpdatePromptTool(ctx context.Context, args map[string]any) map[string]any {
+	if h.esClient == nil {
+		return map[string]any{"error": "Elasticsearch not available"}
+	}
+	promptID, _ := args["prompt_id"].(string)
+	if promptID == "" {
+		return map[string]any{"error": "prompt_id is required"}
+	}
+	p, err := h.esClient.GetPrompt(ctx, promptID)
+	if err != nil {
+		return map[string]any{"error": "prompt not found: " + err.Error()}
+	}
+	if v, ok := args["title"].(string); ok && v != "" {
+		p.Title = v
+	}
+	if v, ok := args["content"].(string); ok && v != "" {
+		p.Content = v
+	}
+	if v, ok := args["tags"].([]any); ok {
+		var tags []string
+		for _, t := range v {
+			if s, ok := t.(string); ok {
+				tags = append(tags, s)
+			}
+		}
+		p.Tags = tags
+	}
+	p.UpdatedAt = time.Now().UnixMilli()
+	if err := h.esClient.IndexPrompt(ctx, p); err != nil {
+		return map[string]any{"error": "failed to update prompt: " + err.Error()}
+	}
+	return map[string]any{"status": "updated", "prompt_id": p.ID}
+}
+
+func (h *APIHandler) execDeletePromptTool(ctx context.Context, args map[string]any) map[string]any {
+	if h.esClient == nil {
+		return map[string]any{"error": "Elasticsearch not available"}
+	}
+	promptID, _ := args["prompt_id"].(string)
+	if promptID == "" {
+		return map[string]any{"error": "prompt_id is required"}
+	}
+	if err := h.esClient.DeletePrompt(ctx, promptID); err != nil {
+		return map[string]any{"error": "failed to delete prompt: " + err.Error()}
+	}
+	return map[string]any{"status": "deleted", "prompt_id": promptID}
 }
 
 func (h *APIHandler) execStoreMemory(ctx context.Context, args map[string]any, agent *Employee, convID string) map[string]any {

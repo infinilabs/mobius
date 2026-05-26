@@ -1,0 +1,50 @@
+[
+  {
+    "name": "id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "UUIDv4 event identifier"
+  },
+  {
+    "name": "timestamp",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED",
+    "description": "Precise event time (daily partitioning column)"
+  },
+  {
+    "name": "event_type",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "Event category: command_execution, task_transition, task_delegated, task_submitted, task_approved, task_rejected, employee_hired, memory_stored, file_written, project_created, conversation_started"
+  },
+  {
+    "name": "actor_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Employee/agent UUID who triggered the event"
+  },
+  {
+    "name": "project_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Project UUID context (clustered column)"
+  },
+  {
+    "name": "task_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Task UUID context"
+  },
+  {
+    "name": "conversation_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Conversation UUID context"
+  },
+  {
+    "name": "payload",
+    "type": "JSON",
+    "mode": "REQUIRED",
+    "description": "Event-specific structured data (envelope pattern)"
+  }
+]

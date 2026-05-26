@@ -1,0 +1,19 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "id":              { "type": "keyword" },
+      "timestamp":       { "type": "date" },
+      "event_type":      { "type": "keyword" },
+      "actor_id":        { "type": "keyword" },
+      "project_id":      { "type": "keyword" },
+      "task_id":         { "type": "keyword" },
+      "conversation_id": { "type": "keyword" },
+      "payload":         { "type": "object", "enabled": false }
+    }
+  }
+}

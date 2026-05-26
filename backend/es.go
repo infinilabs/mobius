@@ -134,6 +134,7 @@ func (es *ESClient) IndexConversation(ctx context.Context, conv *Conversation) e
 	doc := map[string]any{
 		"id":         conv.ID,
 		"title":      conv.Title,
+		"project_id": conv.ProjectID,
 		"turn_count": len(conv.Messages),
 		"created_at": conv.CreatedAt,
 		"updated_at": conv.UpdatedAt,
@@ -249,10 +250,11 @@ func (es *ESClient) ListAllConversations(ctx context.Context) ([]Conversation, e
 		Hits struct {
 			Hits []struct {
 				Source struct {
-					ID        string `json:"id"`
-					Title     string `json:"title"`
-					CreatedAt int64  `json:"created_at"`
-					UpdatedAt int64  `json:"updated_at"`
+					ID        string  `json:"id"`
+					Title     string  `json:"title"`
+					ProjectID *string `json:"project_id"`
+					CreatedAt int64   `json:"created_at"`
+					UpdatedAt int64   `json:"updated_at"`
 				} `json:"_source"`
 			} `json:"hits"`
 		} `json:"hits"`
@@ -266,6 +268,7 @@ func (es *ESClient) ListAllConversations(ctx context.Context) ([]Conversation, e
 		convs = append(convs, Conversation{
 			ID:        hit.Source.ID,
 			Title:     hit.Source.Title,
+			ProjectID: hit.Source.ProjectID,
 			Messages:  []Message{},
 			CreatedAt: hit.Source.CreatedAt,
 			UpdatedAt: hit.Source.UpdatedAt,

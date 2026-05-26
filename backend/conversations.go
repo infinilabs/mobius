@@ -122,6 +122,7 @@ func (s *ConversationStore) List() []ConversationSummary {
 		out = append(out, ConversationSummary{
 			ID:        c.ID,
 			Title:     c.Title,
+			ProjectID: c.ProjectID,
 			UpdatedAt: c.UpdatedAt,
 		})
 	}

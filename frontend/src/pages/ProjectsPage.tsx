@@ -1,18 +1,23 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Plus, Search, FolderKanban, FileText, Database, Settings,
-  Trash2, Upload, RefreshCw, X, Archive, Folder, ChevronUp,
+  Trash2, Upload, RefreshCw, X, Archive, Folder, ChevronUp, MessageSquare,
 } from 'lucide-react';
 import {
   listProjects, createProject, getProject, updateProject, deleteProject,
   listProjectAssets, uploadProjectAsset, deleteProjectAsset, reindexProjectAssets,
   getProjectMemory, updateProjectMemory, listEmployees, browseDirectories,
+  listConversations,
 } from '../api';
 import type { Project, ProjectAsset, Employee } from '../types';
 
 type Tab = 'assets' | 'memory' | 'settings';
 
-export default function ProjectsPage() {
+interface ProjectsPageProps {
+  onNavigateToChat?: (conversationId: string | null, agentId?: string, projectId?: string) => void;
+}
+
+export default function ProjectsPage({ onNavigateToChat }: ProjectsPageProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [selected, setSelected] = useState<Project | null>(null);
   const [tab, setTab] = useState<Tab>('assets');
@@ -24,6 +29,18 @@ export default function ProjectsPage() {
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  const handleChat = async () => {
+    if (!selected || !onNavigateToChat) return;
+    const convs = await listConversations();
+    const projectConv = convs.find(c => c.project_id === selected.id);
+    if (projectConv) {
+      onNavigateToChat(projectConv.id);
+    } else {
+      const agentId = selected.owner?.id;
+      onNavigateToChat(null, agentId, selected.id);
+    }
+  };
 
   const handleSelect = async (id: string) => {
     const p = await getProject(id);
@@ -93,7 +110,7 @@ export default function ProjectsPage() {
       <div className="flex-1 flex flex-col overflow-hidden">
         {selected ? (
           <>
-            <ProjectHeader project={selected} />
+            <ProjectHeader project={selected} onChat={onNavigateToChat ? handleChat : undefined} />
             <div className="flex border-b border-zinc-800/40 px-6">
               {(['assets', 'memory', 'settings'] as Tab[]).map(t => (
                 <button
@@ -134,7 +151,7 @@ export default function ProjectsPage() {
   );
 }
 
-function ProjectHeader({ project }: { project: Project }) {
+function ProjectHeader({ project, onChat }: { project: Project; onChat?: () => void }) {
   const isImported = project.source_path != null;
   return (
     <div className="px-6 py-4 border-b border-zinc-800/40">
@@ -148,6 +165,11 @@ function ProjectHeader({ project }: { project: Project }) {
         <span className={`text-[10px] px-1.5 py-0.5 rounded ${project.status === 'active' ? 'bg-green-900/40 text-green-300 border border-green-700/40' : 'bg-amber-900/40 text-amber-300 border border-amber-700/40'}`}>
           {project.status}
         </span>
+        {onChat && (
+          <button onClick={onChat} className="ml-auto px-3 py-1.5 rounded-lg bg-cyan-600/20 text-cyan-400 hover:bg-cyan-600/30 text-xs font-medium cursor-pointer transition-colors flex items-center gap-1.5 border border-cyan-700/30">
+            <MessageSquare size={13} /> Chat
+          </button>
+        )}
       </div>
       {project.description && <p className="text-xs text-zinc-400 mb-1">{project.description}</p>}
       {isImported && project.source_path && <p className="text-[10px] text-zinc-600 font-mono">{project.source_path}</p>}
@@ -377,7 +399,11 @@ function CreateProjectModal({ onClose, onCreated }: { onClose: () => void; onCre
   const [error, setError] = useState('');
 
   useEffect(() => {
-    listEmployees().then(setEmployees).catch(() => {});
+    listEmployees().then(emps => {
+      setEmployees(emps);
+      const ceo = emps.find(e => e.role === 'CEO');
+      if (ceo) setOwnerId(ceo.id);
+    }).catch(() => {});
   }, []);
 
   const handleSubmit = async () => {

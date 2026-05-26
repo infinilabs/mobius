@@ -90,6 +90,7 @@ export interface Conversation {
 export interface ConversationSummary {
   id: string;
   title: string;
+  project_id?: string | null;
   updated_at: number;
 }
 

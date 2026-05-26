@@ -15,6 +15,9 @@
           "keyword": { "type": "keyword" }
         }
       },
+      "project_id": {
+        "type": "keyword"
+      },
       "user_id": {
         "type": "keyword"
       },
