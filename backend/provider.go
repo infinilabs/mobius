@@ -36,6 +36,17 @@ type LLMRequest struct {
 	OnText       func(text string)
 	OnToolCall   func(call ToolCall) map[string]any
 	OnToolEvent  func(name, status string)
+	OnUsage      func(usage TokenUsage)
+}
+
+type TokenUsage struct {
+	PromptTokens     int32
+	CompletionTokens int32
+	TotalTokens      int32
+	CachedTokens     int32
+	ThoughtsTokens   int32
+	ToolUseTokens    int32
+	LatencyMs        int64
 }
 
 // LLMProvider abstracts chat + tool-calling across LLM backends.

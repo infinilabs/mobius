@@ -146,8 +146,12 @@ func main() {
 		providers.Register("gemini", NewGeminiProvider(vertexClient, geminiClient, studioModels))
 	}
 	gc := cfg.GetSettings().GoogleCloud
-	if gc.ProjectID != "" {
-		providers.Register("claude", NewClaudeProvider(gc.ProjectID, "us-east5"))
+	claudeProjectID := gc.VertexAI.ProjectID
+	if claudeProjectID == "" {
+		claudeProjectID = gc.ProjectID
+	}
+	if claudeProjectID != "" {
+		providers.Register("claude", NewClaudeProvider(claudeProjectID, "us-east5"))
 	}
 
 	var eventPipeline *EventPipeline
@@ -158,7 +162,7 @@ func main() {
 			"batch", cfg.Elasticsearch.Events.BatchSize)
 	}
 
-	api := NewAPIHandler(cfg, configPath, vertexClient, esClient, gcsClient, pgClient, skillsDir, providers, eventPipeline)
+	api := NewAPIHandler(cfg, configPath, vertexClient, esClient, gcsClient, pgClient, bqClient, skillsDir, providers, eventPipeline)
 
 	// Skill sync sources
 	hermesPath := cfg.SkillSync.HermesPath
@@ -264,6 +268,17 @@ func main() {
 			if err := pgClient.SeedDefaultSkillAssignments(ctx, esClient); err != nil {
 				slog.Error("failed to seed skill assignments", "error", err)
 			}
+			go func() {
+				if err := esClient.BackfillEmployees(ctx, pgClient); err != nil {
+					slog.Error("ES backfill employees failed", "error", err)
+				}
+				if err := esClient.BackfillProjects(ctx, pgClient); err != nil {
+					slog.Error("ES backfill projects failed", "error", err)
+				}
+				if err := esClient.BackfillTasks(ctx, pgClient); err != nil {
+					slog.Error("ES backfill tasks failed", "error", err)
+				}
+			}()
 		}
 	}
 
@@ -385,6 +400,15 @@ func main() {
 	mux.Handle("POST /api/models", h(api.AddModel))
 	mux.Handle("DELETE /api/models/{id}", h(api.RemoveModel))
 
+	// Search
+	mux.Handle("GET /api/search", h(api.Search))
+
+	// Token Monitor
+	mux.Handle("GET /api/tokens/summary", h(api.TokenSummary))
+	mux.Handle("GET /api/tokens/timeseries", h(api.TokenTimeseries))
+	mux.Handle("GET /api/tokens/breakdown", h(api.TokenBreakdown))
+	mux.Handle("GET /api/tokens/details", h(api.TokenDetails))
+
 	// Events
 	mux.Handle("GET /api/events", h(api.ListEvents))
 	mux.Handle("GET /api/events/stats", h(api.EventStats))
@@ -429,6 +453,11 @@ func main() {
 		go eventPipeline.Start(syncCtx)
 	}
 
+	// Token usage pipeline goroutine
+	if api.tokenPipeline != nil {
+		go api.tokenPipeline.Start(syncCtx)
+	}
+
 	// Event archiver (GCS + ES pruning)
 	if esClient != nil && gcsClient != nil {
 		go StartArchiver(syncCtx, cfg, esClient, gcsClient)
@@ -436,7 +465,7 @@ func main() {
 
 	// Background task dispatcher
 	if pgClient != nil {
-		dispatcher := NewTaskDispatcher(pgClient, esClient, providers, 5, cfg, eventPipeline)
+		dispatcher := NewTaskDispatcher(pgClient, esClient, api.tokenPipeline, providers, 5, cfg, eventPipeline)
 		go dispatcher.Start(syncCtx)
 	}
 
@@ -496,6 +525,11 @@ func main() {
 	slog.Info("Shutdown signal received", "signal", sig.String())
 
 	syncCancel()
+
+	if api.tokenPipeline != nil {
+		api.tokenPipeline.Wait()
+		slog.Info("token pipeline drained")
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

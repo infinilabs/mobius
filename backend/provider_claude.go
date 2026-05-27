@@ -110,11 +110,16 @@ func (c *ClaudeProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 			body["tools"] = tools
 		}
 
-		text, toolCalls, err := c.doStream(ctx, req.Model, body, req.OnText)
+		roundStart := time.Now()
+		text, toolCalls, roundUsage, err := c.doStream(ctx, req.Model, body, req.OnText)
 		if err != nil {
 			return fullText, err
 		}
 		fullText += text
+		if req.OnUsage != nil && roundUsage != nil {
+			roundUsage.LatencyMs = time.Since(roundStart).Milliseconds()
+			req.OnUsage(*roundUsage)
+		}
 
 		if len(toolCalls) == 0 {
 			break
@@ -169,15 +174,15 @@ func (c *ClaudeProvider) doStream(
 	model string,
 	body map[string]any,
 	onText func(string),
-) (string, []ToolCall, error) {
+) (string, []ToolCall, *TokenUsage, error) {
 	payload, _ := json.Marshal(body)
 
 	if c.tokenSource == nil {
-		return "", nil, fmt.Errorf("oauth token source not initialized")
+		return "", nil, nil, fmt.Errorf("oauth token source not initialized")
 	}
 	token, err := c.tokenSource.Token()
 	if err != nil {
-		return "", nil, fmt.Errorf("token: %w", err)
+		return "", nil, nil, fmt.Errorf("token: %w", err)
 	}
 
 	httpReq, _ := http.NewRequestWithContext(ctx, "POST",
@@ -187,19 +192,20 @@ func (c *ClaudeProvider) doStream(
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return "", nil, fmt.Errorf("http: %w", err)
+		return "", nil, nil, fmt.Errorf("http: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)
-		return "", nil, fmt.Errorf("claude API %d: %s", resp.StatusCode, string(b))
+		return "", nil, nil, fmt.Errorf("claude API %d: %s", resp.StatusCode, string(b))
 	}
 
 	var text string
 	var toolCalls []ToolCall
 	var currentToolCall *ToolCall
 	var currentToolInput strings.Builder
+	var usage TokenUsage
 
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
@@ -218,6 +224,15 @@ func (c *ClaudeProvider) doStream(
 		}
 
 		switch event["type"] {
+		case "message_start":
+			if msg, ok := event["message"].(map[string]any); ok {
+				if u, ok := msg["usage"].(map[string]any); ok {
+					if v, ok := u["input_tokens"].(float64); ok {
+						usage.PromptTokens = int32(v)
+					}
+				}
+			}
+
 		case "content_block_start":
 			if cb, ok := event["content_block"].(map[string]any); ok {
 				if cb["type"] == "tool_use" {
@@ -251,8 +266,16 @@ func (c *ClaudeProvider) doStream(
 				toolCalls = append(toolCalls, *currentToolCall)
 				currentToolCall = nil
 			}
+
+		case "message_delta":
+			if u, ok := event["usage"].(map[string]any); ok {
+				if v, ok := u["output_tokens"].(float64); ok {
+					usage.CompletionTokens = int32(v)
+				}
+			}
 		}
 	}
 
-	return text, toolCalls, nil
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	return text, toolCalls, &usage, nil
 }

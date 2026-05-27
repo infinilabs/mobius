@@ -813,6 +813,12 @@ func (h *APIHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.esClient != nil {
+		if err := h.esClient.IndexTask(r.Context(), full); err != nil {
+			slog.Warn("ES index task failed", "id", full.ID, "error", err)
+		}
+	}
+
 	slog.Info("task created", "id", full.ID, "title", full.Title, "status", full.Status)
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, full)
@@ -848,6 +854,12 @@ func (h *APIHandler) UpdateTaskFields(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.esClient != nil {
+		if err := h.esClient.IndexTask(r.Context(), task); err != nil {
+			slog.Warn("ES index task failed", "id", id, "error", err)
+		}
+	}
+
 	slog.Info("task updated", "id", id)
 	writeJSON(w, task)
 }
@@ -862,6 +874,12 @@ func (h *APIHandler) DeleteTask(w http.ResponseWriter, r *http.Request) {
 	if err := h.pgClient.DeleteTask(r.Context(), id); err != nil {
 		writeError(w, "failed to delete task: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	if h.esClient != nil {
+		if err := h.esClient.DeleteESTask(r.Context(), id); err != nil {
+			slog.Warn("ES delete task failed", "id", id, "error", err)
+		}
 	}
 
 	slog.Info("task deleted", "id", id)
@@ -894,6 +912,12 @@ func (h *APIHandler) UpdateTaskStatus(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, "task not found after status update", http.StatusNotFound)
 		return
+	}
+
+	if h.esClient != nil {
+		if err := h.esClient.IndexTask(r.Context(), task); err != nil {
+			slog.Warn("ES index task failed", "id", id, "error", err)
+		}
 	}
 
 	slog.Info("task status updated", "id", id, "status", body.Status)

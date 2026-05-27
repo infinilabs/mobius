@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"google.golang.org/genai"
 )
@@ -71,6 +72,8 @@ func (g *GeminiProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 	for i := 0; i < maxToolRounds; i++ {
 		var fcParts []*genai.Part
 		var iterText string
+		var turnUsage TokenUsage
+		roundStart := time.Now()
 
 		for chunk, err := range client.Models.GenerateContentStream(
 			ctx, req.Model, contents, config,
@@ -85,6 +88,16 @@ func (g *GeminiProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 					}
 				}
 			}
+			if chunk.UsageMetadata != nil {
+				turnUsage = TokenUsage{
+					PromptTokens:     chunk.UsageMetadata.PromptTokenCount,
+					CompletionTokens: chunk.UsageMetadata.CandidatesTokenCount,
+					TotalTokens:      chunk.UsageMetadata.TotalTokenCount,
+					CachedTokens:     chunk.UsageMetadata.CachedContentTokenCount,
+					ThoughtsTokens:   chunk.UsageMetadata.ThoughtsTokenCount,
+					ToolUseTokens:    chunk.UsageMetadata.ToolUsePromptTokenCount,
+				}
+			}
 			text := chunk.Text()
 			if text != "" {
 				iterText += text
@@ -92,6 +105,11 @@ func (g *GeminiProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 					req.OnText(text)
 				}
 			}
+		}
+
+		turnUsage.LatencyMs = time.Since(roundStart).Milliseconds()
+		if req.OnUsage != nil {
+			req.OnUsage(turnUsage)
 		}
 
 		if len(fcParts) == 0 {

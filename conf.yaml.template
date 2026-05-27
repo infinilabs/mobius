@@ -29,14 +29,18 @@ google_cloud:
   credentials_path: "" # leave empty to use ADC
   api_key: ""           # optional: AI Studio API key for Gemini models (overrides service account for Gemini)
   bigquery:
+    project_id: ""  # leave empty to use top-level project_id
     dataset: "mobius"
     event_table: "events"
+    token_table: "token_usage"
   gcs:
+    project_id: ""  # leave empty to use top-level project_id
     bucket: "mobius"
     location: "us-central1"
     public_access_prevention: true
     event_archive_prefix: "events/archived"
   vertex_ai:
+    project_id: ""  # leave empty to use top-level project_id
     models:
       - id: "gemini-3.1-pro"
         name: "Gemini 3.1 Pro"

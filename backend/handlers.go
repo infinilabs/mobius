@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,8 @@ type APIHandler struct {
 	gcsClient     *GCSClient
 	pgClient      *PGClient
 	providers     *ProviderRegistry
+	bqClient      *BQClient
+	tokenPipeline *TokenPipeline
 	events        *EventPipeline
 	health        *HealthChecker
 	skillsDir     string
@@ -35,7 +38,11 @@ type APIHandler struct {
 	lastSyncResult *SyncResult
 }
 
-func NewAPIHandler(cfg *Config, configPath string, genaiClient *genai.Client, esClient *ESClient, gcsClient *GCSClient, pgClient *PGClient, skillsDir string, providers *ProviderRegistry, events *EventPipeline) *APIHandler {
+func NewAPIHandler(cfg *Config, configPath string, genaiClient *genai.Client, esClient *ESClient, gcsClient *GCSClient, pgClient *PGClient, bqClient *BQClient, skillsDir string, providers *ProviderRegistry, events *EventPipeline) *APIHandler {
+	var tp *TokenPipeline
+	if bqClient != nil {
+		tp = NewTokenPipeline(bqClient)
+	}
 	h := &APIHandler{
 		config:        cfg,
 		configPath:    configPath,
@@ -45,6 +52,8 @@ func NewAPIHandler(cfg *Config, configPath string, genaiClient *genai.Client, es
 		esClient:      esClient,
 		gcsClient:     gcsClient,
 		pgClient:      pgClient,
+		bqClient:      bqClient,
+		tokenPipeline: tp,
 		providers:     providers,
 		events:        events,
 		health:        NewHealthChecker(5 * time.Second),
@@ -470,5 +479,39 @@ func (h *APIHandler) BrowseDirectories(w http.ResponseWriter, r *http.Request) {
 		"parent":  filepath.Dir(dir),
 		"dirs":    dirs,
 	})
+}
+
+func (h *APIHandler) Search(w http.ResponseWriter, r *http.Request) {
+	if h.esClient == nil {
+		writeError(w, "Elasticsearch not available", http.StatusServiceUnavailable)
+		return
+	}
+	typ := r.URL.Query().Get("type")
+	q := r.URL.Query().Get("q")
+	limit := 10
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 50 {
+			limit = n
+		}
+	}
+
+	var results []SearchResult
+	var err error
+	switch typ {
+	case "employees":
+		results, err = h.esClient.SearchEmployees(r.Context(), q, limit)
+	case "projects":
+		results, err = h.esClient.SearchProjects(r.Context(), q, limit)
+	case "tasks":
+		results, err = h.esClient.SearchTasks(r.Context(), q, limit)
+	default:
+		writeError(w, "type must be employees, projects, or tasks", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		writeError(w, "search failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, results)
 }
 

@@ -17,6 +17,7 @@ import (
 type TaskDispatcher struct {
 	pgClient       *PGClient
 	esClient       *ESClient
+	tokenPipeline  *TokenPipeline
 	providers      *ProviderRegistry
 	config         *Config
 	events         *EventPipeline
@@ -26,13 +27,14 @@ type TaskDispatcher struct {
 	wg             sync.WaitGroup
 }
 
-func NewTaskDispatcher(pg *PGClient, es *ESClient, pr *ProviderRegistry, maxConcurrency int, cfg *Config, events *EventPipeline) *TaskDispatcher {
+func NewTaskDispatcher(pg *PGClient, es *ESClient, tp *TokenPipeline, pr *ProviderRegistry, maxConcurrency int, cfg *Config, events *EventPipeline) *TaskDispatcher {
 	if maxConcurrency <= 0 {
 		maxConcurrency = 5
 	}
 	return &TaskDispatcher{
 		pgClient:       pg,
 		esClient:       es,
+		tokenPipeline:  tp,
 		providers:      pr,
 		config:         cfg,
 		events:         events,
@@ -357,6 +359,12 @@ func (d *TaskDispatcher) processTemplate(ctx context.Context,
 		return
 	}
 
+	if d.esClient != nil {
+		if err := d.esClient.IndexTask(ctx, child); err != nil {
+			slog.Warn("ES index child task failed", "id", child.ID, "error", err)
+		}
+	}
+
 	if repeatTimes != nil && *repeatTimes-1 <= 0 {
 		d.pgClient.AddTaskComment(ctx, id, "", "System: Repeat count exhausted. Schedule deactivated.")
 	}
@@ -476,6 +484,15 @@ func (d *TaskDispatcher) executeAgentTask(parentCtx context.Context, t Task) {
 		return
 	}
 
+	providerName := "gemini"
+	if strings.HasPrefix(modelID, "claude-") {
+		providerName = "claude"
+	}
+	var projectID string
+	if t.ProjectID != nil {
+		projectID = *t.ProjectID
+	}
+
 	tools := buildAgentTools(assignee, &t)
 	llmReq := &LLMRequest{
 		Model:    modelID,
@@ -484,6 +501,30 @@ func (d *TaskDispatcher) executeAgentTask(parentCtx context.Context, t Task) {
 		OnText:   func(string) {},
 		OnToolCall: func(call ToolCall) map[string]any {
 			return d.dispatcherToolCall(ctx, call, assignee, &t)
+		},
+		OnUsage: func(usage TokenUsage) {
+			if d.tokenPipeline == nil {
+				return
+			}
+			d.tokenPipeline.Record(&bqTokenRow{
+				ID:               generateID(),
+				Timestamp:        time.Now().Format("2006-01-02 15:04:05.999999 UTC"),
+				ModelID:          modelID,
+				Provider:         providerName,
+				EmployeeID:       assignee.ID,
+				EmployeeName:     assignee.Name,
+				ProjectID:        projectID,
+				TaskID:           t.ID,
+				PromptTokens:     int64(usage.PromptTokens),
+				CompletionTokens: int64(usage.CompletionTokens),
+				TotalTokens:      int64(usage.TotalTokens),
+				CachedTokens:     int64(usage.CachedTokens),
+				ThoughtsTokens:   int64(usage.ThoughtsTokens),
+				ToolUseTokens:    int64(usage.ToolUseTokens),
+				LatencyMs:        usage.LatencyMs,
+				Status:           "success",
+				Source:           "task",
+			})
 		},
 	}
 
@@ -805,6 +846,13 @@ func (d *TaskDispatcher) execDelegateFromDispatcher(ctx context.Context, args ma
 	if err := d.pgClient.CreateTask(ctx, t, nil); err != nil {
 		return map[string]any{"error": "failed to create task: " + err.Error()}
 	}
+	if d.esClient != nil {
+		if full, ferr := d.pgClient.GetTask(ctx, t.ID); ferr == nil {
+			if ierr := d.esClient.IndexTask(ctx, full); ierr != nil {
+				slog.Warn("ES index delegated task failed", "id", t.ID, "error", ierr)
+			}
+		}
+	}
 
 	if currentTask.Body != "" {
 		if summary := d.summarizeForHandoff(ctx, currentTask.Body, currentTask.Result, "delegated"); summary != "" {
@@ -860,6 +908,11 @@ func (d *TaskDispatcher) execHireFromDispatcher(ctx context.Context, args map[st
 	}
 	if err := d.pgClient.CreateEmployee(ctx, emp); err != nil {
 		return map[string]any{"error": "failed to hire: " + err.Error()}
+	}
+	if d.esClient != nil {
+		if ierr := d.esClient.IndexEmployee(ctx, emp); ierr != nil {
+			slog.Warn("ES index hired employee failed", "id", emp.ID, "error", ierr)
+		}
 	}
 
 	if d.events != nil {

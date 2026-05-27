@@ -24,6 +24,7 @@ export interface VertexModel {
 }
 
 export interface VertexAIConfig {
+  project_id?: string;
   llm_model_id?: string;
   llm_location?: string;
   img_model_id?: string;
@@ -34,10 +35,12 @@ export interface VertexAIConfig {
 }
 
 export interface BigQueryConfig {
+  project_id?: string;
   dataset: string;
 }
 
 export interface GCSConfig {
+  project_id?: string;
   bucket: string;
   location: string;
   public_access_prevention: boolean;
@@ -220,4 +223,57 @@ export interface ProjectAsset {
   task_id?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface SearchResult {
+  id: string;
+  label: string;
+}
+
+export interface TokenSummary {
+  total_calls: number;
+  total_prompt: number;
+  total_completion: number;
+  total_tokens: number;
+  active_agents: number;
+  active_projects: number;
+  error_count: number;
+}
+
+export interface TokenTimeseriesPoint {
+  bucket: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  calls: number;
+}
+
+export interface TokenBreakdownItem {
+  dimension: string;
+  total_tokens: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  calls: number;
+}
+
+export interface TokenDetailRow {
+  id: string;
+  timestamp: string;
+  model_id: string;
+  provider: string;
+  employee_id: string;
+  employee_name: string;
+  project_id: string;
+  task_id: string;
+  conversation_id: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cached_tokens: number;
+  thoughts_tokens: number;
+  tool_use_tokens: number;
+  latency_ms: number;
+  status: string;
+  error_message: string;
+  source: string;
 }

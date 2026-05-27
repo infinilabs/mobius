@@ -604,6 +604,12 @@ func (h *APIHandler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		full = p
 	}
 
+	if h.esClient != nil {
+		if err := h.esClient.IndexProject(r.Context(), full); err != nil {
+			slog.Warn("ES index project failed", "id", full.ID, "error", err)
+		}
+	}
+
 	slog.Info("project created", "id", full.ID, "name", full.Name,
 		"imported", full.SourcePath != nil)
 	w.WriteHeader(http.StatusCreated)
@@ -641,6 +647,14 @@ func (h *APIHandler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	if err := h.pgClient.UpdateProject(r.Context(), id, nil, body.Description, body.Status); err != nil {
 		writeError(w, "failed to update project: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	if h.esClient != nil {
+		if updated, err := h.pgClient.GetProject(r.Context(), id); err == nil {
+			if err := h.esClient.IndexProject(r.Context(), updated); err != nil {
+				slog.Warn("ES index project failed", "id", id, "error", err)
+			}
+		}
 	}
 
 	p, _ := h.pgClient.GetProject(r.Context(), id)
@@ -683,6 +697,9 @@ func (h *APIHandler) ArchiveOrDeleteProject(w http.ResponseWriter, r *http.Reque
 
 	if h.esClient != nil {
 		h.esClient.DeleteProjectAssets(r.Context(), projectID)
+		if err := h.esClient.DeleteESProject(r.Context(), projectID); err != nil {
+			slog.Warn("ES delete project failed", "id", projectID, "error", err)
+		}
 	}
 
 	tx, txErr := h.pgClient.pool.Begin(r.Context())

@@ -28,7 +28,11 @@ func NewGCSClient(ctx context.Context, cfg *Config) (*GCSClient, error) {
 		return nil, fmt.Errorf("failed to create GCS client: %w", err)
 	}
 
-	g := &GCSClient{client: client, bucket: gc.GCS.Bucket, projectID: gc.ProjectID}
+	projectID := gc.GCS.ProjectID
+	if projectID == "" {
+		projectID = gc.ProjectID
+	}
+	g := &GCSClient{client: client, bucket: gc.GCS.Bucket, projectID: projectID}
 
 	if err := g.EnsureBucket(ctx, gc.GCS.Location, gc.GCS.PublicAccessPrevention); err != nil {
 		client.Close()

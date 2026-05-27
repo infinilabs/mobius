@@ -3,7 +3,7 @@ import {
   PenLine, Gauge, Bot, Palette, Radio, Megaphone,
   ChevronLeft, ChevronRight, ChevronDown, Layers,
   MessageSquare, MoreHorizontal, Pencil, Trash2, Check, X,
-  FileText, Users, BookOpen, Kanban, Wrench, Monitor, FolderKanban,
+  FileText, Users, BookOpen, Kanban, Wrench, Monitor, FolderKanban, Activity,
 } from 'lucide-react';
 import { fetchConfig, listConversations, renameConversation, deleteConversation } from './api';
 import type { ConversationSummary } from './types';
@@ -19,8 +19,9 @@ import SkillsPage from './pages/SkillsPage';
 import TasksPage from './pages/TasksPage';
 import SettingsPage from './pages/SettingsPage';
 import ProjectsPage from './pages/ProjectsPage';
+import TokenMonitorPage from './pages/TokenMonitorPage';
 
-type Page = 'new-task' | 'cockpit' | 'tasks' | 'projects' | 'hr' | 'skills' | 'agent-workspace' | 'creatives' | 'prompts' | 'autopilot' | 'settings';
+type Page = 'new-task' | 'cockpit' | 'tasks' | 'projects' | 'hr' | 'skills' | 'agent-workspace' | 'creatives' | 'prompts' | 'autopilot' | 'settings' | 'tokens';
 
 type NavItem = { id: Page; label: string; icon: React.ReactNode };
 
@@ -39,6 +40,7 @@ const OPS_ITEMS: NavItem[] = [
 
 const MGMT_ITEMS: NavItem[] = [
   { id: 'settings',         label: 'System',            icon: <Monitor size={18} /> },
+  { id: 'tokens',           label: 'Token Monitor',     icon: <Activity size={18} /> },
   { id: 'skills',           label: 'Skills',            icon: <BookOpen size={18} /> },
   { id: 'prompts',          label: 'Prompts',           icon: <FileText size={18} /> },
 ];
@@ -252,6 +254,7 @@ function App() {
           {activePage === 'prompts' && <div className="overflow-y-auto h-full"><PromptsPage /></div>}
           {activePage === 'autopilot' && <div className="overflow-y-auto h-full"><AutopilotPage /></div>}
           {activePage === 'settings' && <div className="overflow-y-auto h-full"><SettingsPage /></div>}
+          {activePage === 'tokens' && <div className="overflow-y-auto h-full"><TokenMonitorPage /></div>}
         </div>
       </main>
     </div>

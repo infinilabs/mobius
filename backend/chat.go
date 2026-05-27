@@ -35,8 +35,12 @@ func NewGenAIClients(ctx context.Context, cfg *Config) (vertexClient *genai.Clie
 		location = "global"
 	}
 
+	vertexProjectID := gc.VertexAI.ProjectID
+	if vertexProjectID == "" {
+		vertexProjectID = gc.ProjectID
+	}
 	vertexClient, err = genai.NewClient(ctx, &genai.ClientConfig{
-		Project:  gc.ProjectID,
+		Project:  vertexProjectID,
 		Location: location,
 		Backend:  genai.BackendVertexAI,
 	})
@@ -230,6 +234,16 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	providerName := "gemini"
+	if strings.HasPrefix(modelID, "claude-") {
+		providerName = "claude"
+	}
+	var agentID, agentName string
+	if agent != nil {
+		agentID = agent.ID
+		agentName = agent.Name
+	}
+
 	llmReq := &LLMRequest{
 		Model:        modelID,
 		Messages:     messages,
@@ -252,6 +266,30 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 			data, _ := json.Marshal(map[string]any{"tool_call": name, "status": status})
 			fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
+		},
+		OnUsage: func(usage TokenUsage) {
+			if h.tokenPipeline == nil {
+				return
+			}
+			h.tokenPipeline.Record(&bqTokenRow{
+				ID:               generateID(),
+				Timestamp:        time.Now().Format("2006-01-02 15:04:05.999999 UTC"),
+				ModelID:          modelID,
+				Provider:         providerName,
+				EmployeeID:       agentID,
+				EmployeeName:     agentName,
+				ProjectID:        req.ProjectID,
+				ConversationID:   req.ConversationID,
+				PromptTokens:     int64(usage.PromptTokens),
+				CompletionTokens: int64(usage.CompletionTokens),
+				TotalTokens:      int64(usage.TotalTokens),
+				CachedTokens:     int64(usage.CachedTokens),
+				ThoughtsTokens:   int64(usage.ThoughtsTokens),
+				ToolUseTokens:    int64(usage.ToolUseTokens),
+				LatencyMs:        usage.LatencyMs,
+				Status:           "success",
+				Source:           "chat",
+			})
 		},
 	}
 

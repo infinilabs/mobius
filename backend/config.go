@@ -96,6 +96,7 @@ type VertexModel struct {
 }
 
 type VertexAIConfig struct {
+	ProjectID     string `yaml:"project_id,omitempty" json:"project_id,omitempty"`
 	LLMModelID    string `yaml:"llm_model_id,omitempty" json:"llm_model_id,omitempty"`
 	LLMLocation   string `yaml:"llm_location,omitempty" json:"llm_location,omitempty"`
 	ImgModelID    string `yaml:"img_model_id,omitempty" json:"img_model_id,omitempty"`
@@ -188,11 +189,14 @@ func (ec *EventConfig) applyDefaults() {
 }
 
 type BigQueryConfig struct {
+	ProjectID  string `yaml:"project_id,omitempty" json:"project_id,omitempty"`
 	Dataset    string `yaml:"dataset" json:"dataset"`
 	EventTable string `yaml:"event_table" json:"event_table"`
+	TokenTable string `yaml:"token_table" json:"token_table"`
 }
 
 type GCSConfig struct {
+	ProjectID              string `yaml:"project_id,omitempty" json:"project_id,omitempty"`
 	Bucket                 string `yaml:"bucket" json:"bucket"`
 	Location               string `yaml:"location" json:"location"`
 	PublicAccessPrevention bool   `yaml:"public_access_prevention" json:"public_access_prevention"`

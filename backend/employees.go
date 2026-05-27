@@ -1639,6 +1639,12 @@ func (h *APIHandler) CreateEmployee(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.esClient != nil {
+		if err := h.esClient.IndexEmployee(r.Context(), &emp); err != nil {
+			slog.Warn("ES index employee failed", "id", emp.ID, "error", err)
+		}
+	}
+
 	slog.Info("employee created", "id", emp.ID, "name", emp.Name)
 	writeJSON(w, emp)
 }
@@ -1671,6 +1677,11 @@ func (h *APIHandler) UpdateEmployee(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updated, _ := h.pgClient.GetEmployee(r.Context(), id)
+	if h.esClient != nil && updated != nil {
+		if err := h.esClient.IndexEmployee(r.Context(), updated); err != nil {
+			slog.Warn("ES index employee failed", "id", id, "error", err)
+		}
+	}
 	if updated == nil {
 		writeJSON(w, emp)
 		return
@@ -1692,6 +1703,9 @@ func (h *APIHandler) DeleteEmployee(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.esClient != nil {
+		if err := h.esClient.DeleteESEmployee(r.Context(), id); err != nil {
+			slog.Warn("ES delete employee failed", "id", id, "error", err)
+		}
 		if err := h.esClient.DeleteEmployeeMemories(r.Context(), id); err != nil {
 			slog.Warn("failed to clean up employee memories from ES", "employee_id", id, "error", err)
 		}
