@@ -526,6 +526,11 @@ func main() {
 
 	syncCancel()
 
+	if eventPipeline != nil {
+		eventPipeline.Wait()
+		slog.Info("event pipeline drained")
+	}
+
 	if api.tokenPipeline != nil {
 		api.tokenPipeline.Wait()
 		slog.Info("token pipeline drained")

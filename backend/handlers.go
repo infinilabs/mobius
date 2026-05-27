@@ -85,10 +85,10 @@ func (h *APIHandler) registerProbes() {
 	})
 
 	h.health.Register("bigquery", func(ctx context.Context) ServiceStatus {
-		if h.events == nil || h.events.bqClient == nil {
+		if h.bqClient == nil {
 			return StatusUnconfigured("Not connected")
 		}
-		if err := h.events.bqClient.Ping(ctx); err != nil {
+		if err := h.bqClient.Ping(ctx); err != nil {
 			return StatusUnavailable(err.Error())
 		}
 		return StatusOK()
@@ -168,8 +168,8 @@ func (h *APIHandler) Shutdown(ctx context.Context) {
 		h.pgClient.Close()
 	}
 
-	if h.events != nil && h.events.bqClient != nil {
-		if err := h.events.bqClient.Close(); err != nil {
+	if h.bqClient != nil {
+		if err := h.bqClient.Close(); err != nil {
 			slog.Error("BQ client close failed", "error", err)
 		}
 	}

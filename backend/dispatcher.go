@@ -737,6 +737,24 @@ func (d *TaskDispatcher) execListProjectAssets(ctx context.Context, task *Task) 
 
 const maxCommandOutput = 4000
 
+var blockedCommandPatterns = []string{
+	"rm -rf /", "rm -rf ~", "mkfs", "dd if=",
+	":(){", "fork bomb",
+	"chmod -R 777 /", "chown -R",
+	"> /dev/sd", "> /dev/null",
+	"curl | sh", "wget | sh", "curl|sh", "wget|sh",
+}
+
+func validateCommand(command string) error {
+	lower := strings.ToLower(command)
+	for _, p := range blockedCommandPatterns {
+		if strings.Contains(lower, p) {
+			return fmt.Errorf("blocked command pattern: %s", p)
+		}
+	}
+	return nil
+}
+
 func (d *TaskDispatcher) execRunProjectCommand(ctx context.Context, args map[string]any, task *Task) map[string]any {
 	if task.ProjectID == nil {
 		return map[string]any{"error": "no project context"}
@@ -744,6 +762,11 @@ func (d *TaskDispatcher) execRunProjectCommand(ctx context.Context, args map[str
 	command, _ := args["command"].(string)
 	if command == "" {
 		return map[string]any{"error": "command is required"}
+	}
+
+	if err := validateCommand(command); err != nil {
+		slog.Warn("blocked dangerous command", "task_id", task.ID, "command", command, "reason", err)
+		return map[string]any{"error": "command rejected: " + err.Error()}
 	}
 
 	project, err := d.pgClient.GetProject(ctx, *task.ProjectID)
@@ -756,6 +779,7 @@ func (d *TaskDispatcher) execRunProjectCommand(ctx context.Context, args map[str
 
 	cmd := exec.CommandContext(cmdCtx, "sh", "-c", command)
 	cmd.Dir = project.RootDir(d.config)
+	cmd.Env = append(os.Environ(), "PATH=/usr/local/bin:/usr/bin:/bin")
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

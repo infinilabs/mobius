@@ -184,9 +184,18 @@ func (h *APIHandler) TokenBreakdown(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	groupBy := r.URL.Query().Get("group_by")
-	allowed := map[string]bool{"model_id": true, "employee_id": true, "employee_name": true, "project_id": true, "task_id": true, "source": true, "provider": true}
-	if !allowed[groupBy] {
+	groupByParam := r.URL.Query().Get("group_by")
+	allowedGroupBy := map[string]string{
+		"model_id":      "model_id",
+		"employee_id":   "employee_id",
+		"employee_name": "employee_name",
+		"project_id":    "project_id",
+		"task_id":       "task_id",
+		"source":        "source",
+		"provider":      "provider",
+	}
+	groupBy, ok := allowedGroupBy[groupByParam]
+	if !ok {
 		groupBy = "model_id"
 	}
 

@@ -791,6 +791,11 @@ func (h *APIHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, t)
 			return
 		}
+		if h.esClient != nil {
+			if err := h.esClient.IndexTask(r.Context(), full); err != nil {
+				slog.Warn("ES index scheduled task failed", "id", full.ID, "error", err)
+			}
+		}
 		slog.Info("scheduled task created", "id", full.ID, "title", full.Title, "cron_expr", body.CronExpr)
 		w.WriteHeader(http.StatusCreated)
 		writeJSON(w, full)

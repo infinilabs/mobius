@@ -26,6 +26,7 @@ type EventPipeline struct {
 	esClient *ESClient
 	bqClient *BQClient
 	cfg      EventConfig
+	done     chan struct{}
 }
 
 func NewEventPipeline(es *ESClient, bq *BQClient, cfg EventConfig) *EventPipeline {
@@ -35,6 +36,7 @@ func NewEventPipeline(es *ESClient, bq *BQClient, cfg EventConfig) *EventPipelin
 		esClient: es,
 		bqClient: bq,
 		cfg:      cfg,
+		done:     make(chan struct{}),
 	}
 }
 
@@ -54,19 +56,21 @@ func (ep *EventPipeline) Publish(evt *Event) {
 }
 
 func (ep *EventPipeline) Start(ctx context.Context) {
+	defer close(ep.done)
+
 	flushInterval := time.Duration(ep.cfg.FlushIntervalS) * time.Second
 	ticker := time.NewTicker(flushInterval)
 	defer ticker.Stop()
 
 	batch := make([]*Event, 0, ep.cfg.BatchSize)
 
-	flush := func() {
+	flush := func(fctx context.Context) {
 		if len(batch) == 0 {
 			return
 		}
 		toFlush := batch
 		batch = make([]*Event, 0, ep.cfg.BatchSize)
-		go ep.flushBatch(context.Background(), toFlush)
+		ep.flushBatch(fctx, toFlush)
 	}
 
 	for {
@@ -74,24 +78,28 @@ func (ep *EventPipeline) Start(ctx context.Context) {
 		case evt := <-ep.queue:
 			batch = append(batch, evt)
 			if len(batch) >= ep.cfg.BatchSize {
-				flush()
+				flush(ctx)
 			}
 		case <-ticker.C:
-			flush()
+			flush(ctx)
 		case <-ctx.Done():
-		drainLoop:
 			for {
 				select {
 				case evt := <-ep.queue:
 					batch = append(batch, evt)
 				default:
-					break drainLoop
+					drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					flush(drainCtx)
+					cancel()
+					return
 				}
 			}
-			flush()
-			return
 		}
 	}
+}
+
+func (ep *EventPipeline) Wait() {
+	<-ep.done
 }
 
 func (ep *EventPipeline) flushBatch(ctx context.Context, batch []*Event) {

@@ -185,8 +185,11 @@ func (c *ClaudeProvider) doStream(
 		return "", nil, nil, fmt.Errorf("token: %w", err)
 	}
 
-	httpReq, _ := http.NewRequestWithContext(ctx, "POST",
+	httpReq, err := http.NewRequestWithContext(ctx, "POST",
 		c.endpoint(model), bytes.NewReader(payload))
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("create request: %w", err)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
 
