@@ -409,6 +409,18 @@ func main() {
 	mux.Handle("GET /api/tokens/breakdown", h(api.TokenBreakdown))
 	mux.Handle("GET /api/tokens/details", h(api.TokenDetails))
 
+	// Goals
+	mux.Handle("GET /api/goals", h(api.ListGoals))
+	mux.Handle("POST /api/goals", h(api.CreateGoal))
+	mux.Handle("GET /api/goals/{id}", h(api.GetGoal))
+	mux.Handle("PUT /api/goals/{id}", h(api.UpdateGoal))
+	mux.Handle("DELETE /api/goals/{id}", h(api.DeleteGoal))
+	mux.Handle("GET /api/goals/{id}/children", h(api.ListGoalChildren))
+
+	// Task Interactions
+	mux.Handle("GET /api/tasks/{id}/interactions", h(api.ListInteractions))
+	mux.Handle("PUT /api/tasks/{id}/interactions/{interactionId}", h(api.ResolveInteraction))
+
 	// Events
 	mux.Handle("GET /api/events", h(api.ListEvents))
 	mux.Handle("GET /api/events/stats", h(api.EventStats))
@@ -463,9 +475,35 @@ func main() {
 		go StartArchiver(syncCtx, cfg, esClient, gcsClient)
 	}
 
+	// MCP Server for external agents
+	var mcpServer *MCPServer
+	if pgClient != nil {
+		mcpServer = NewMCPServer(pgClient, esClient, cfg)
+		slog.Info("MCP server initialized", "tools", len(mcpServer.tools))
+		mux.Handle("/mcp", mcpWebSocketHandler(mcpServer))
+	}
+
+	// Agent adapter registry
+	adapterRegistry := NewAdapterRegistry()
+	adapterRegistry.Register(AdapterInternal, NewInternalLLMAdapter(
+		providers, pgClient, esClient, cfg, api.tokenPipeline, eventPipeline,
+	))
+	var claudeMintSession func(agentID, taskID string) string
+	if mcpServer != nil {
+		claudeMintSession = mcpServer.MintSession
+	}
+	adapterRegistry.Register(AdapterClaudeCode, NewClaudeCodeAdapter(
+		fmt.Sprintf("ws://localhost:%d/mcp", port), claudeMintSession,
+	))
+	adapterRegistry.Register(AdapterBash, NewBashAdapter(cfg))
+	httpWebhookAdapter := NewHTTPWebhookAdapter()
+	adapterRegistry.Register(AdapterHTTPWebhook, httpWebhookAdapter)
+	// Callback for external webhook workers to report run completion.
+	mux.Handle("POST /api/runs/complete", h(httpWebhookAdapter.CompleteRunHandler))
+
 	// Background task dispatcher
 	if pgClient != nil {
-		dispatcher := NewTaskDispatcher(pgClient, esClient, api.tokenPipeline, providers, 5, cfg, eventPipeline)
+		dispatcher := NewTaskDispatcher(pgClient, esClient, api.tokenPipeline, adapterRegistry, 5, cfg, eventPipeline)
 		go dispatcher.Start(syncCtx)
 	}
 

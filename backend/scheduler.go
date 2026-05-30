@@ -98,15 +98,3 @@ func GracePeriod(expr string) time.Duration {
 	return half
 }
 
-func FormatScheduleDisplay(expr string) string {
-	switch ScheduleKind(expr) {
-	case "once":
-		t, _ := time.Parse(time.RFC3339, expr)
-		return "once at " + t.Format("2006-01-02 15:04")
-	case "interval":
-		return expr
-	case "cron":
-		return "cron: " + expr
-	}
-	return expr
-}

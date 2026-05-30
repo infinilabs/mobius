@@ -20,7 +20,6 @@ import (
 type APIHandler struct {
 	config        *Config
 	configPath    string
-	cache         *Cache
 	conversations *ConversationStore
 	genaiClient   *genai.Client
 	esClient      *ESClient
@@ -46,7 +45,6 @@ func NewAPIHandler(cfg *Config, configPath string, genaiClient *genai.Client, es
 	h := &APIHandler{
 		config:        cfg,
 		configPath:    configPath,
-		cache:         NewCache(10 * time.Minute),
 		conversations: NewConversationStore(),
 		genaiClient:   genaiClient,
 		esClient:      esClient,

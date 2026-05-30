@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+func strPtr(s string) *string { return &s }
+
 func makeEmployee(role string, tags []string, managerID *string, reports []EmployeeBrief) *Employee {
 	return &Employee{
 		ID:        "emp-001",

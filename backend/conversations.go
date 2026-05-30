@@ -216,19 +216,6 @@ func SaveConversation(cfg *Config, conv *Conversation, project *Project) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-func LoadConversation(cfg *Config, convID string, project *Project) (*Conversation, error) {
-	path := conversationFilePath(cfg, convID, project)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read conversation: %w", err)
-	}
-	var conv Conversation
-	if err := json.Unmarshal(data, &conv); err != nil {
-		return nil, fmt.Errorf("unmarshal conversation: %w", err)
-	}
-	return &conv, nil
-}
-
 // PG conversation metadata
 
 func (pg *PGClient) UpsertConversationMeta(ctx context.Context, conv *Conversation) error {

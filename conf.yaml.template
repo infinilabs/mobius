@@ -24,6 +24,19 @@ elasticsearch:
 chat_upload:
   max_file_size_mb: 20
 
+# Sandbox for host-executing commands (run_command tool + bash adapter).
+# Commands run inside an ephemeral container whose only writable mount is the
+# project dir (or an ephemeral temp dir for project-less tasks), so a runaway
+# command cannot damage the host. Build the image once: `make build-sandbox`.
+# Set enabled: false to run commands directly on the host instead (no isolation).
+sandbox:
+  enabled: true
+  image: "mobius-agent:latest" # built by `make build-sandbox` (see sandbox/Dockerfile)
+  network: "bridge"            # "bridge" to allow pip/go mod/cargo/git fetch; "none" for full offline
+  memory_mb: 2048
+  cpus: "2"
+  pids_limit: 512
+
 google_cloud:
   project_id: "your-gcp-project-id"
   credentials_path: "" # leave empty to use ADC

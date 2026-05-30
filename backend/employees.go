@@ -12,19 +12,22 @@ import (
 )
 
 type Employee struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	Title     string          `json:"title"`
-	Role      string          `json:"role"`
-	Backstory string          `json:"backstory"`
-	AvatarURL string          `json:"avatar_url"`
-	Models    []EmployeeModel `json:"models"`
-	Skills    []EmployeeSkill `json:"skills"`
-	Tags      []string        `json:"tags"`
-	ManagerID *string         `json:"manager_id"`
-	Reports   []EmployeeBrief `json:"reports"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	ID            string          `json:"id"`
+	Name          string          `json:"name"`
+	Title         string          `json:"title"`
+	Role          string          `json:"role"`
+	Backstory     string          `json:"backstory"`
+	AvatarURL     string          `json:"avatar_url"`
+	AdapterType   string          `json:"adapter_type"`
+	AdapterConfig map[string]any  `json:"adapter_config"`
+	MonthlyBudget *int            `json:"monthly_budget,omitempty"`
+	Models        []EmployeeModel `json:"models"`
+	Skills        []EmployeeSkill `json:"skills"`
+	Tags          []string        `json:"tags"`
+	ManagerID     *string         `json:"manager_id"`
+	Reports       []EmployeeBrief `json:"reports"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
 }
 
 type EmployeeBrief struct {
@@ -49,6 +52,7 @@ type EmployeeSkill struct {
 func (pg *PGClient) ListEmployees(ctx context.Context) ([]Employee, error) {
 	rows, err := pg.pool.Query(ctx, `
 		SELECT e.id, e.name, e.title, e.role, e.backstory, e.avatar_url,
+		       e.adapter_type, e.adapter_config, e.monthly_budget,
 		       e.created_at, e.updated_at, r.manager_id
 		FROM employees e
 		LEFT JOIN employee_reporting r ON r.employee_id = e.id
@@ -63,10 +67,14 @@ func (pg *PGClient) ListEmployees(ctx context.Context) ([]Employee, error) {
 	ids := make([]string, 0)
 	for rows.Next() {
 		var emp Employee
+		var adapterConfig []byte
 		if err := rows.Scan(&emp.ID, &emp.Name, &emp.Title, &emp.Role, &emp.Backstory,
-			&emp.AvatarURL, &emp.CreatedAt, &emp.UpdatedAt, &emp.ManagerID); err != nil {
+			&emp.AvatarURL, &emp.AdapterType, &adapterConfig, &emp.MonthlyBudget,
+			&emp.CreatedAt, &emp.UpdatedAt, &emp.ManagerID); err != nil {
 			return nil, fmt.Errorf("scan employee: %w", err)
 		}
+		emp.AdapterConfig = make(map[string]any)
+		json.Unmarshal(adapterConfig, &emp.AdapterConfig)
 		emp.Models = []EmployeeModel{}
 		emp.Skills = []EmployeeSkill{}
 		emp.Tags = []string{}
@@ -184,17 +192,22 @@ func (pg *PGClient) batchLoadSkills(ctx context.Context, ids []string) (map[stri
 
 func (pg *PGClient) GetEmployee(ctx context.Context, id string) (*Employee, error) {
 	var emp Employee
+	var adapterConfig []byte
 	err := pg.pool.QueryRow(ctx, `
 		SELECT e.id, e.name, e.title, e.role, e.backstory, e.avatar_url,
+		       e.adapter_type, e.adapter_config, e.monthly_budget,
 		       e.created_at, e.updated_at, r.manager_id
 		FROM employees e
 		LEFT JOIN employee_reporting r ON r.employee_id = e.id
 		WHERE e.id = $1
 	`, id).Scan(&emp.ID, &emp.Name, &emp.Title, &emp.Role, &emp.Backstory,
-		&emp.AvatarURL, &emp.CreatedAt, &emp.UpdatedAt, &emp.ManagerID)
+		&emp.AvatarURL, &emp.AdapterType, &adapterConfig, &emp.MonthlyBudget,
+		&emp.CreatedAt, &emp.UpdatedAt, &emp.ManagerID)
 	if err != nil {
 		return nil, fmt.Errorf("get employee: %w", err)
 	}
+	emp.AdapterConfig = make(map[string]any)
+	json.Unmarshal(adapterConfig, &emp.AdapterConfig)
 
 	emp.Models = []EmployeeModel{}
 	emp.Skills = []EmployeeSkill{}
@@ -257,12 +270,23 @@ func (pg *PGClient) CreateEmployee(ctx context.Context, emp *Employee) error {
 	}
 	defer tx.Rollback(ctx)
 
+	adapterType := emp.AdapterType
+	if adapterType == "" {
+		adapterType = "internal_llm"
+	}
+	adapterConfig, _ := json.Marshal(emp.AdapterConfig)
+	if emp.AdapterConfig == nil {
+		adapterConfig = []byte("{}")
+	}
+
 	err = tx.QueryRow(ctx, `
-		INSERT INTO employees (name, title, role, backstory, avatar_url)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO employees (name, title, role, backstory, avatar_url, adapter_type, adapter_config, monthly_budget)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id, created_at, updated_at
-	`, emp.Name, emp.Title, emp.Role, emp.Backstory, emp.AvatarURL).Scan(
+	`, emp.Name, emp.Title, emp.Role, emp.Backstory, emp.AvatarURL,
+		adapterType, adapterConfig, emp.MonthlyBudget).Scan(
 		&emp.ID, &emp.CreatedAt, &emp.UpdatedAt)
+	emp.AdapterType = adapterType
 	if err != nil {
 		return fmt.Errorf("insert employee: %w", err)
 	}
@@ -314,11 +338,22 @@ func (pg *PGClient) UpdateEmployee(ctx context.Context, id string, emp *Employee
 	}
 	defer tx.Rollback(ctx)
 
+	adapterType := emp.AdapterType
+	if adapterType == "" {
+		adapterType = "internal_llm"
+	}
+	adapterConfigJSON, _ := json.Marshal(emp.AdapterConfig)
+	if emp.AdapterConfig == nil {
+		adapterConfigJSON = []byte("{}")
+	}
+
 	_, err = tx.Exec(ctx, `
 		UPDATE employees
-		SET name=$1, title=$2, role=$3, backstory=$4, avatar_url=$5, updated_at=NOW()
-		WHERE id=$6
-	`, emp.Name, emp.Title, emp.Role, emp.Backstory, emp.AvatarURL, id)
+		SET name=$1, title=$2, role=$3, backstory=$4, avatar_url=$5,
+		    adapter_type=$6, adapter_config=$7, monthly_budget=$8, updated_at=NOW()
+		WHERE id=$9
+	`, emp.Name, emp.Title, emp.Role, emp.Backstory, emp.AvatarURL,
+		adapterType, adapterConfigJSON, emp.MonthlyBudget, id)
 	if err != nil {
 		return fmt.Errorf("update employee: %w", err)
 	}

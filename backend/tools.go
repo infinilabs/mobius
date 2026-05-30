@@ -510,11 +510,60 @@ var verifyDeliverableToolDef = ToolDef{
 	},
 }
 
+var askUserToolDef = ToolDef{
+	Name:        "ask_user",
+	Description: "Ask the task creator or board a blocking question. The task will pause until answered. Use when you need clarification, approval, or a decision before proceeding.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"question": map[string]any{
+				"type":        "string",
+				"description": "The question to ask",
+			},
+			"options": map[string]any{
+				"type":        "array",
+				"items":       map[string]any{"type": "string"},
+				"description": "Optional list of choices for the user to pick from",
+			},
+		},
+		"required": []string{"question"},
+	},
+}
+
+var suggestTasksToolDef = ToolDef{
+	Name:        "suggest_tasks",
+	Description: "Propose a list of sub-tasks for approval. The manager or board will review and approve, modify, or reject the breakdown.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"tasks": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"title":       map[string]any{"type": "string", "description": "Task title"},
+						"goal":        map[string]any{"type": "string", "description": "What this sub-task should achieve"},
+						"assignee_id": map[string]any{"type": "string", "description": "Optional employee UUID to assign to"},
+						"priority":    map[string]any{"type": "string", "description": "low, medium, high, or urgent"},
+					},
+					"required": []string{"title", "goal"},
+				},
+			},
+			"rationale": map[string]any{
+				"type":        "string",
+				"description": "Why this decomposition makes sense",
+			},
+		},
+		"required": []string{"tasks"},
+	},
+}
+
 func buildAgentTools(agent *Employee, task *Task) []ToolDef {
 	var tools []ToolDef
 
 	tools = append(tools, submitTaskResultToolDef, listTeamToolDef)
 	tools = append(tools, storeMemoryToolDef, forgetMemoryToolDef)
+	tools = append(tools, askUserToolDef, suggestTasksToolDef)
 
 	if agent.Role == "CEO" || hasTag(agent.Tags, "manager") || hasTag(agent.Tags, "founder") {
 		tools = append(tools, createProjectToolDef, updateProjectToolDef)

@@ -124,36 +124,3 @@ func TestGracePeriod_OnceReturnsMinimum(t *testing.T) {
 		t.Errorf("expected 120s grace for one-shot, got %v", grace)
 	}
 }
-
-func TestFormatScheduleDisplay_AllTypes(t *testing.T) {
-	tests := []struct {
-		expr     string
-		contains string
-	}{
-		{"2026-06-15T14:30:00Z", "once at"},
-		{"every 30m", "every 30m"},
-		{"0 9 * * 1-5", "cron:"},
-	}
-	for _, tc := range tests {
-		got := FormatScheduleDisplay(tc.expr)
-		if got == "" {
-			t.Errorf("FormatScheduleDisplay(%q): returned empty string", tc.expr)
-		}
-		if !containsStr(got, tc.contains) {
-			t.Errorf("FormatScheduleDisplay(%q): expected to contain %q, got %q", tc.expr, tc.contains, got)
-		}
-	}
-}
-
-func containsStr(s, substr string) bool {
-	return len(s) >= len(substr) && searchStr(s, substr)
-}
-
-func searchStr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}

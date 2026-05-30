@@ -16,19 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 )
-
-func truncateSafeUTF8(s string, maxBytes int) string {
-	if len(s) <= maxBytes {
-		return s
-	}
-	s = s[:maxBytes]
-	for len(s) > 0 && !utf8.ValidString(s) {
-		s = s[:len(s)-1]
-	}
-	return s
-}
 
 func calculateSHA256(data []byte) string {
 	if len(data) == 0 {
@@ -116,17 +104,58 @@ func validateProjectName(name string, isImport bool) error {
 }
 
 func validateProjectPath(relativePath string) error {
-	if strings.Contains(relativePath, "..") {
-		return fmt.Errorf("path traversal not allowed")
-	}
 	if filepath.IsAbs(relativePath) {
 		return fmt.Errorf("absolute paths not allowed")
 	}
+	// Reject any ".." path *segment* (real traversal) while allowing ".." inside a
+	// filename (e.g. "my..file.txt"). A bare substring check false-positives on
+	// the latter; a post-Clean prefix check alone misses "a/../../b".
+	for _, seg := range strings.Split(relativePath, "/") {
+		if seg == ".." {
+			return fmt.Errorf("path traversal not allowed")
+		}
+	}
 	cleaned := filepath.Clean(relativePath)
-	if strings.HasPrefix(cleaned, "..") {
+	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("path escapes project root")
 	}
 	return nil
+}
+
+// resolveWithinRoot validates rel lexically, joins it under root, and resolves
+// symlinks on the nearest existing ancestor so a pre-existing symlink cannot
+// redirect the final target outside root. It returns the absolute path to use
+// for the actual file operation. All agent file tools go through this.
+func resolveWithinRoot(root, rel string) (string, error) {
+	if err := validateProjectPath(rel); err != nil {
+		return "", err
+	}
+	full := filepath.Join(root, filepath.Clean(rel))
+
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		resolvedRoot = filepath.Clean(root) // root may not exist yet (fresh project)
+	}
+
+	// Walk up to the nearest existing ancestor and resolve its symlinks.
+	check := full
+	for {
+		if r, rerr := filepath.EvalSymlinks(check); rerr == nil {
+			check = r
+			break
+		}
+		parent := filepath.Dir(check)
+		if parent == check {
+			check = filepath.Clean(full)
+			break
+		}
+		check = parent
+	}
+
+	if check != resolvedRoot && !strings.HasPrefix(check, resolvedRoot+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes project root")
+	}
+	return full, nil
 }
 
 func resolveMimeType(filename, headerMime string) string {
@@ -428,90 +457,6 @@ func readProjectMemory(project *Project, cfg *Config) string {
 		return ""
 	}
 	return string(content)
-}
-
-func appendProjectMemory(project *Project, cfg *Config, fact string) error {
-	mu := getProjectLock(project.Name)
-	mu.Lock()
-	defer mu.Unlock()
-
-	pc := cfg.Projects
-	mobiusPath := filepath.Join(project.RootDir(cfg), "mobius.md")
-
-	existing, _ := os.ReadFile(mobiusPath)
-	prefixLen := pc.MemoryDedupPrefix
-	if prefixLen > len(fact) {
-		prefixLen = len(fact)
-	}
-	factPrefix := strings.ToLower(fact[:prefixLen])
-	if strings.Contains(strings.ToLower(string(existing)), factPrefix) {
-		return nil
-	}
-
-	newLine := fmt.Sprintf("- %s (%s)\n", fact, time.Now().Format("2006-01-02"))
-
-	if len(existing)+len(newLine) > pc.MemoryMaxSize {
-		if err := compactMobiusMD(project, cfg, existing); err != nil {
-			slog.Error("mobius.md compaction failed", "project", project.Name, "error", err)
-		}
-	}
-
-	f, err := os.OpenFile(mobiusPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = f.WriteString(newLine)
-	return err
-}
-
-func compactMobiusMD(project *Project, cfg *Config, content []byte) error {
-	rootDir := project.RootDir(cfg)
-	bakDir := filepath.Join(rootDir, "mobius.md.bak")
-	os.MkdirAll(bakDir, 0755)
-
-	timestamp := time.Now().Format("20060102_150405")
-	shortID := generateID()[:4]
-	bakPath := filepath.Join(bakDir, fmt.Sprintf("%s_mobius_%s_%s.md", project.Name, timestamp, shortID))
-	if err := os.WriteFile(bakPath, content, 0644); err != nil {
-		return fmt.Errorf("backup failed: %w", err)
-	}
-
-	lines := strings.Split(string(content), "\n")
-	targetSize := int(float64(cfg.Projects.MemoryMaxSize) * cfg.Projects.MemoryCompactRatio)
-
-	var compacted strings.Builder
-	kept := 0
-	keptTotal := 0
-	for i := len(lines) - 1; i >= 0; i-- {
-		if kept >= cfg.Projects.MemoryCompactKeep {
-			break
-		}
-		keptTotal++
-		if strings.TrimSpace(lines[i]) != "" {
-			kept++
-		}
-	}
-
-	start := len(lines) - keptTotal
-	if start < 0 {
-		start = 0
-	}
-	headerLines := 4
-	if len(lines) < headerLines {
-		headerLines = len(lines)
-	}
-	for _, line := range lines[:headerLines] {
-		compacted.WriteString(line + "\n")
-	}
-	compacted.WriteString("\n")
-	for _, line := range lines[max(headerLines, start):] {
-		compacted.WriteString(line + "\n")
-	}
-
-	result := truncateSafeUTF8(compacted.String(), targetSize)
-
-	return os.WriteFile(filepath.Join(rootDir, "mobius.md"), []byte(result), 0644)
 }
 
 // HTTP handlers
@@ -921,13 +866,12 @@ func (h *APIHandler) UploadProjectAsset(w http.ResponseWriter, r *http.Request) 
 	if relativePath == "" {
 		relativePath = filepath.Base(header.Filename)
 	}
-	if err := validateProjectPath(relativePath); err != nil {
+	rootDir := project.RootDir(h.config)
+	fullPath, err := resolveWithinRoot(rootDir, relativePath)
+	if err != nil {
 		writeError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	rootDir := project.RootDir(h.config)
-	fullPath := filepath.Join(rootDir, relativePath)
 	os.MkdirAll(filepath.Dir(fullPath), 0755)
 
 	dst, err := os.Create(fullPath)

@@ -2,18 +2,21 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type PGClient struct {
 	pool *pgxpool.Pool
+	dsn  string
 }
 
 func NewPGClient(ctx context.Context, cfg PostgresConfig) (*PGClient, error) {
@@ -31,11 +34,42 @@ func NewPGClient(ctx context.Context, cfg PostgresConfig) (*PGClient, error) {
 	}
 
 	slog.Info("PostgreSQL connected", "host", cfg.Host, "port", cfg.Port, "db", cfg.DBName)
-	return &PGClient{pool: pool}, nil
+	return &PGClient{pool: pool, dsn: dsn}, nil
+}
+
+func (pg *PGClient) DSN() string {
+	return pg.dsn
 }
 
 func (pg *PGClient) Ping(ctx context.Context) error {
 	return pg.pool.Ping(ctx)
+}
+
+// InsertHeartbeatRun records a completed agent run, including its token usage.
+// This is the durable, BigQuery-independent ledger the monthly-budget gate reads
+// from (see TaskDispatcher.budgetExceeded).
+func (pg *PGClient) InsertHeartbeatRun(ctx context.Context, taskID, agentID, adapterType, status, output, errMsg string, usage TokenUsage, startedAt, completedAt time.Time) error {
+	tokenJSON, _ := json.Marshal(map[string]int32{
+		"prompt_tokens":     usage.PromptTokens,
+		"completion_tokens": usage.CompletionTokens,
+		"total_tokens":      usage.TotalTokens,
+		"cached_tokens":     usage.CachedTokens,
+		"thoughts_tokens":   usage.ThoughtsTokens,
+		"tool_use_tokens":   usage.ToolUseTokens,
+	})
+	var errArg any
+	if errMsg != "" {
+		errArg = errMsg
+	}
+	_, err := pg.pool.Exec(ctx, `
+		INSERT INTO heartbeat_runs
+			(task_id, agent_id, adapter_type, status, output_text, error_message, token_usage, started_at, completed_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	`, taskID, agentID, adapterType, status, output, errArg, tokenJSON, startedAt, completedAt)
+	if err != nil {
+		return fmt.Errorf("insert heartbeat run: %w", err)
+	}
+	return nil
 }
 
 func (pg *PGClient) Close() {

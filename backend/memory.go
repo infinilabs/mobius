@@ -35,7 +35,7 @@ func truncateForExtraction(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "...[truncated]"
+	return truncateStr(s, maxLen) + "...[truncated]"
 }
 
 func isValidMemory(text string) bool {

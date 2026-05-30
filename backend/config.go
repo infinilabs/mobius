@@ -227,6 +227,7 @@ type Config struct {
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch" json:"elasticsearch"`
 	GoogleCloud   GoogleCloudConfig   `yaml:"google_cloud" json:"google_cloud"`
 	Projects      ProjectConfig       `yaml:"projects,omitempty" json:"projects,omitempty"`
+	Sandbox       SandboxConfig       `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
 
 	Upload struct {
 		MaxFileSizeMB int `yaml:"max_file_size_mb,omitempty" json:"max_file_size_mb,omitempty"`
@@ -299,6 +300,7 @@ func LoadConfig(path string) (*Config, error) {
 	workdir, _ := os.Getwd()
 	cfg.Projects.applyDefaults(workdir)
 	cfg.Elasticsearch.Events.applyDefaults()
+	cfg.Sandbox.applyDefaults()
 	return &cfg, nil
 }
 

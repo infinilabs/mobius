@@ -91,14 +91,14 @@ func (h *APIHandler) execWriteProjectFile(ctx context.Context, args map[string]a
 	if path == "" || content == "" {
 		return map[string]any{"error": "path and content are required"}
 	}
-	if err := validateProjectPath(path); err != nil {
-		return map[string]any{"error": err.Error()}
-	}
 	project, err := h.pgClient.GetProject(ctx, projectID)
 	if err != nil {
 		return map[string]any{"error": "project not found"}
 	}
-	fullPath := filepath.Join(project.RootDir(h.config), path)
+	fullPath, err := resolveWithinRoot(project.RootDir(h.config), path)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
 	os.MkdirAll(filepath.Dir(fullPath), 0755)
 	if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
 		return map[string]any{"error": "write failed: " + err.Error()}
@@ -136,14 +136,15 @@ func (h *APIHandler) execReadProjectFile(ctx context.Context, args map[string]an
 	if path == "" {
 		return map[string]any{"error": "path is required"}
 	}
-	if err := validateProjectPath(path); err != nil {
-		return map[string]any{"error": err.Error()}
-	}
 	project, err := h.pgClient.GetProject(ctx, projectID)
 	if err != nil {
 		return map[string]any{"error": "project not found"}
 	}
-	data, err := os.ReadFile(filepath.Join(project.RootDir(h.config), path))
+	fullPath, err := resolveWithinRoot(project.RootDir(h.config), path)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	data, err := os.ReadFile(fullPath)
 	if err != nil {
 		return map[string]any{"error": "read failed: " + err.Error()}
 	}

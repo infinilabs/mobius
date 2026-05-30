@@ -1,6 +1,6 @@
 # Makefile for Mobius
 
-.PHONY: build-frontend build-backend build-all serve test sanity clean \
+.PHONY: build-frontend build-backend build-all build-sandbox serve test sanity clean \
         docker-up docker-up-postgres docker-up-elasticsearch docker-down docker-status
 
 # Variables
@@ -9,6 +9,7 @@ BINARY_NAME=mobius-server
 POSTGRES_CONTAINER=mobius-postgres
 ES_CONTAINER=mobius-elasticsearch
 DATA_DIR=$(shell pwd)/data
+SANDBOX_IMAGE=mobius-agent:latest
 
 # --- Build ---
 
@@ -27,6 +28,11 @@ build-backend:
 
 build-all: build-frontend build-backend
 	@echo "==> Mobius built successfully."
+
+build-sandbox:
+	@echo "==> Building agent sandbox image ($(SANDBOX_IMAGE))..."
+	docker build -t $(SANDBOX_IMAGE) sandbox/
+	@echo "==> Sandbox image built. Agents run commands inside this image."
 
 serve: docker-up build-all
 	@if [ ! -f conf.yaml ]; then \

@@ -1,24 +1,22 @@
 package main
 
 import (
-	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type TaskDispatcher struct {
 	pgClient       *PGClient
 	esClient       *ESClient
 	tokenPipeline  *TokenPipeline
-	providers      *ProviderRegistry
+	adapters       *AdapterRegistry
 	config         *Config
 	events         *EventPipeline
 	maxConcurrency int
@@ -27,7 +25,7 @@ type TaskDispatcher struct {
 	wg             sync.WaitGroup
 }
 
-func NewTaskDispatcher(pg *PGClient, es *ESClient, tp *TokenPipeline, pr *ProviderRegistry, maxConcurrency int, cfg *Config, events *EventPipeline) *TaskDispatcher {
+func NewTaskDispatcher(pg *PGClient, es *ESClient, tp *TokenPipeline, adapters *AdapterRegistry, maxConcurrency int, cfg *Config, events *EventPipeline) *TaskDispatcher {
 	if maxConcurrency <= 0 {
 		maxConcurrency = 5
 	}
@@ -35,7 +33,7 @@ func NewTaskDispatcher(pg *PGClient, es *ESClient, tp *TokenPipeline, pr *Provid
 		pgClient:       pg,
 		esClient:       es,
 		tokenPipeline:  tp,
-		providers:      pr,
+		adapters:       adapters,
 		config:         cfg,
 		events:         events,
 		maxConcurrency: maxConcurrency,
@@ -45,28 +43,202 @@ func NewTaskDispatcher(pg *PGClient, es *ESClient, tp *TokenPipeline, pr *Provid
 }
 
 func (d *TaskDispatcher) Start(ctx context.Context) {
-	dispatchTicker := time.NewTicker(15 * time.Second)
+	go d.listenLoop(ctx)
+
+	fallbackTicker := time.NewTicker(60 * time.Second)
 	reclaimTicker := time.NewTicker(1 * time.Minute)
 	scheduleTicker := time.NewTicker(60 * time.Second)
-	defer dispatchTicker.Stop()
+	retentionTicker := time.NewTicker(1 * time.Hour)
+	defer fallbackTicker.Stop()
 	defer reclaimTicker.Stop()
 	defer scheduleTicker.Stop()
+	defer retentionTicker.Stop()
 
-	slog.Info("task dispatcher started", "max_concurrency", d.maxConcurrency)
+	slog.Info("task dispatcher started", "mode", "listen+fallback", "max_concurrency", d.maxConcurrency)
 	for {
 		select {
-		case <-dispatchTicker.C:
+		case <-fallbackTicker.C:
 			d.sweepAndDispatch(ctx)
 		case <-reclaimTicker.C:
 			d.reclaimStaleTasks(ctx)
 		case <-scheduleTicker.C:
 			d.sweepScheduledTasks(ctx)
+		case <-retentionTicker.C:
+			d.pruneOldEvents(ctx)
 		case <-ctx.Done():
 			slog.Info("task dispatcher stopping, draining running tasks...")
 			d.wg.Wait()
 			slog.Info("task dispatcher stopped")
 			return
 		}
+	}
+}
+
+func (d *TaskDispatcher) listenLoop(ctx context.Context) {
+	backoff := time.Second
+	maxBackoff := 30 * time.Second
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		sessionStart := time.Now()
+		err := d.listenSession(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		// A session that stayed up a while was healthy; reset the backoff so a
+		// long-lived connection that finally drops reconnects promptly instead
+		// of waiting the max interval.
+		if time.Since(sessionStart) > 30*time.Second {
+			backoff = time.Second
+		}
+		slog.Warn("LISTEN session ended, reconnecting", "error", err, "backoff", backoff)
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return
+		}
+		backoff = min(backoff*2, maxBackoff)
+	}
+}
+
+func (d *TaskDispatcher) listenSession(ctx context.Context) error {
+	conn, err := pgx.Connect(ctx, d.pgClient.DSN())
+	if err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+	defer conn.Close(ctx)
+
+	if _, err := conn.Exec(ctx, "LISTEN mobius_dispatch"); err != nil {
+		return fmt.Errorf("LISTEN: %w", err)
+	}
+
+	slog.Info("LISTEN session established on mobius_dispatch")
+
+	for {
+		notification, err := conn.WaitForNotification(ctx)
+		if err != nil {
+			return fmt.Errorf("wait: %w", err)
+		}
+
+		var header struct {
+			ID      int64  `json:"id"`
+			Channel string `json:"channel"`
+		}
+		if err := json.Unmarshal([]byte(notification.Payload), &header); err != nil {
+			slog.Warn("dropping malformed dispatch notification",
+				"payload", notification.Payload, "error", err)
+			continue
+		}
+
+		go d.processEventByID(ctx, header.ID)
+	}
+}
+
+func (d *TaskDispatcher) processEventByID(ctx context.Context, eventID int64) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("PANIC recovered in dispatch event processing",
+				"event_id", eventID, "panic", r, "stack", string(debug.Stack()))
+		}
+	}()
+
+	// Don't start new work once shutdown has begun — otherwise a late event can
+	// spawn a worker after Start()'s wg.Wait() returns, racing pool Close().
+	if ctx.Err() != nil {
+		return
+	}
+
+	var channel string
+	var payload json.RawMessage
+	err := d.pgClient.pool.QueryRow(ctx,
+		"SELECT channel, payload FROM dispatch_events WHERE id = $1", eventID,
+	).Scan(&channel, &payload)
+	if err != nil {
+		return
+	}
+
+	switch channel {
+	case "task_ready":
+		var evt struct {
+			TaskID     string `json:"task_id"`
+			AssigneeID string `json:"assignee_id"`
+		}
+		if json.Unmarshal(payload, &evt) == nil && evt.TaskID != "" {
+			d.dispatchSingleTask(ctx, evt.TaskID)
+		}
+	case "interaction_resolved":
+		var evt struct {
+			TaskID            string `json:"task_id"`
+			CreatorEmployeeID string `json:"creator_employee_id"`
+		}
+		if json.Unmarshal(payload, &evt) == nil && evt.TaskID != "" {
+			slog.Info("interaction resolved, task may re-wake", "task_id", evt.TaskID)
+		}
+	}
+}
+
+func (d *TaskDispatcher) dispatchSingleTask(ctx context.Context, taskID string) {
+	tx, err := d.pgClient.pool.Begin(ctx)
+	if err != nil {
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	var id string
+	err = tx.QueryRow(ctx, `
+		SELECT id FROM tasks
+		WHERE id = $1 AND status = 'ready' AND assignee_id IS NOT NULL
+		FOR UPDATE SKIP LOCKED
+	`, taskID).Scan(&id)
+	if err != nil {
+		return
+	}
+
+	_, err = tx.Exec(ctx,
+		"UPDATE tasks SET status = 'in_progress', updated_at = NOW() WHERE id = $1", id)
+	if err != nil {
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return
+	}
+
+	t, err := d.pgClient.GetTask(ctx, id)
+	if err != nil {
+		return
+	}
+
+	select {
+	case d.sem <- struct{}{}:
+		d.wg.Add(1)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("PANIC recovered during task execution",
+						"task_id", t.ID, "panic", r, "stack", string(debug.Stack()))
+					d.failTask(context.Background(), t.ID, fmt.Sprintf("internal panic: %v", r))
+				}
+				<-d.sem
+				d.wg.Done()
+			}()
+			d.executeAgentTask(ctx, *t)
+		}()
+	case <-ctx.Done():
+	}
+}
+
+func (d *TaskDispatcher) pruneOldEvents(ctx context.Context) {
+	cutoff := time.Now().Add(-7 * 24 * time.Hour)
+	result, err := d.pgClient.pool.Exec(ctx,
+		"DELETE FROM dispatch_events WHERE created_at < $1", cutoff)
+	if err != nil {
+		slog.Error("dispatch event retention cleanup failed", "error", err)
+		return
+	}
+	if result.RowsAffected() > 0 {
+		slog.Info("dispatch events pruned", "deleted", result.RowsAffected())
 	}
 }
 
@@ -153,6 +325,190 @@ func (d *TaskDispatcher) claimReadyTasks(ctx context.Context) ([]Task, error) {
 	return tasks, nil
 }
 
+func (d *TaskDispatcher) executeAgentTask(parentCtx context.Context, t Task) {
+	if t.Assignee == nil {
+		d.failTask(parentCtx, t.ID, "task has no assignee")
+		return
+	}
+
+	assignee, err := d.pgClient.GetEmployee(parentCtx, t.Assignee.ID)
+	if err != nil {
+		d.failTask(parentCtx, t.ID, "failed to load assignee: "+err.Error())
+		return
+	}
+
+	adapterType := AdapterType(assignee.AdapterType)
+	if adapterType == "" {
+		adapterType = AdapterInternal
+	}
+
+	adapter, ok := d.adapters.Get(adapterType)
+	if !ok {
+		d.failTask(parentCtx, t.ID, "unknown adapter type: "+string(adapterType))
+		return
+	}
+
+	if assignee.MonthlyBudget != nil && *assignee.MonthlyBudget > 0 {
+		if d.budgetExceeded(parentCtx, assignee) {
+			d.failTask(parentCtx, t.ID, "agent paused: monthly budget exceeded")
+			return
+		}
+	}
+
+	hb := d.buildHeartbeatContext(parentCtx, assignee, &t)
+
+	slog.Info("agent task started", "task_id", t.ID, "assignee", assignee.Name,
+		"adapter", adapterType, "model", hb.ModelID)
+
+	// Cap the run so a wedged adapter that never returns a terminal Observe
+	// cannot hold its concurrency slot forever. On expiry monitorRun stops the
+	// run and returns; the stale-task reclaimer then re-queues the DB row.
+	runCtx, cancel := context.WithTimeout(parentCtx, 2*d.staleTimeout)
+	defer cancel()
+
+	runID, err := adapter.Start(runCtx, hb)
+	if err != nil {
+		d.failTask(parentCtx, t.ID, "adapter start failed: "+err.Error())
+		return
+	}
+
+	d.monitorRun(runCtx, adapter, runID, &t)
+}
+
+func (d *TaskDispatcher) buildHeartbeatContext(ctx context.Context, assignee *Employee, t *Task) HeartbeatContext {
+	systemPrompt := fmt.Sprintf("You are %s, %s. %s", assignee.Name, assignee.Title, assignee.Backstory)
+
+	if d.esClient != nil {
+		skillIDs, _ := d.pgClient.ListEmployeeSkillIDs(ctx, assignee.ID)
+		for _, sid := range skillIDs {
+			skill, serr := d.esClient.GetSkill(ctx, sid)
+			if serr == nil {
+				systemPrompt += "\n\n## Skill: " + skill.Name + "\n" + skill.Content
+			}
+		}
+	}
+
+	if hasTag(assignee.Tags, "manager") || assignee.Role == "CEO" {
+		systemPrompt += managerDirectives()
+	}
+
+	systemPrompt += "\n\n## Project Management\n" +
+		"You can create projects with the create_project tool. You will be the project owner.\n" +
+		"- When the user explicitly asks to create a project, do it. Only 'name' is required — ask for it if not provided. Description and other details can be added later.\n" +
+		"- When a task is complex (multi-step, multi-file, or will produce artifacts that need tracking), suggest creating a project for it. Always confirm with the user before creating."
+
+	if t.ProjectID != nil && d.pgClient != nil {
+		project, perr := d.pgClient.GetProject(ctx, *t.ProjectID)
+		if perr == nil {
+			mobiusMD := readProjectMemory(project, d.config)
+			if mobiusMD != "" {
+				injected := mobiusMD
+				if len(injected) > d.config.Projects.MemoryInjectLimit {
+					injected = injected[:d.config.Projects.MemoryInjectLimit]
+				}
+				systemPrompt += "\n\n## Project Context: " + project.Name + "\n" + injected
+			}
+		}
+	}
+
+	if d.esClient != nil {
+		mList, _, _ := d.esClient.SearchEmployeeMemories(ctx, assignee.ID, t.Body, 3)
+		if len(mList) > 0 {
+			systemPrompt += "\n\n## Retrospective Learnings (your long-term memory):\n"
+			for _, m := range mList {
+				id := m.ID
+				if len(id) > 8 {
+					id = id[:8]
+				}
+				systemPrompt += fmt.Sprintf("- [%s] %s\n", id, m.MemoryText)
+			}
+			systemPrompt += "\nUse forget_memory with the ID in brackets to remove stale entries."
+		}
+	}
+
+	systemPrompt += buildGoalContext(ctx, d.pgClient, t)
+
+	systemPrompt += buildInteractionContext(ctx, d.pgClient, t.ID)
+
+	comments, _ := d.pgClient.ListTaskComments(ctx, t.ID)
+	if len(comments) > 0 {
+		systemPrompt += "\n\n## Task History (previous review feedback — address these issues):\n"
+		for _, c := range comments {
+			author := "System"
+			if c.Author != nil {
+				author = c.Author.Name
+			}
+			systemPrompt += fmt.Sprintf("- [%s] %s\n", author, c.Content)
+		}
+	}
+
+	modelID := resolveModelID(d.config, assignee)
+	tools := buildAgentTools(assignee, t)
+
+	var projectDir, projectName string
+	if t.ProjectID != nil {
+		project, perr := d.pgClient.GetProject(ctx, *t.ProjectID)
+		if perr == nil {
+			projectDir = project.RootDir(d.config)
+			projectName = project.Name
+		}
+	}
+
+	return HeartbeatContext{
+		TaskID:       t.ID,
+		TaskTitle:    t.Title,
+		TaskBody:     t.Body,
+		TaskResult:   t.Result,
+		TaskStatus:   t.Status,
+		ProjectID:    t.ProjectID,
+		ProjectName:  projectName,
+		ProjectDir:   projectDir,
+		AgentID:      assignee.ID,
+		AgentName:    assignee.Name,
+		AgentTitle:   assignee.Title,
+		AgentRole:    assignee.Role,
+		SystemPrompt: systemPrompt,
+		ModelID:      modelID,
+		Env:          make(map[string]string),
+		Comments:     comments,
+		Tools:        tools,
+	}
+}
+
+func (d *TaskDispatcher) monitorRun(ctx context.Context, adapter Adapter, runID string, t *Task) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			obs, err := adapter.Observe(ctx, runID)
+			if err != nil {
+				slog.Warn("run observation failed", "run_id", runID, "error", err)
+				continue
+			}
+			d.touchTask(ctx, t.ID)
+
+			switch obs.Status {
+			case RunCompleted:
+				updated, gerr := d.pgClient.GetTask(ctx, t.ID)
+				if gerr == nil && updated.Status == "in_progress" {
+					d.failTask(ctx, t.ID, "agent finished without calling submit_task_result")
+				}
+				return
+			case RunFailed:
+				d.failTask(ctx, t.ID, "run failed: "+obs.ErrorMessage)
+				return
+			case RunCancelled:
+				return
+			}
+		case <-ctx.Done():
+			adapter.Stop(ctx, runID)
+			return
+		}
+	}
+}
+
 func (d *TaskDispatcher) reclaimStaleTasks(ctx context.Context) {
 	tx, err := d.pgClient.pool.Begin(ctx)
 	if err != nil {
@@ -189,8 +545,6 @@ func (d *TaskDispatcher) reclaimStaleTasks(ctx context.Context) {
 	slog.Warn("reclaimer: stale tasks detected", "count", len(staleIDs))
 
 	for _, id := range staleIDs {
-		d.pgClient.AddTaskComment(ctx, id, "", "System: Task reclaimed — execution stalled or server crashed.")
-
 		var failures int
 		if err := tx.QueryRow(ctx, "SELECT failure_count FROM tasks WHERE id = $1", id).Scan(&failures); err != nil {
 			slog.Error("reclaimer: failed to read failure_count", "task_id", id, "error", err)
@@ -215,6 +569,14 @@ func (d *TaskDispatcher) reclaimStaleTasks(ctx context.Context) {
 
 	if err := tx.Commit(ctx); err != nil {
 		slog.Error("reclaimer: commit failed", "error", err)
+		return
+	}
+
+	// Audit comments go through a separate pooled connection, so add them only
+	// after the reclaim is durably committed — otherwise a rollback leaves a
+	// comment claiming a reclaim that never happened.
+	for _, id := range staleIDs {
+		d.pgClient.AddTaskComment(ctx, id, "", "System: Task reclaimed — execution stalled or server crashed.")
 	}
 }
 
@@ -378,711 +740,8 @@ func (d *TaskDispatcher) touchTask(ctx context.Context, taskID string) {
 		"UPDATE tasks SET updated_at = NOW() WHERE id = $1 AND status = 'in_progress'", taskID)
 }
 
-func (d *TaskDispatcher) executeAgentTask(parentCtx context.Context, t Task) {
-	if t.Assignee == nil {
-		d.failTask(parentCtx, t.ID, "task has no assignee")
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(parentCtx, 10*time.Minute)
-	defer cancel()
-
-	heartbeat := time.NewTicker(2 * time.Minute)
-	defer heartbeat.Stop()
-	go func() {
-		for {
-			select {
-			case <-heartbeat.C:
-				d.touchTask(parentCtx, t.ID)
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	slog.Info("agent task started", "task_id", t.ID, "assignee", t.Assignee.Name)
-
-	assignee, err := d.pgClient.GetEmployee(ctx, t.Assignee.ID)
-	if err != nil {
-		d.failTask(ctx, t.ID, "failed to load assignee: "+err.Error())
-		return
-	}
-
-	systemPrompt := fmt.Sprintf("You are %s, %s. %s", assignee.Name, assignee.Title, assignee.Backstory)
-
-	if d.esClient != nil {
-		skillIDs, _ := d.pgClient.ListEmployeeSkillIDs(ctx, assignee.ID)
-		for _, sid := range skillIDs {
-			skill, serr := d.esClient.GetSkill(ctx, sid)
-			if serr == nil {
-				systemPrompt += "\n\n## Skill: " + skill.Name + "\n" + skill.Content
-			}
-		}
-	}
-
-	if hasTag(assignee.Tags, "manager") || assignee.Role == "CEO" {
-		systemPrompt += managerDirectives()
-	}
-
-	if t.ProjectID != nil && d.pgClient != nil {
-		project, perr := d.pgClient.GetProject(ctx, *t.ProjectID)
-		if perr == nil {
-			mobiusMD := readProjectMemory(project, d.config)
-			if mobiusMD != "" {
-				injected := mobiusMD
-				if len(injected) > d.config.Projects.MemoryInjectLimit {
-					injected = injected[:d.config.Projects.MemoryInjectLimit]
-				}
-				systemPrompt += "\n\n## Project Context: " + project.Name + "\n" + injected
-			}
-		}
-	}
-
-	if d.esClient != nil {
-		mList, _, _ := d.esClient.SearchEmployeeMemories(ctx, assignee.ID, t.Body, 3)
-		if len(mList) > 0 {
-			systemPrompt += "\n\n## Retrospective Learnings (your long-term memory):\n"
-			for _, m := range mList {
-				id := m.ID
-				if len(id) > 8 {
-					id = id[:8]
-				}
-				systemPrompt += fmt.Sprintf("- [%s] %s\n", id, m.MemoryText)
-			}
-		}
-	}
-
-	comments, _ := d.pgClient.ListTaskComments(ctx, t.ID)
-	if len(comments) > 0 {
-		systemPrompt += "\n\n## Task History (previous review feedback — address these issues):\n"
-		for _, c := range comments {
-			author := "System"
-			if c.Author != nil {
-				author = c.Author.Name
-			}
-			systemPrompt += fmt.Sprintf("- [%s] %s\n", author, c.Content)
-		}
-	}
-
-	var messages []LLMMessage
-	messages = append(messages, LLMMessage{Role: "user", Text: systemPrompt})
-	messages = append(messages, LLMMessage{Role: "model", Text: fmt.Sprintf("I'm %s, %s. Ready.", assignee.Name, assignee.Title)})
-	messages = append(messages, LLMMessage{Role: "user", Text: fmt.Sprintf("Please complete this task:\n\n%s", t.Body)})
-
-	if t.Status == "needs_review" && t.Result != "" {
-		messages = append(messages, LLMMessage{
-			Role: "user",
-			Text: fmt.Sprintf("A team member has submitted this work for your review:\n\n%s\n\nReview it carefully. Use verify_deliverable to inspect files produced, then read_project_file to check quality. Only then approve or reject.", t.Result),
-		})
-	}
-
-	modelID := resolveModelID(d.config, assignee)
-
-	provider := d.providers.ResolveProvider(modelID)
-	if provider == nil {
-		d.failTask(ctx, t.ID, "no provider for model: "+modelID)
-		return
-	}
-
-	providerName := "gemini"
-	if strings.HasPrefix(modelID, "claude-") {
-		providerName = "claude"
-	}
-	var projectID string
-	if t.ProjectID != nil {
-		projectID = *t.ProjectID
-	}
-
-	tools := buildAgentTools(assignee, &t)
-	llmReq := &LLMRequest{
-		Model:    modelID,
-		Messages: messages,
-		Tools:    tools,
-		OnText:   func(string) {},
-		OnToolCall: func(call ToolCall) map[string]any {
-			return d.dispatcherToolCall(ctx, call, assignee, &t)
-		},
-		OnUsage: func(usage TokenUsage) {
-			if d.tokenPipeline == nil {
-				return
-			}
-			d.tokenPipeline.Record(&bqTokenRow{
-				ID:               generateID(),
-				Timestamp:        time.Now().Format("2006-01-02 15:04:05.999999 UTC"),
-				ModelID:          modelID,
-				Provider:         providerName,
-				EmployeeID:       assignee.ID,
-				EmployeeName:     assignee.Name,
-				ProjectID:        projectID,
-				TaskID:           t.ID,
-				PromptTokens:     int64(usage.PromptTokens),
-				CompletionTokens: int64(usage.CompletionTokens),
-				TotalTokens:      int64(usage.TotalTokens),
-				CachedTokens:     int64(usage.CachedTokens),
-				ThoughtsTokens:   int64(usage.ThoughtsTokens),
-				ToolUseTokens:    int64(usage.ToolUseTokens),
-				LatencyMs:        usage.LatencyMs,
-				Status:           "success",
-				Source:           "task",
-			})
-		},
-	}
-
-	fullResponse, err := provider.ChatStream(ctx, llmReq)
-	if err != nil {
-		d.failTask(ctx, t.ID, "LLM execution failed: "+err.Error())
-		return
-	}
-
-	if d.esClient != nil && fullResponse != "" && len(t.Body)+len(fullResponse) > 100 {
-		go absorbMemoryFromExchange(context.Background(), d.config, d.providers,
-			d.esClient, t.Assignee.ID, t.Body, fullResponse, t.ID)
-	}
-
-	updated, err := d.pgClient.GetTask(ctx, t.ID)
-	if err == nil && updated.Status == "in_progress" {
-		d.failTask(ctx, t.ID, "agent finished without calling submit_task_result")
-	}
-}
-
-func (d *TaskDispatcher) dispatcherToolCall(ctx context.Context, call ToolCall, agent *Employee, currentTask *Task) map[string]any {
-	taskID := currentTask.ID
-	switch call.Name {
-	case "delegate_task":
-		return d.execDelegateFromDispatcher(ctx, call.Args, agent, currentTask)
-	case "hire_employee":
-		return d.execHireFromDispatcher(ctx, call.Args, agent)
-	case "submit_task_result":
-		return d.execSubmitFromDispatcher(ctx, call.Args, currentTask)
-	case "review_task":
-		return d.execReviewFromDispatcher(ctx, call.Args, agent)
-	case "verify_deliverable":
-		return d.execVerifyDeliverable(ctx, call.Args)
-	case "list_team":
-		emp, err := d.pgClient.GetEmployee(ctx, agent.ID)
-		if err != nil {
-			return map[string]any{"error": err.Error()}
-		}
-		var members []map[string]any
-		for _, r := range emp.Reports {
-			members = append(members, map[string]any{"id": r.ID, "name": r.Name, "title": r.Title, "role": r.Role})
-		}
-		if members == nil {
-			members = []map[string]any{}
-		}
-		return map[string]any{"team": members, "count": len(members)}
-	case "store_memory":
-		text, _ := call.Args["memory_text"].(string)
-		if text == "" || d.esClient == nil {
-			return map[string]any{"error": "memory_text is required"}
-		}
-		if err := d.esClient.IndexEmployeeMemoryDedup(ctx, agent.ID, taskID, text); err != nil {
-			return map[string]any{"error": "failed to store memory: " + err.Error()}
-		}
-		if d.events != nil {
-			d.events.Publish(newEvent("memory_stored",
-				&agent.ID, nil, &taskID,
-				map[string]any{"memory_text": truncateStr(text, 200)}))
-		}
-		return map[string]any{"status": "remembered", "memory_text": text}
-	case "forget_memory":
-		memoryID, _ := call.Args["memory_id"].(string)
-		if memoryID == "" || d.esClient == nil {
-			return map[string]any{"error": "memory_id is required"}
-		}
-		if err := d.esClient.DeleteEmployeeMemory(ctx, memoryID); err != nil {
-			return map[string]any{"error": "failed to forget: " + err.Error()}
-		}
-		return map[string]any{"status": "forgotten", "memory_id": memoryID}
-	case "write_project_file":
-		return d.execWriteProjectFile(ctx, call.Args, currentTask)
-	case "read_project_file":
-		return d.execReadProjectFile(ctx, call.Args, currentTask)
-	case "search_project_assets":
-		return d.execSearchProjectAssets(ctx, call.Args, currentTask)
-	case "list_project_assets":
-		return d.execListProjectAssets(ctx, currentTask)
-	case "run_project_command":
-		return d.execRunProjectCommand(ctx, call.Args, currentTask)
-	default:
-		return map[string]any{"error": "unknown tool: " + call.Name}
-	}
-}
-
-func (d *TaskDispatcher) execWriteProjectFile(ctx context.Context, args map[string]any, task *Task) map[string]any {
-	if task.ProjectID == nil {
-		return map[string]any{"error": "no project context"}
-	}
-	path, _ := args["path"].(string)
-	content, _ := args["content"].(string)
-	if path == "" || content == "" {
-		return map[string]any{"error": "path and content are required"}
-	}
-	if err := validateProjectPath(path); err != nil {
-		return map[string]any{"error": err.Error()}
-	}
-
-	project, err := d.pgClient.GetProject(ctx, *task.ProjectID)
-	if err != nil {
-		return map[string]any{"error": "project not found"}
-	}
-
-	fullPath := filepath.Join(project.RootDir(d.config), path)
-	os.MkdirAll(filepath.Dir(fullPath), 0755)
-	if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
-		return map[string]any{"error": "write failed: " + err.Error()}
-	}
-
-	if d.esClient != nil {
-		mimeType := "text/plain"
-		ct := classifyContentType(mimeType)
-		now := time.Now().Format(time.RFC3339)
-		maxIdx := d.config.Projects.ContentMaxIndex
-		indexContent := content
-		truncated := false
-		if len(content) > maxIdx {
-			indexContent = content[:maxIdx]
-			truncated = true
-		}
-		asset := &ProjectAsset{
-			ID: generateID(), ProjectID: *task.ProjectID,
-			Filename: filepath.Base(path), RelativePath: path,
-			MIMEType: mimeType, SizeBytes: int64(len(content)),
-			Content: indexContent, ContentTruncated: truncated,
-			ContentType: ct, GCSStatus: "pending",
-			Tags: []string{}, CreatedByID: task.Assignee.ID, TaskID: task.ID,
-			CreatedAt: now, UpdatedAt: now,
-		}
-		d.esClient.IndexProjectAsset(ctx, asset)
-	}
-
-	if d.events != nil {
-		d.events.Publish(newEvent("file_written",
-			&task.Assignee.ID, task.ProjectID, &task.ID,
-			map[string]any{
-				"path":       path,
-				"size_bytes": len(content),
-			}))
-	}
-
-	return map[string]any{"status": "written", "path": path, "bytes": len(content)}
-}
-
-func (d *TaskDispatcher) execReadProjectFile(ctx context.Context, args map[string]any, task *Task) map[string]any {
-	if task.ProjectID == nil {
-		return map[string]any{"error": "no project context"}
-	}
-	path, _ := args["path"].(string)
-	if path == "" {
-		return map[string]any{"error": "path is required"}
-	}
-	if err := validateProjectPath(path); err != nil {
-		return map[string]any{"error": err.Error()}
-	}
-
-	project, err := d.pgClient.GetProject(ctx, *task.ProjectID)
-	if err != nil {
-		return map[string]any{"error": "project not found"}
-	}
-
-	fullPath := filepath.Join(project.RootDir(d.config), path)
-	data, err := os.ReadFile(fullPath)
-	if err != nil {
-		return map[string]any{"error": "read failed: " + err.Error()}
-	}
-	return map[string]any{"content": string(data), "path": path, "bytes": len(data)}
-}
-
-func (d *TaskDispatcher) execSearchProjectAssets(ctx context.Context, args map[string]any, task *Task) map[string]any {
-	if task.ProjectID == nil || d.esClient == nil {
-		return map[string]any{"error": "no project context or ES unavailable"}
-	}
-	query, _ := args["query"].(string)
-	contentType, _ := args["type"].(string)
-	assets, err := d.esClient.SearchProjectAssets(ctx, *task.ProjectID, query, contentType, 10)
-	if err != nil {
-		return map[string]any{"error": err.Error()}
-	}
-	var results []map[string]any
-	for _, a := range assets {
-		results = append(results, map[string]any{
-			"filename": a.Filename, "path": a.RelativePath, "type": a.ContentType, "size": a.SizeBytes,
-		})
-	}
-	if results == nil {
-		results = []map[string]any{}
-	}
-	return map[string]any{"results": results, "count": len(results)}
-}
-
-func (d *TaskDispatcher) execListProjectAssets(ctx context.Context, task *Task) map[string]any {
-	if task.ProjectID == nil || d.esClient == nil {
-		return map[string]any{"error": "no project context or ES unavailable"}
-	}
-	assets, err := d.esClient.SearchProjectAssets(ctx, *task.ProjectID, "", "", 100)
-	if err != nil {
-		return map[string]any{"error": err.Error()}
-	}
-	var results []map[string]any
-	for _, a := range assets {
-		results = append(results, map[string]any{
-			"filename": a.Filename, "path": a.RelativePath, "type": a.ContentType, "size": a.SizeBytes,
-		})
-	}
-	if results == nil {
-		results = []map[string]any{}
-	}
-	return map[string]any{"results": results, "count": len(results)}
-}
-
-const maxCommandOutput = 4000
-
-var blockedCommandPatterns = []string{
-	"rm -rf /", "rm -rf ~", "mkfs", "dd if=",
-	":(){", "fork bomb",
-	"chmod -R 777 /", "chown -R",
-	"> /dev/sd", "> /dev/null",
-	"curl | sh", "wget | sh", "curl|sh", "wget|sh",
-}
-
-func validateCommand(command string) error {
-	lower := strings.ToLower(command)
-	for _, p := range blockedCommandPatterns {
-		if strings.Contains(lower, p) {
-			return fmt.Errorf("blocked command pattern: %s", p)
-		}
-	}
-	return nil
-}
-
-func (d *TaskDispatcher) execRunProjectCommand(ctx context.Context, args map[string]any, task *Task) map[string]any {
-	if task.ProjectID == nil {
-		return map[string]any{"error": "no project context"}
-	}
-	command, _ := args["command"].(string)
-	if command == "" {
-		return map[string]any{"error": "command is required"}
-	}
-
-	if err := validateCommand(command); err != nil {
-		slog.Warn("blocked dangerous command", "task_id", task.ID, "command", command, "reason", err)
-		return map[string]any{"error": "command rejected: " + err.Error()}
-	}
-
-	project, err := d.pgClient.GetProject(ctx, *task.ProjectID)
-	if err != nil {
-		return map[string]any{"error": "project not found"}
-	}
-
-	cmdCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-
-	cmd := exec.CommandContext(cmdCtx, "sh", "-c", command)
-	cmd.Dir = project.RootDir(d.config)
-	cmd.Env = append(os.Environ(), "PATH=/usr/local/bin:/usr/bin:/bin")
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	runErr := cmd.Run()
-
-	out := stdout.String()
-	if len(out) > maxCommandOutput {
-		out = out[:maxCommandOutput] + "\n... (truncated)"
-	}
-	errOut := stderr.String()
-	if len(errOut) > maxCommandOutput {
-		errOut = errOut[:maxCommandOutput] + "\n... (truncated)"
-	}
-
-	exitCode := 0
-	if runErr != nil {
-		if exitErr, ok := runErr.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
-			return map[string]any{"error": "command execution failed: " + runErr.Error()}
-		}
-	}
-
-	slog.Info("project command executed", "task_id", task.ID, "command", command, "exit_code", exitCode)
-
-	if d.events != nil {
-		d.events.Publish(newEvent("command_execution",
-			&task.Assignee.ID, task.ProjectID, &task.ID,
-			map[string]any{
-				"command":        command,
-				"exit_code":      exitCode,
-				"stdout_preview": truncateStr(out, 200),
-				"success":        exitCode == 0,
-			}))
-	}
-
-	return map[string]any{
-		"stdout":    out,
-		"stderr":    errOut,
-		"exit_code": exitCode,
-		"success":   exitCode == 0,
-	}
-}
-
-func (d *TaskDispatcher) execDelegateFromDispatcher(ctx context.Context, args map[string]any, creator *Employee, currentTask *Task) map[string]any {
-	assigneeID, _ := args["assignee_id"].(string)
-	title, _ := args["title"].(string)
-	goal, _ := args["goal"].(string)
-	taskContext, _ := args["context"].(string)
-	priority, _ := args["priority"].(string)
-
-	if assigneeID == "" || title == "" || goal == "" {
-		return map[string]any{"error": "assignee_id, title, and goal are required"}
-	}
-
-	assignee, err := d.pgClient.GetEmployee(ctx, assigneeID)
-	if err != nil {
-		return map[string]any{"error": "assignee not found: " + err.Error()}
-	}
-	if !canDelegate(creator, assignee) {
-		return map[string]any{"error": fmt.Sprintf("cannot delegate to %s: outside team hierarchy", assignee.Name)}
-	}
-
-	body := "## Goal\n" + goal
-	if taskContext != "" {
-		body += "\n\n## Context\n" + taskContext
-	}
-	if priority == "" {
-		priority = "medium"
-	}
-
-	t := &Task{
-		Title:    title,
-		Body:     body,
-		Priority: priority,
-		Creator:  &EmployeeBrief{ID: creator.ID, Name: creator.Name, Title: creator.Title, Role: creator.Role},
-		Assignee: &EmployeeBrief{ID: assignee.ID, Name: assignee.Name, Title: assignee.Title, Role: assignee.Role},
-	}
-	projectID, _ := args["project_id"].(string)
-	if projectID == "" && currentTask.ProjectID != nil {
-		projectID = *currentTask.ProjectID
-	}
-	if projectID != "" {
-		t.ProjectID = &projectID
-	}
-	if err := d.pgClient.CreateTask(ctx, t, nil); err != nil {
-		return map[string]any{"error": "failed to create task: " + err.Error()}
-	}
-	if d.esClient != nil {
-		if full, ferr := d.pgClient.GetTask(ctx, t.ID); ferr == nil {
-			if ierr := d.esClient.IndexTask(ctx, full); ierr != nil {
-				slog.Warn("ES index delegated task failed", "id", t.ID, "error", ierr)
-			}
-		}
-	}
-
-	if currentTask.Body != "" {
-		if summary := d.summarizeForHandoff(ctx, currentTask.Body, currentTask.Result, "delegated"); summary != "" {
-			d.pgClient.AddTaskComment(ctx, t.ID, "", "CONTEXT (from parent): "+summary)
-		}
-	}
-
-	if d.events != nil {
-		d.events.Publish(newEvent("task_delegated",
-			&creator.ID, currentTask.ProjectID, &currentTask.ID,
-			map[string]any{
-				"child_task_id":     t.ID,
-				"delegated_to_id":   assignee.ID,
-				"delegated_to_name": assignee.Name,
-				"title":             title,
-				"priority":          priority,
-			}))
-	}
-
-	slog.Info("dispatcher: task delegated", "task_id", t.ID, "from", creator.Name, "to", assignee.Name)
-	return map[string]any{"status": "created", "task_id": t.ID, "assignee": assignee.Name}
-}
-
-func (d *TaskDispatcher) execHireFromDispatcher(ctx context.Context, args map[string]any, manager *Employee) map[string]any {
-	if !hasTag(manager.Tags, "manager") && manager.Role != "CEO" {
-		return map[string]any{"error": "only managers can hire"}
-	}
-
-	name, _ := args["name"].(string)
-	title, _ := args["title"].(string)
-	backstory, _ := args["backstory"].(string)
-	primaryLLM, _ := args["primary_llm"].(string)
-
-	if name == "" || title == "" || backstory == "" {
-		return map[string]any{"error": "name, title, and backstory are required"}
-	}
-
-	fresh, err := d.pgClient.GetEmployee(ctx, manager.ID)
-	if err != nil {
-		return map[string]any{"error": "failed to load manager: " + err.Error()}
-	}
-	if reason, ok := checkHireDuplicate(fresh, title); !ok {
-		return map[string]any{"error": reason}
-	}
-
-	emp := &Employee{
-		Name: name, Title: title, Role: "Custom", Backstory: backstory,
-		Models: []EmployeeModel{}, Skills: []EmployeeSkill{}, Tags: []string{},
-		ManagerID: &manager.ID,
-	}
-	if primaryLLM != "" {
-		emp.Models = append(emp.Models, EmployeeModel{ModelID: primaryLLM, Purpose: "primary_llm"})
-	}
-	if err := d.pgClient.CreateEmployee(ctx, emp); err != nil {
-		return map[string]any{"error": "failed to hire: " + err.Error()}
-	}
-	if d.esClient != nil {
-		if ierr := d.esClient.IndexEmployee(ctx, emp); ierr != nil {
-			slog.Warn("ES index hired employee failed", "id", emp.ID, "error", ierr)
-		}
-	}
-
-	if d.events != nil {
-		d.events.Publish(newEvent("employee_hired",
-			&manager.ID, nil, nil,
-			map[string]any{
-				"hired_employee_id": emp.ID,
-				"name":              name,
-				"title":             title,
-				"manager_name":      manager.Name,
-			}))
-	}
-
-	slog.Info("dispatcher: employee hired", "id", emp.ID, "name", name, "manager", manager.Name)
-	return map[string]any{"status": "hired", "employee_id": emp.ID, "name": name, "reports_to": manager.Name}
-}
-
-func (d *TaskDispatcher) execSubmitFromDispatcher(ctx context.Context, args map[string]any, currentTask *Task) map[string]any {
-	taskID, _ := args["task_id"].(string)
-	result, _ := args["result"].(string)
-
-	if taskID == "" || result == "" {
-		return map[string]any{"error": "task_id and result are required"}
-	}
-	if taskID != currentTask.ID {
-		return map[string]any{"error": "can only submit your own task"}
-	}
-	if err := d.pgClient.UpdateTask(ctx, taskID, nil, nil, nil, nil, &result); err != nil {
-		return map[string]any{"error": "failed to update result: " + err.Error()}
-	}
-	if err := d.pgClient.UpdateTaskStatus(ctx, taskID, "needs_review", ""); err != nil {
-		return map[string]any{"error": "failed to submit: " + err.Error()}
-	}
-
-	if summary := d.summarizeForHandoff(ctx, currentTask.Body, result, "submitted"); summary != "" {
-		d.pgClient.AddTaskComment(ctx, taskID, "", "CONTEXT: "+summary)
-	}
-
-	if d.events != nil {
-		d.events.Publish(newEvent("task_submitted",
-			&currentTask.Assignee.ID, currentTask.ProjectID, &currentTask.ID,
-			map[string]any{
-				"result_preview": truncateStr(result, 200),
-				"result_length":  len(result),
-			}))
-	}
-
-	slog.Info("dispatcher: task submitted", "task_id", taskID)
-	return map[string]any{"status": "submitted_for_review", "task_id": taskID}
-}
-
-func (d *TaskDispatcher) execReviewFromDispatcher(ctx context.Context, args map[string]any, reviewer *Employee) map[string]any {
-	taskID, _ := args["task_id"].(string)
-	action, _ := args["action"].(string)
-	feedback, _ := args["feedback"].(string)
-
-	if taskID == "" || action == "" {
-		return map[string]any{"error": "task_id and action are required"}
-	}
-
-	switch action {
-	case "APPROVE":
-		if err := d.pgClient.UpdateTaskStatus(ctx, taskID, "done", reviewer.ID); err != nil {
-			return map[string]any{"error": "failed to approve: " + err.Error()}
-		}
-		if d.events != nil {
-			d.events.Publish(newEvent("task_approved",
-				&reviewer.ID, nil, &taskID,
-				map[string]any{"reviewer_name": reviewer.Name}))
-		}
-		return map[string]any{"status": "approved", "task_id": taskID}
-	case "REJECT":
-		if feedback == "" {
-			return map[string]any{"error": "feedback required when rejecting"}
-		}
-		if err := d.pgClient.UpdateTaskStatus(ctx, taskID, "ready", reviewer.ID); err != nil {
-			return map[string]any{"error": "failed to reject: " + err.Error()}
-		}
-		if _, err := d.pgClient.AddTaskComment(ctx, taskID, reviewer.ID, "REJECTED: "+feedback); err != nil {
-			slog.Error("dispatcher: failed to add rejection comment", "task_id", taskID, "error", err)
-		}
-		if d.events != nil {
-			d.events.Publish(newEvent("task_rejected",
-				&reviewer.ID, nil, &taskID,
-				map[string]any{"reviewer_name": reviewer.Name, "feedback": feedback}))
-		}
-		return map[string]any{"status": "rejected", "task_id": taskID, "feedback": feedback}
-	default:
-		return map[string]any{"error": "action must be APPROVE or REJECT"}
-	}
-}
-
-func (d *TaskDispatcher) execVerifyDeliverable(ctx context.Context, args map[string]any) map[string]any {
-	taskID, _ := args["task_id"].(string)
-	if taskID == "" {
-		return map[string]any{"error": "task_id is required"}
-	}
-
-	task, err := d.pgClient.GetTask(ctx, taskID)
-	if err != nil {
-		return map[string]any{"error": "task not found: " + err.Error()}
-	}
-
-	result := map[string]any{
-		"task_id": taskID,
-		"status":  task.Status,
-		"result":  task.Result,
-	}
-
-	if d.esClient == nil {
-		result["files"] = []map[string]any{}
-		return result
-	}
-
-	assets, err := d.esClient.SearchAssetsByTask(ctx, taskID)
-	if err != nil {
-		result["files"] = []map[string]any{}
-		result["files_error"] = err.Error()
-		return result
-	}
-
-	var files []map[string]any
-	for _, a := range assets {
-		preview := a.Content
-		if len(preview) > 500 {
-			preview = preview[:500] + "..."
-		}
-		files = append(files, map[string]any{
-			"filename": a.Filename,
-			"path":     a.RelativePath,
-			"type":     a.ContentType,
-			"size":     a.SizeBytes,
-			"preview":  preview,
-		})
-	}
-	if files == nil {
-		files = []map[string]any{}
-	}
-	result["files"] = files
-	result["file_count"] = len(files)
-	return result
-}
-
 func (d *TaskDispatcher) failTask(ctx context.Context, taskID, reason string) {
 	slog.Error("task failed, scheduling retry", "task_id", taskID, "reason", reason)
-	d.pgClient.AddTaskComment(ctx, taskID, "", "System Error: "+reason)
 
 	tx, err := d.pgClient.pool.Begin(ctx)
 	if err != nil {
@@ -1098,9 +757,10 @@ func (d *TaskDispatcher) failTask(ctx context.Context, taskID, reason string) {
 	failures++
 
 	status := "ready"
+	blocked := false
 	if failures >= 3 {
 		status = "blocked"
-		d.pgClient.AddTaskComment(ctx, taskID, "", "System: Max retries exceeded. Task blocked.")
+		blocked = true
 	}
 
 	backoffSecs := 15 * (1 << min(uint(failures), 10))
@@ -1115,47 +775,47 @@ func (d *TaskDispatcher) failTask(ctx context.Context, taskID, reason string) {
 
 	if err := tx.Commit(ctx); err != nil {
 		slog.Error("failTask: commit failed", "task_id", taskID, "error", err)
+		return
+	}
+
+	// Audit comments use a separate pooled connection; add them only after the
+	// failure/retry is durably committed so the trail never claims a rollback.
+	d.pgClient.AddTaskComment(ctx, taskID, "", "System Error: "+reason)
+	if blocked {
+		d.pgClient.AddTaskComment(ctx, taskID, "", "System: Max retries exceeded. Task blocked.")
 	}
 }
 
-func (d *TaskDispatcher) summarizeForHandoff(ctx context.Context, taskBody, result, event string) string {
-	if d.config == nil {
-		return ""
-	}
-	settings := d.config.GetSettings()
-	modelID, _ := settings.GoogleCloud.VertexAI.DefaultLLM()
-	if modelID == "" {
-		return ""
-	}
-	provider := d.providers.ResolveProvider(modelID)
-	if provider == nil {
-		return ""
+func (d *TaskDispatcher) budgetExceeded(ctx context.Context, agent *Employee) bool {
+	if agent.MonthlyBudget == nil || *agent.MonthlyBudget <= 0 {
+		return false
 	}
 
-	input := truncateForExtraction(taskBody, maxExtractionInputLen)
-	output := truncateForExtraction(result, maxExtractionInputLen)
+	now := time.Now()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 
-	prompt := fmt.Sprintf(`Summarize this task handoff in one concise paragraph (max 300 characters).
-
-Event: %s
-Task goal:
-%s
-
-Deliverable:
-%s
-
-Include: what was accomplished, key decisions made, and any open issues. Be specific and factual.`, event, input, output)
-
-	req := &LLMRequest{
-		Model:    modelID,
-		Messages: []LLMMessage{{Role: "user", Text: prompt}},
-		OnText:   func(string) {},
-	}
-
-	summary, err := provider.ChatStream(ctx, req)
+	var totalTokens int64
+	err := d.pgClient.pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(
+			CASE WHEN token_usage->>'total_tokens' ~ '^[0-9]+$'
+			     THEN (token_usage->>'total_tokens')::bigint
+			     ELSE 0 END
+		), 0)
+		FROM heartbeat_runs
+		WHERE agent_id = $1 AND started_at >= $2
+	`, agent.ID, monthStart).Scan(&totalTokens)
 	if err != nil {
-		slog.Warn("handoff summarization failed", "event", event, "error", err)
-		return ""
+		slog.Warn("budget check failed, allowing execution", "agent_id", agent.ID, "error", err)
+		return false
 	}
-	return strings.TrimSpace(summary)
+
+	budgetTokens := int64(*agent.MonthlyBudget) * 1000
+	if totalTokens >= budgetTokens {
+		slog.Warn("agent budget exceeded",
+			"agent_id", agent.ID, "agent_name", agent.Name,
+			"used_tokens", totalTokens, "budget_tokens", budgetTokens)
+		return true
+	}
+	return false
 }
+

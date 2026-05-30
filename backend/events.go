@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+	"unicode/utf8"
 )
 
 type Event struct {
@@ -128,8 +129,6 @@ func newEvent(eventType string, actorID, projectID, taskID *string, payload map[
 	}
 }
 
-func strPtr(s string) *string { return &s }
-
 func strPtrOrNil(s string) *string {
 	if s == "" {
 		return nil
@@ -140,6 +139,11 @@ func strPtrOrNil(s string) *string {
 func truncateStr(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	// Back up to a UTF-8 rune boundary so we never cut a multibyte rune in
+	// half (which would produce invalid UTF-8 in JSON output).
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n]
 }

@@ -2,43 +2,10 @@ package main
 
 import (
 	"archive/zip"
-	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
 	"testing"
 )
-
-func TestTruncateSafeUTF8_EmojiBoundary(t *testing.T) {
-	text := "Hello 😀 world"
-	result := truncateSafeUTF8(text, 8)
-	if result != "Hello " {
-		t.Errorf("expected 'Hello ', got %q (len=%d)", result, len(result))
-	}
-}
-
-func TestTruncateSafeUTF8_NoTruncation(t *testing.T) {
-	result := truncateSafeUTF8("short", 100)
-	if result != "short" {
-		t.Errorf("expected unchanged string, got %q", result)
-	}
-}
-
-func TestTruncateSafeUTF8_ExactBoundary(t *testing.T) {
-	result := truncateSafeUTF8("abcd", 4)
-	if result != "abcd" {
-		t.Errorf("expected 'abcd', got %q", result)
-	}
-}
-
-func TestTruncateSafeUTF8_MultiByteSequence(t *testing.T) {
-	text := "café"
-	result := truncateSafeUTF8(text, 4)
-	if result != "caf" {
-		t.Errorf("expected 'caf', got %q", result)
-	}
-}
 
 func TestValidateProjectName_Template(t *testing.T) {
 	valid := []string{"q3-campaign", "my_project", "abc", "a-b"}
@@ -152,91 +119,6 @@ func TestCalculateSHA256(t *testing.T) {
 	}
 }
 
-func TestAppendProjectMemory_ConcurrentPressure(t *testing.T) {
-	dir := t.TempDir()
-	project := &Project{Name: "concurrent-test"}
-	cfg := &Config{}
-	cfg.Projects.applyDefaults(dir)
-	cfg.Projects.ProjectsDir = dir
-	cfg.Projects.MemoryMaxSize = 100 * 1024
-
-	mobiusPath := filepath.Join(dir, project.Name, "mobius.md")
-	os.MkdirAll(filepath.Dir(mobiusPath), 0755)
-	os.WriteFile(mobiusPath, []byte("# Test\n\n## Key Decisions\n"), 0644)
-
-	var wg sync.WaitGroup
-	writers := 10
-	readsPerWriter := 5
-
-	for i := 0; i < writers; i++ {
-		wg.Add(1)
-		go func(n int) {
-			defer wg.Done()
-			for j := 0; j < readsPerWriter; j++ {
-				appendProjectMemory(project, cfg, fmt.Sprintf("Fact from goroutine %d iteration %d.", n, j))
-			}
-		}(i)
-	}
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < readsPerWriter; j++ {
-				readProjectMemory(project, cfg)
-			}
-		}()
-	}
-	wg.Wait()
-
-	content, _ := os.ReadFile(mobiusPath)
-	lines := strings.Split(string(content), "\n")
-	factCount := 0
-	for _, line := range lines {
-		if strings.HasPrefix(line, "- Fact from goroutine") {
-			factCount++
-		}
-	}
-	if factCount < writers {
-		t.Errorf("expected at least %d unique facts, got %d", writers, factCount)
-	}
-}
-
-func TestCompactMobiusMD_BackupUniqueness(t *testing.T) {
-	dir := t.TempDir()
-	projectDir := filepath.Join(dir, "backup-test")
-	os.MkdirAll(projectDir, 0755)
-
-	project := &Project{Name: "backup-test"}
-	cfg := &Config{}
-	cfg.Projects.applyDefaults(dir)
-	cfg.Projects.ProjectsDir = dir
-	cfg.Projects.MemoryMaxSize = 1024
-	cfg.Projects.MemoryCompactRatio = 0.5
-	cfg.Projects.MemoryCompactKeep = 5
-
-	var content strings.Builder
-	content.WriteString("# Test\n\n## Key Decisions\n\n")
-	for i := 0; i < 50; i++ {
-		content.WriteString(fmt.Sprintf("- Decision %d about something important\n", i))
-	}
-	original := content.String()
-
-	compactMobiusMD(project, cfg, []byte(original))
-	compactMobiusMD(project, cfg, []byte(original))
-
-	bakDir := filepath.Join(projectDir, "mobius.md.bak")
-	entries, err := os.ReadDir(bakDir)
-	if err != nil {
-		t.Fatalf("failed to read backup dir: %v", err)
-	}
-	if len(entries) != 2 {
-		t.Errorf("expected 2 distinct backup files, got %d", len(entries))
-	}
-	if len(entries) == 2 && entries[0].Name() == entries[1].Name() {
-		t.Error("backup filenames collided")
-	}
-}
-
 func TestExportProjectToZip_DotfileExclusions(t *testing.T) {
 	dir := t.TempDir()
 	root := filepath.Join(dir, "zip-test")
@@ -285,58 +167,6 @@ func TestExportProjectToZip_DotfileExclusions(t *testing.T) {
 		if names[name] {
 			t.Errorf("did NOT expect %q in zip, but found it", name)
 		}
-	}
-}
-
-func TestCompactMobiusMD_PreservesHeader(t *testing.T) {
-	dir := t.TempDir()
-	projectDir := filepath.Join(dir, "compact-hdr")
-	os.MkdirAll(projectDir, 0755)
-
-	project := &Project{Name: "compact-hdr"}
-	cfg := &Config{}
-	cfg.Projects.applyDefaults(dir)
-	cfg.Projects.ProjectsDir = dir
-	cfg.Projects.MemoryMaxSize = 2048
-	cfg.Projects.MemoryCompactRatio = 0.8
-	cfg.Projects.MemoryCompactKeep = 3
-
-	var content strings.Builder
-	content.WriteString("# My Project\n\n## Key Decisions\n\n")
-	for i := 0; i < 30; i++ {
-		content.WriteString(fmt.Sprintf("- Decision %d: important thing\n", i))
-	}
-	original := content.String()
-
-	compactMobiusMD(project, cfg, []byte(original))
-
-	mobiusPath := filepath.Join(projectDir, "mobius.md")
-	result, err := os.ReadFile(mobiusPath)
-	if err != nil {
-		t.Fatalf("failed to read compacted file: %v", err)
-	}
-
-	resultStr := string(result)
-	if !strings.HasPrefix(resultStr, "# My Project\n") {
-		t.Error("header line should be preserved after compaction")
-	}
-	if !strings.Contains(resultStr, "## Key Decisions") {
-		t.Error("section header should be preserved")
-	}
-
-	lines := strings.Split(resultStr, "\n")
-	decisionCount := 0
-	for _, line := range lines {
-		if strings.HasPrefix(line, "- Decision") {
-			decisionCount++
-		}
-	}
-	if decisionCount < int(cfg.Projects.MemoryCompactKeep) {
-		t.Errorf("expected at least %d decisions kept, got %d", cfg.Projects.MemoryCompactKeep, decisionCount)
-	}
-
-	if len(result) > cfg.Projects.MemoryMaxSize {
-		t.Errorf("compacted size %d exceeds max %d", len(result), cfg.Projects.MemoryMaxSize)
 	}
 }
 

@@ -149,9 +149,10 @@ export interface Task {
   is_scheduled: boolean;
   cron_expr?: string;
   next_run_at?: string;
-  repeat_times?: number | null;
-  parent_task_id?: string | null;
-  project_id?: string | null;
+  repeat_times?: number;
+  parent_task_id?: string;
+  goal_id?: string;
+  project_id?: string;
   project_name?: string;
   created_at: string;
   updated_at: string;
@@ -173,6 +174,9 @@ export interface Employee {
   role: string;
   backstory: string;
   avatar_url: string;
+  adapter_type: string;
+  adapter_config: Record<string, unknown>;
+  monthly_budget?: number | null;
   models: EmployeeModel[];
   skills: EmployeeSkill[];
   tags: string[];
@@ -276,4 +280,41 @@ export interface TokenDetailRow {
   status: string;
   error_message: string;
   source: string;
+}
+
+export interface Goal {
+  id: string;
+  title: string;
+  description: string;
+  parent_id?: string | null;
+  project_id?: string | null;
+  status: 'active' | 'achieved' | 'abandoned';
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskInteraction {
+  id: string;
+  task_id: string;
+  creator_employee_id: string;
+  kind: 'ask_user' | 'suggest_tasks' | 'request_approval';
+  status: 'pending' | 'resolved' | 'dismissed';
+  payload: Record<string, unknown>;
+  response?: Record<string, unknown> | null;
+  created_at: string;
+  resolved_at?: string | null;
+  resolved_by?: string | null;
+}
+
+export interface HeartbeatRun {
+  id: string;
+  task_id: string;
+  agent_id: string;
+  adapter_type: string;
+  status: 'active' | 'completed' | 'failed' | 'cancelled';
+  output_text: string;
+  error_message?: string | null;
+  token_usage?: Record<string, number> | null;
+  started_at: string;
+  completed_at?: string | null;
 }
