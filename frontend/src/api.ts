@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { SettingsData, Conversation, ConversationSummary, FileRef, Prompt, VertexModel, Employee, EmployeeMemory, Skill, Task, TaskComment, Project, ProjectAsset, SearchResult, TokenSummary, TokenTimeseriesPoint, TokenBreakdownItem, TokenDetailRow, TaskInteraction } from './types';
+import type { SettingsData, Conversation, ConversationSummary, FileRef, Prompt, VertexModel, Employee, EmployeeMemory, Skill, Task, TaskComment, Project, ProjectAsset, SearchResult, TokenSummary, TokenTimeseriesPoint, TokenBreakdownItem, TokenDetailRow, TaskInteraction, Event } from './types';
 import { log } from './logger';
 
 export async function fetchConfig(): Promise<{ project_id: string }> {
@@ -514,6 +514,19 @@ export async function fetchTokenDetails(filters: TokenFilters, limit = 50, offse
   return data;
 }
 
+
+// Events / Activity
+export async function listEvents(filters?: { event_type?: string; actor_id?: string; project_id?: string; task_id?: string; limit?: number }): Promise<Event[]> {
+  const params = new URLSearchParams();
+  if (filters?.event_type) params.set('event_type', filters.event_type);
+  if (filters?.actor_id) params.set('actor_id', filters.actor_id);
+  if (filters?.project_id) params.set('project_id', filters.project_id);
+  if (filters?.task_id) params.set('task_id', filters.task_id);
+  if (filters?.limit) params.set('limit', String(filters.limit));
+  const qs = params.toString();
+  const { data } = await axios.get(`/api/events${qs ? `?${qs}` : ''}`);
+  return data.events ?? [];
+}
 
 // Interactions
 export async function listInteractions(taskId: string): Promise<TaskInteraction[]> {

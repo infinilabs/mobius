@@ -306,3 +306,14 @@ export interface HeartbeatRun {
   started_at: string;
   completed_at?: string | null;
 }
+
+export interface Event {
+  id: string;
+  timestamp: string;
+  event_type: string;
+  actor_id?: string | null;
+  project_id?: string | null;
+  task_id?: string | null;
+  conversation_id?: string | null;
+  payload: Record<string, unknown>;
+}

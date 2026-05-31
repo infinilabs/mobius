@@ -4,6 +4,7 @@ import {
   ChevronLeft, ChevronRight, ChevronDown, Layers,
   MessageSquare, MoreHorizontal, Pencil, Trash2, Check, X,
   FileText, Users, BookOpen, Kanban, Wrench, Monitor, FolderKanban, Activity,
+  LayoutDashboard,
 } from 'lucide-react';
 import { fetchConfig, listConversations, renameConversation, deleteConversation } from './api';
 import type { ConversationSummary } from './types';
@@ -20,8 +21,9 @@ import TasksPage from './pages/TasksPage';
 import SettingsPage from './pages/SettingsPage';
 import ProjectsPage from './pages/ProjectsPage';
 import TokenMonitorPage from './pages/TokenMonitorPage';
+import DashboardPage from './pages/DashboardPage';
 
-type Page = 'new-task' | 'cockpit' | 'tasks' | 'projects' | 'hr' | 'skills' | 'agent-workspace' | 'creatives' | 'prompts' | 'autopilot' | 'settings' | 'tokens';
+type Page = 'new-task' | 'dashboard' | 'cockpit' | 'tasks' | 'projects' | 'hr' | 'skills' | 'agent-workspace' | 'creatives' | 'prompts' | 'autopilot' | 'settings' | 'tokens';
 
 type NavItem = { id: Page; label: string; icon: React.ReactNode };
 
@@ -56,6 +58,17 @@ function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [chatAgentId, setChatAgentId] = useState<string | undefined>();
   const [chatProjectId, setChatProjectId] = useState<string | undefined>();
+
+  // Dashboard → task-detail navigation. The seq nonce makes each request
+  // distinct so the Tasks page re-opens the modal even on a repeat navigation.
+  const [navTask, setNavTask] = useState<{ id: string; seq: number } | undefined>();
+  const navSeq = useRef(0);
+
+  const openTask = useCallback((id: string) => {
+    navSeq.current += 1;
+    setNavTask({ id, seq: navSeq.current });
+    setActivePage('tasks');
+  }, []);
 
   const refreshConversations = useCallback(() => {
     listConversations().then(setConversations).catch(() => {});
@@ -149,6 +162,7 @@ function App() {
         {/* Nav Items */}
         <nav className={`flex flex-col gap-0.5 ${sidebarOpen ? 'px-3' : 'px-1.5'}`}>
           <NavButton item={{ id: 'new-task', label: 'New Task', icon: <PenLine size={18} /> }} activePage={activePage} activeConversationId={activeConversationId} sidebarOpen={sidebarOpen} onNav={handleNewTask} />
+          <NavButton item={{ id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={18} /> }} activePage={activePage} activeConversationId={activeConversationId} sidebarOpen={sidebarOpen} onNav={() => setActivePage('dashboard')} />
 
           <div className={`${sidebarOpen ? 'mx-1' : 'mx-0.5'} border-t border-zinc-800/40 my-1.5`} />
 
@@ -239,8 +253,9 @@ function App() {
               initialProjectId={chatProjectId}
             />
           )}
+          {activePage === 'dashboard' && <div className="overflow-y-auto h-full"><DashboardPage onOpenTask={openTask} /></div>}
           {activePage === 'cockpit' && <div className="overflow-y-auto h-full"><CockpitPage /></div>}
-          {activePage === 'tasks' && <div className="overflow-y-auto h-full"><TasksPage /></div>}
+          {activePage === 'tasks' && <div className="overflow-y-auto h-full"><TasksPage openTask={navTask} /></div>}
           {activePage === 'projects' && <div className="overflow-y-auto h-full"><ProjectsPage onNavigateToChat={(convId, agentId, projectId) => {
             setActiveConversationId(convId);
             setChatAgentId(agentId);

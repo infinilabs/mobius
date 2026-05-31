@@ -41,7 +41,7 @@ function timeAgo(ts: string) {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
-export default function TasksPage() {
+export default function TasksPage({ openTask }: { openTask?: { id: string; seq: number } }) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -65,6 +65,12 @@ export default function TasksPage() {
     listEmployees().then(setEmployees).catch(() => {});
     listProjects().then(setProjects).catch(() => {});
   }, [refresh]);
+
+  // Open a task's detail when navigated in from the Dashboard. The seq nonce
+  // lets the same task be re-opened on a repeat navigation.
+  useEffect(() => {
+    if (openTask) setSelectedTaskId(openTask.id);
+  }, [openTask]);
 
   // Pre-select the project from a deep link (e.g. /tasks?project_id=X) once
   // projects load, so navigating in from a project lands pre-filtered.
