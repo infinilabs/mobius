@@ -5,7 +5,8 @@ import {
   listTaskComments, addTaskComment, listEmployees, listTaskRuns, updateTaskSchedule,
   listProjects,
 } from '../api';
-import type { Task, TaskComment, Employee, Project } from '../types';
+import type { Task, TaskComment, Employee, Project, SearchResult } from '../types';
+import SearchSelect from '../components/SearchSelect';
 
 const STATUS_COLUMNS: { key: Task['status']; label: string; color: string }[] = [
   { key: 'scheduled',    label: 'Scheduled',     color: 'text-amber-400' },
@@ -48,35 +49,43 @@ export default function TasksPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
-  const urlParams = new URLSearchParams(window.location.search);
-  const [projectFilter, setProjectFilter] = useState<string>(urlParams.get('project_id') || '');
+  const [selProjects, setSelProjects] = useState<SearchResult[]>([]);
+  const [selEmployees, setSelEmployees] = useState<SearchResult[]>([]);
 
   const refresh = useCallback(() => {
     setLoading(true);
-    const filters: { project_id?: string } = {};
-    if (projectFilter) filters.project_id = projectFilter;
-    listTasks(filters)
+    listTasks()
       .then(setTasks)
       .catch(() => setTasks([]))
       .finally(() => setLoading(false));
-  }, [projectFilter]);
+  }, []);
 
   useEffect(() => {
-    setLoading(true);
-    const filters: { project_id?: string } = {};
-    if (projectFilter) filters.project_id = projectFilter;
-    listTasks(filters)
-      .then(setTasks)
-      .catch(() => setTasks([]))
-      .finally(() => setLoading(false));
+    refresh();
     listEmployees().then(setEmployees).catch(() => {});
     listProjects().then(setProjects).catch(() => {});
-  }, [projectFilter]);
+  }, [refresh]);
+
+  // Pre-select the project from a deep link (e.g. /tasks?project_id=X) once
+  // projects load, so navigating in from a project lands pre-filtered.
+  useEffect(() => {
+    const pid = new URLSearchParams(window.location.search).get('project_id');
+    if (!pid || projects.length === 0) return;
+    const proj = projects.find(p => p.id === pid);
+    if (proj) setSelProjects([{ id: proj.id, label: proj.name }]);
+  }, [projects]);
+
+  const projIds = new Set(selProjects.map(p => p.id));
+  const empIds = new Set(selEmployees.map(e => e.id));
+  const visibleTasks = tasks.filter(t =>
+    (projIds.size === 0 || (t.project_id != null && projIds.has(t.project_id))) &&
+    (empIds.size === 0 || (t.assignee != null && empIds.has(t.assignee.id)))
+  );
 
   const grouped: Record<Task['status'], Task[]> = {
     scheduled: [], todo: [], ready: [], in_progress: [], needs_review: [], done: [], blocked: [],
   };
-  for (const t of tasks) {
+  for (const t of visibleTasks) {
     grouped[t.status]?.push(t);
   }
   for (const key of Object.keys(grouped) as Task['status'][]) {
@@ -89,7 +98,7 @@ export default function TasksPage() {
       <div className="flex items-center justify-between mb-6 shrink-0">
         <div>
           <h1 className="text-xl font-bold text-white">Tasks</h1>
-          <p className="text-xs text-zinc-500 mt-0.5">{tasks.length} total</p>
+          <p className="text-xs text-zinc-500 mt-0.5">{visibleTasks.length} of {tasks.length}</p>
         </div>
         <button
           onClick={() => setShowCreate(true)}
@@ -100,23 +109,17 @@ export default function TasksPage() {
         </button>
       </div>
 
-      {/* Project Filter */}
-      <div className="flex items-center gap-2 mb-4 shrink-0">
+      {/* Filters */}
+      <div className="flex flex-wrap items-center gap-2 mb-4 shrink-0">
         <span className="text-xs text-zinc-500">Filter:</span>
-        <select
-          value={projectFilter}
-          onChange={e => setProjectFilter(e.target.value)}
-          className="px-3 py-1.5 rounded-lg border border-zinc-800 bg-zinc-900/50 text-xs text-zinc-300 outline-none cursor-pointer"
-        >
-          <option value="">All Tasks</option>
-          <option value="none">No Project</option>
-          {projects.map(p => (
-            <option key={p.id} value={p.id}>{p.name}</option>
-          ))}
-        </select>
-        {projectFilter && (
-          <button onClick={() => setProjectFilter('')} className="text-zinc-500 hover:text-zinc-300 cursor-pointer">
-            <X size={14} />
+        <SearchSelect type="projects" placeholder="Project" selected={selProjects} onChange={setSelProjects} />
+        <SearchSelect type="employees" placeholder="Assignee" selected={selEmployees} onChange={setSelEmployees} />
+        {(selProjects.length > 0 || selEmployees.length > 0) && (
+          <button
+            onClick={() => { setSelProjects([]); setSelEmployees([]); }}
+            className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300 cursor-pointer"
+          >
+            <X size={14} /> Clear
           </button>
         )}
       </div>
@@ -155,7 +158,7 @@ export default function TasksPage() {
         <CreateTaskModal
           employees={employees}
           projects={projects}
-          defaultProjectId={projectFilter && projectFilter !== 'none' ? projectFilter : ''}
+          defaultProjectId={selProjects.length === 1 ? selProjects[0].id : ''}
           allTasks={tasks}
           onClose={() => setShowCreate(false)}
           onCreated={() => { setShowCreate(false); refresh(); }}

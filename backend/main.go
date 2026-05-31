@@ -128,6 +128,9 @@ func main() {
 		if err := pgClient.RunMigrations(ctx, migrationsDir); err != nil {
 			slog.Error("failed to run PG migrations", "error", err)
 		}
+		// Wire the ES mirror so task-status mutations keep ES in sync at the PG
+		// layer, regardless of which caller (HTTP, agent, MCP, delegation) drives them.
+		pgClient.SetESClient(esClient)
 	}
 
 	skillsDir := "skills"

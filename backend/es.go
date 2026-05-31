@@ -54,14 +54,31 @@ func NewESClient(url string) (*ESClient, error) {
 		return nil, fmt.Errorf("failed to create ES client: %w", err)
 	}
 
-	info, err := client.Info()
-	if err != nil {
-		return nil, fmt.Errorf("ES connection failed: %w", err)
+	// A freshly-created ES container accepts TCP before it can serve requests and
+	// resets connections mid-boot (~15-30s). Retry the readiness probe with backoff
+	// so `wipe -> serve` (ES still starting) doesn't permanently disable ES on a
+	// single failed probe.
+	const esReadyAttempts = 30
+	var lastErr error
+	for attempt := 1; attempt <= esReadyAttempts; attempt++ {
+		info, infoErr := client.Info()
+		if infoErr != nil {
+			lastErr = fmt.Errorf("ES connection failed: %w", infoErr)
+		} else if info.IsError() {
+			lastErr = fmt.Errorf("ES returned error: %s", info.String())
+			info.Body.Close()
+		} else {
+			info.Body.Close()
+			lastErr = nil
+			break
+		}
+		if attempt < esReadyAttempts {
+			slog.Info("waiting for Elasticsearch to become ready", "url", url, "attempt", attempt)
+			time.Sleep(2 * time.Second)
+		}
 	}
-	defer info.Body.Close()
-
-	if info.IsError() {
-		return nil, fmt.Errorf("ES returned error: %s", info.String())
+	if lastErr != nil {
+		return nil, lastErr
 	}
 
 	esClient := &ESClient{client: client}

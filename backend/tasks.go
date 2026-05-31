@@ -567,20 +567,37 @@ func (pg *PGClient) UpdateTaskStatus(ctx context.Context, id, newStatus, actorID
 		return fmt.Errorf("update status: %w", err)
 	}
 
+	var promoted []string
 	if newStatus == "done" {
-		if err := pg.promoteDependents(ctx, tx, id); err != nil {
+		promoted, err = pg.promoteDependents(ctx, tx, id)
+		if err != nil {
 			return err
 		}
 	}
 
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	// Keep the ES task mirror in sync for the primary task and any dependents
+	// promoted by this transition. Centralized here so every caller (HTTP,
+	// agent, MCP, delegation) stays consistent without remembering to reindex.
+	pg.reindexTask(ctx, id)
+	for _, cid := range promoted {
+		pg.reindexTask(ctx, cid)
+	}
+
+	return nil
 }
 
-func (pg *PGClient) promoteDependents(ctx context.Context, tx pgx.Tx, doneTaskID string) error {
+// promoteDependents flips any dependents of doneTaskID whose dependencies are
+// now all satisfied from 'todo' to 'ready'. It returns the IDs it promoted so
+// the caller can mirror those status changes into ES.
+func (pg *PGClient) promoteDependents(ctx context.Context, tx pgx.Tx, doneTaskID string) ([]string, error) {
 	rows, err := tx.Query(ctx,
 		"SELECT task_id FROM task_dependencies WHERE depends_on = $1", doneTaskID)
 	if err != nil {
-		return fmt.Errorf("find dependents: %w", err)
+		return nil, fmt.Errorf("find dependents: %w", err)
 	}
 	defer rows.Close()
 
@@ -588,12 +605,13 @@ func (pg *PGClient) promoteDependents(ctx context.Context, tx pgx.Tx, doneTaskID
 	for rows.Next() {
 		var tid string
 		if err := rows.Scan(&tid); err != nil {
-			return fmt.Errorf("scan dependent: %w", err)
+			return nil, fmt.Errorf("scan dependent: %w", err)
 		}
 		candidates = append(candidates, tid)
 	}
 	rows.Close()
 
+	var promoted []string
 	for _, cid := range candidates {
 		var status string
 		err := tx.QueryRow(ctx, "SELECT status FROM tasks WHERE id = $1", cid).Scan(&status)
@@ -613,13 +631,14 @@ func (pg *PGClient) promoteDependents(ctx context.Context, tx pgx.Tx, doneTaskID
 
 		if undone == 0 {
 			if _, err := tx.Exec(ctx, "UPDATE tasks SET status = 'ready', updated_at = NOW() WHERE id = $1", cid); err != nil {
-				return fmt.Errorf("failed to promote dependent task %s: %w", cid, err)
+				return nil, fmt.Errorf("failed to promote dependent task %s: %w", cid, err)
 			}
+			promoted = append(promoted, cid)
 			slog.Info("task promoted to ready", "task_id", cid)
 		}
 	}
 
-	return nil
+	return promoted, nil
 }
 
 func (pg *PGClient) ListTaskComments(ctx context.Context, taskID string) ([]TaskComment, error) {
@@ -918,12 +937,7 @@ func (h *APIHandler) UpdateTaskStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "task not found after status update", http.StatusNotFound)
 		return
 	}
-
-	if h.esClient != nil {
-		if err := h.esClient.IndexTask(r.Context(), task); err != nil {
-			slog.Warn("ES index task failed", "id", id, "error", err)
-		}
-	}
+	// ES mirror is kept in sync inside UpdateTaskStatus (covers promoted dependents too).
 
 	slog.Info("task status updated", "id", id, "status", body.Status)
 	writeJSON(w, task)

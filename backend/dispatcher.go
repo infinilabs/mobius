@@ -209,6 +209,11 @@ func (d *TaskDispatcher) dispatchSingleTask(ctx context.Context, taskID string) 
 	if err != nil {
 		return
 	}
+	if d.esClient != nil {
+		if err := d.esClient.IndexTask(ctx, t); err != nil {
+			slog.Warn("ES index task (dispatch) failed", "id", t.ID, "error", err)
+		}
+	}
 
 	select {
 	case d.sem <- struct{}{}:
@@ -320,6 +325,11 @@ func (d *TaskDispatcher) claimReadyTasks(ctx context.Context) ([]Task, error) {
 		t, err := d.pgClient.GetTask(ctx, id)
 		if err == nil {
 			tasks = append(tasks, *t)
+			if d.esClient != nil {
+				if err := d.esClient.IndexTask(ctx, t); err != nil {
+					slog.Warn("ES index task (claim) failed", "id", t.ID, "error", err)
+				}
+			}
 		}
 	}
 	return tasks, nil
@@ -575,6 +585,7 @@ func (d *TaskDispatcher) reclaimStaleTasks(ctx context.Context) {
 	// comment claiming a reclaim that never happened.
 	for _, id := range staleIDs {
 		d.pgClient.AddTaskComment(ctx, id, "", "System: Task reclaimed — execution stalled or server crashed.")
+		d.pgClient.reindexTask(ctx, id)
 	}
 }
 
@@ -782,6 +793,8 @@ func (d *TaskDispatcher) failTask(ctx context.Context, taskID, reason string) {
 	if blocked {
 		d.pgClient.AddTaskComment(ctx, taskID, "", "System: Max retries exceeded. Task blocked.")
 	}
+
+	d.pgClient.reindexTask(ctx, taskID)
 }
 
 func (d *TaskDispatcher) budgetExceeded(ctx context.Context, agent *Employee) bool {

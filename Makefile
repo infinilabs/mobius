@@ -1,7 +1,8 @@
 # Makefile for Mobius
 
 .PHONY: build-frontend build-backend build-all build-sandbox serve test sanity clean \
-        docker-up docker-up-postgres docker-up-elasticsearch docker-down docker-status
+        docker-up docker-up-postgres docker-up-elasticsearch docker-down docker-status \
+        wipe-data
 
 # Variables
 PORT=1983
@@ -81,6 +82,7 @@ docker-up-postgres:
 		fi; \
 	else \
 		echo "==> Creating PostgreSQL container..."; \
+		docker run --rm -v "$(DATA_DIR)/rdb:/data" alpine sh -c "chown 999:999 /data && chmod 700 /data"; \
 		docker run -d --name $(POSTGRES_CONTAINER) \
 			-e POSTGRES_USER=mobius \
 			-e POSTGRES_PASSWORD=mobius \
@@ -101,6 +103,7 @@ docker-up-elasticsearch:
 		fi; \
 	else \
 		echo "==> Creating Elasticsearch container..."; \
+		docker run --rm -v "$(DATA_DIR)/es:/data" alpine chown 1000:1000 /data; \
 		docker run -d --name $(ES_CONTAINER) \
 			-e discovery.type=single-node \
 			-e xpack.security.enabled=false \
@@ -121,3 +124,29 @@ docker-destroy:
 
 docker-status:
 	@docker ps -a -f name=mobius --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+
+# Wipe ALL local data stores so the next boot starts clean. This removes the
+# containers and erases Postgres, Elasticsearch, and on-disk project files —
+# the three stores that must stay in sync. Cloud stores (GCS/BigQuery) are NOT
+# touched. Requires an explicit "yes" confirmation.
+wipe-data:
+	@echo ""
+	@echo "  ⚠  WARNING: this PERMANENTLY DELETES all local Mobius data:"
+	@echo "       • PostgreSQL   ($(DATA_DIR)/rdb)"
+	@echo "       • Elasticsearch ($(DATA_DIR)/es)"
+	@echo "       • Project files (./projects, incl. archived/ and deleted/)"
+	@echo "     The $(POSTGRES_CONTAINER) and $(ES_CONTAINER) containers will be removed."
+	@echo "     Cloud stores (GCS / BigQuery) are NOT affected."
+	@echo ""
+	@read -p "  Type 'yes' to wipe everything, anything else to abort: " ans; \
+	if [ "$$ans" != "yes" ] && [ "$$ans" != "y" ]; then \
+		echo "==> Aborted. No data was deleted."; \
+		exit 0; \
+	fi; \
+	echo "==> Removing containers..."; \
+	docker rm -f $(POSTGRES_CONTAINER) $(ES_CONTAINER) 2>/dev/null || true; \
+	echo "==> Wiping Postgres + Elasticsearch data (root container; files are container-owned)..."; \
+	docker run --rm -v "$(DATA_DIR):/data" alpine sh -c "rm -rf /data/rdb /data/es"; \
+	echo "==> Wiping local project files..."; \
+	rm -rf projects; \
+	echo "==> Done. All local data wiped. Run 'make serve' to start fresh."

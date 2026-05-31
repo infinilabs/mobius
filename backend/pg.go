@@ -15,8 +15,32 @@ import (
 )
 
 type PGClient struct {
-	pool *pgxpool.Pool
-	dsn  string
+	pool     *pgxpool.Pool
+	dsn      string
+	esClient *ESClient // optional ES mirror; kept in sync by mutating PG methods
+}
+
+// SetESClient wires the Elasticsearch mirror so PG mutations that are reached
+// from many call sites (e.g. UpdateTaskStatus) keep ES in sync in one place,
+// instead of relying on every caller to remember to reindex.
+func (pg *PGClient) SetESClient(es *ESClient) {
+	pg.esClient = es
+}
+
+// reindexTask re-mirrors a single task from PG into ES. No-op when ES is
+// unavailable. Failures are logged, not fatal — PG remains the source of truth.
+func (pg *PGClient) reindexTask(ctx context.Context, id string) {
+	if pg.esClient == nil {
+		return
+	}
+	t, err := pg.GetTask(ctx, id)
+	if err != nil {
+		slog.Warn("reindexTask: load from PG failed", "id", id, "error", err)
+		return
+	}
+	if err := pg.esClient.IndexTask(ctx, t); err != nil {
+		slog.Warn("reindexTask: ES index failed", "id", id, "error", err)
+	}
 }
 
 func NewPGClient(ctx context.Context, cfg PostgresConfig) (*PGClient, error) {

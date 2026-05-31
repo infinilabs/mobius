@@ -647,6 +647,19 @@ func (h *APIHandler) ArchiveOrDeleteProject(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
+	// Capture tasks still pointing at this project so we can re-mirror them into
+	// ES after their project_id is nullified below.
+	var affectedTaskIDs []string
+	if rows, qerr := h.pgClient.pool.Query(r.Context(), "SELECT id FROM tasks WHERE project_id = $1", projectID); qerr == nil {
+		for rows.Next() {
+			var tid string
+			if rows.Scan(&tid) == nil {
+				affectedTaskIDs = append(affectedTaskIDs, tid)
+			}
+		}
+		rows.Close()
+	}
+
 	tx, txErr := h.pgClient.pool.Begin(r.Context())
 	if txErr != nil {
 		writeError(w, "failed to begin transaction: "+txErr.Error(), http.StatusInternalServerError)
@@ -667,6 +680,10 @@ func (h *APIHandler) ArchiveOrDeleteProject(w http.ResponseWriter, r *http.Reque
 	}
 
 	projectMemoryLocks.Delete(project.Name)
+
+	for _, tid := range affectedTaskIDs {
+		h.pgClient.reindexTask(r.Context(), tid)
+	}
 
 	if h.gcsClient != nil {
 		gcsPrefix := filepath.Join("projects", project.Name)
