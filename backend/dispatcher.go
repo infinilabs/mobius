@@ -426,8 +426,6 @@ func (d *TaskDispatcher) buildHeartbeatContext(ctx context.Context, assignee *Em
 		}
 	}
 
-	systemPrompt += buildGoalContext(ctx, d.pgClient, t)
-
 	systemPrompt += buildInteractionContext(ctx, d.pgClient, t.ID)
 
 	comments, _ := d.pgClient.ListTaskComments(ctx, t.ID)

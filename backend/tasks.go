@@ -28,7 +28,6 @@ type Task struct {
 	NextRunAt    *time.Time     `json:"next_run_at,omitempty"`
 	RepeatTimes  *int           `json:"repeat_times,omitempty"`
 	ParentTaskID *string        `json:"parent_task_id,omitempty"`
-	GoalID       *string        `json:"goal_id,omitempty"`
 	ProjectID    *string        `json:"project_id,omitempty"`
 	ProjectName  string         `json:"project_name,omitempty"`
 	CreatedAt    time.Time      `json:"created_at"`
@@ -53,7 +52,7 @@ func (pg *PGClient) ListTasks(ctx context.Context, status, assigneeID, projectID
 		       t.assignee_id, a.name, a.title, a.role,
 		       t.creator_id, c.name, c.title, c.role,
 		       t.is_scheduled, t.cron_expr, t.next_run_at, t.repeat_times, t.parent_task_id,
-		       t.goal_id, t.project_id, p.name
+		       t.project_id, p.name
 		FROM tasks t
 		LEFT JOIN employees a ON a.id = t.assignee_id
 		LEFT JOIN employees c ON c.id = t.creator_id
@@ -109,7 +108,7 @@ func (pg *PGClient) ListTasks(ctx context.Context, status, assigneeID, projectID
 			&assigneeID, &assigneeName, &assigneeTitle, &assigneeRole,
 			&creatorID, &creatorName, &creatorTitle, &creatorRole,
 			&t.IsScheduled, &t.CronExpr, &t.NextRunAt, &t.RepeatTimes, &t.ParentTaskID,
-			&t.GoalID, &t.ProjectID, &projectName,
+			&t.ProjectID, &projectName,
 		); err != nil {
 			return nil, fmt.Errorf("scan task: %w", err)
 		}
@@ -169,7 +168,7 @@ func (pg *PGClient) GetTask(ctx context.Context, id string) (*Task, error) {
 		       t.assignee_id, a.name, a.title, a.role,
 		       t.creator_id, c.name, c.title, c.role,
 		       t.is_scheduled, t.cron_expr, t.next_run_at, t.repeat_times, t.parent_task_id,
-		       t.goal_id, t.project_id, p.name
+		       t.project_id, p.name
 		FROM tasks t
 		LEFT JOIN employees a ON a.id = t.assignee_id
 		LEFT JOIN employees c ON c.id = t.creator_id
@@ -181,7 +180,7 @@ func (pg *PGClient) GetTask(ctx context.Context, id string) (*Task, error) {
 		&assigneeID, &assigneeName, &assigneeTitle, &assigneeRole,
 		&creatorID, &creatorName, &creatorTitle, &creatorRole,
 		&t.IsScheduled, &t.CronExpr, &t.NextRunAt, &t.RepeatTimes, &t.ParentTaskID,
-		&t.GoalID, &t.ProjectID, &projectName,
+		&t.ProjectID, &projectName,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get task: %w", err)
@@ -251,10 +250,10 @@ func (pg *PGClient) CreateTask(ctx context.Context, t *Task, depIDs []string) er
 	}
 
 	err = tx.QueryRow(ctx, `
-		INSERT INTO tasks (title, body, status, priority, assignee_id, creator_id, goal_id, project_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO tasks (title, body, status, priority, assignee_id, creator_id, project_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, created_at, updated_at
-	`, t.Title, t.Body, status, priority, assigneeID, creatorID, t.GoalID, t.ProjectID).Scan(
+	`, t.Title, t.Body, status, priority, assigneeID, creatorID, t.ProjectID).Scan(
 		&t.ID, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert task: %w", err)
@@ -737,7 +736,6 @@ func (h *APIHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		IsScheduled  bool     `json:"is_scheduled"`
 		CronExpr     string   `json:"cron_expr"`
 		RepeatTimes  *int     `json:"repeat_times"`
-		GoalID       string   `json:"goal_id"`
 		ProjectID    string   `json:"project_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -760,9 +758,6 @@ func (h *APIHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.CreatorID != "" {
 		t.Creator = &EmployeeBrief{ID: body.CreatorID}
-	}
-	if body.GoalID != "" {
-		t.GoalID = &body.GoalID
 	}
 	if body.ProjectID != "" {
 		if _, err := h.pgClient.GetProject(r.Context(), body.ProjectID); err != nil {

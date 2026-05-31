@@ -3,7 +3,7 @@ import {
   PenLine, Gauge, Bot, Palette, Radio, Megaphone,
   ChevronLeft, ChevronRight, ChevronDown, Layers,
   MessageSquare, MoreHorizontal, Pencil, Trash2, Check, X,
-  FileText, Users, BookOpen, Kanban, Wrench, Monitor, FolderKanban, Activity, Target,
+  FileText, Users, BookOpen, Kanban, Wrench, Monitor, FolderKanban, Activity,
 } from 'lucide-react';
 import { fetchConfig, listConversations, renameConversation, deleteConversation } from './api';
 import type { ConversationSummary } from './types';
@@ -20,9 +20,8 @@ import TasksPage from './pages/TasksPage';
 import SettingsPage from './pages/SettingsPage';
 import ProjectsPage from './pages/ProjectsPage';
 import TokenMonitorPage from './pages/TokenMonitorPage';
-import GoalsPage from './pages/GoalsPage';
 
-type Page = 'new-task' | 'cockpit' | 'tasks' | 'projects' | 'goals' | 'hr' | 'skills' | 'agent-workspace' | 'creatives' | 'prompts' | 'autopilot' | 'settings' | 'tokens';
+type Page = 'new-task' | 'cockpit' | 'tasks' | 'projects' | 'hr' | 'skills' | 'agent-workspace' | 'creatives' | 'prompts' | 'autopilot' | 'settings' | 'tokens';
 
 type NavItem = { id: Page; label: string; icon: React.ReactNode };
 
@@ -36,7 +35,6 @@ const MARKETING_ITEMS: NavItem[] = [
 const OPS_ITEMS: NavItem[] = [
   { id: 'tasks',            label: 'Tasks',             icon: <Kanban size={18} /> },
   { id: 'projects',         label: 'Projects',          icon: <FolderKanban size={18} /> },
-  { id: 'goals',            label: 'Goals',             icon: <Target size={18} /> },
   { id: 'hr',               label: 'HR',                icon: <Users size={18} /> },
 ];
 
@@ -257,7 +255,6 @@ function App() {
           {activePage === 'autopilot' && <div className="overflow-y-auto h-full"><AutopilotPage /></div>}
           {activePage === 'settings' && <div className="overflow-y-auto h-full"><SettingsPage /></div>}
           {activePage === 'tokens' && <div className="overflow-y-auto h-full"><TokenMonitorPage /></div>}
-          {activePage === 'goals' && <div className="overflow-y-auto h-full"><GoalsPage /></div>}
         </div>
       </main>
     </div>

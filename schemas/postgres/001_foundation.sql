@@ -79,26 +79,6 @@ CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner_id);
 CREATE INDEX IF NOT EXISTS idx_projects_tags ON projects USING GIN(tags);
 
 -- ============================================================
--- GOALS
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS goals (
-    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    title       TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    parent_id   UUID REFERENCES goals(id) ON DELETE SET NULL,
-    project_id  UUID REFERENCES projects(id) ON DELETE SET NULL,
-    status      TEXT NOT NULL DEFAULT 'active'
-                CHECK (status IN ('active','achieved','abandoned')),
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_goals_parent ON goals(parent_id);
-CREATE INDEX IF NOT EXISTS idx_goals_project ON goals(project_id);
-CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
-
--- ============================================================
 -- TASKS
 -- ============================================================
 
@@ -112,7 +92,6 @@ CREATE TABLE IF NOT EXISTS tasks (
                     CHECK (priority IN ('low','medium','high','urgent')),
     assignee_id     UUID REFERENCES employees(id) ON DELETE SET NULL,
     creator_id      UUID REFERENCES employees(id) ON DELETE SET NULL,
-    goal_id         UUID REFERENCES goals(id) ON DELETE SET NULL,
     project_id      UUID REFERENCES projects(id) ON DELETE SET NULL,
     result          TEXT NOT NULL DEFAULT '',
     failure_count   INT NOT NULL DEFAULT 0,
@@ -145,7 +124,6 @@ CREATE TABLE IF NOT EXISTS task_comments (
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_goal ON tasks(goal_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_conversation ON tasks(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_retry_after ON tasks(status, retry_after) WHERE status = 'ready';

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { SettingsData, Conversation, ConversationSummary, FileRef, Prompt, VertexModel, Employee, EmployeeMemory, Skill, Task, TaskComment, Project, ProjectAsset, SearchResult, TokenSummary, TokenTimeseriesPoint, TokenBreakdownItem, TokenDetailRow, Goal, TaskInteraction } from './types';
+import type { SettingsData, Conversation, ConversationSummary, FileRef, Prompt, VertexModel, Employee, EmployeeMemory, Skill, Task, TaskComment, Project, ProjectAsset, SearchResult, TokenSummary, TokenTimeseriesPoint, TokenBreakdownItem, TokenDetailRow, TaskInteraction } from './types';
 import { log } from './logger';
 
 export async function fetchConfig(): Promise<{ project_id: string }> {
@@ -514,31 +514,6 @@ export async function fetchTokenDetails(filters: TokenFilters, limit = 50, offse
   return data;
 }
 
-// Goals
-export async function listGoals(projectId?: string): Promise<Goal[]> {
-  const params = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
-  const { data } = await axios.get(`/api/goals${params}`);
-  return data;
-}
-
-export async function createGoal(goal: { title: string; description?: string; parent_id?: string; project_id?: string }): Promise<Goal> {
-  const { data } = await axios.post('/api/goals', goal);
-  return data;
-}
-
-export async function getGoal(id: string): Promise<Goal> {
-  const { data } = await axios.get(`/api/goals/${id}`);
-  return data;
-}
-
-export async function updateGoal(id: string, fields: { title?: string; description?: string; status?: string }): Promise<Goal> {
-  const { data } = await axios.put(`/api/goals/${id}`, fields);
-  return data;
-}
-
-export async function deleteGoal(id: string): Promise<void> {
-  await axios.delete(`/api/goals/${id}`);
-}
 
 // Interactions
 export async function listInteractions(taskId: string): Promise<TaskInteraction[]> {

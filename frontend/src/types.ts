@@ -151,7 +151,6 @@ export interface Task {
   next_run_at?: string;
   repeat_times?: number;
   parent_task_id?: string;
-  goal_id?: string;
   project_id?: string;
   project_name?: string;
   created_at: string;
@@ -280,17 +279,6 @@ export interface TokenDetailRow {
   status: string;
   error_message: string;
   source: string;
-}
-
-export interface Goal {
-  id: string;
-  title: string;
-  description: string;
-  parent_id?: string | null;
-  project_id?: string | null;
-  status: 'active' | 'achieved' | 'abandoned';
-  created_at: string;
-  updated_at: string;
 }
 
 export interface TaskInteraction {

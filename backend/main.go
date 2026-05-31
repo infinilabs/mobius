@@ -409,14 +409,6 @@ func main() {
 	mux.Handle("GET /api/tokens/breakdown", h(api.TokenBreakdown))
 	mux.Handle("GET /api/tokens/details", h(api.TokenDetails))
 
-	// Goals
-	mux.Handle("GET /api/goals", h(api.ListGoals))
-	mux.Handle("POST /api/goals", h(api.CreateGoal))
-	mux.Handle("GET /api/goals/{id}", h(api.GetGoal))
-	mux.Handle("PUT /api/goals/{id}", h(api.UpdateGoal))
-	mux.Handle("DELETE /api/goals/{id}", h(api.DeleteGoal))
-	mux.Handle("GET /api/goals/{id}/children", h(api.ListGoalChildren))
-
 	// Task Interactions
 	mux.Handle("GET /api/tasks/{id}/interactions", h(api.ListInteractions))
 	mux.Handle("PUT /api/tasks/{id}/interactions/{interactionId}", h(api.ResolveInteraction))
