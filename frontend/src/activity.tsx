@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import {
   Activity, FileText, Terminal, Database, MessageSquare, UserPlus,
-  Send, CheckCircle2, XCircle, Share2,
+  Send, CheckCircle2, XCircle, Share2, Wrench,
 } from 'lucide-react';
 import type { Event } from './types';
 
@@ -15,6 +15,7 @@ const ICONS: Record<string, ReactNode> = {
   command_execution:    <Terminal size={13} />,
   memory_stored:        <Database size={13} />,
   conversation_started: <MessageSquare size={13} />,
+  tool_call:            <Wrench size={13} />,
 };
 
 export function eventIcon(type: string): ReactNode {
@@ -36,6 +37,19 @@ export function activityVerb(ev: Event): { verb: string; detail?: string } {
     case 'command_execution':    return { verb: 'ran a command', detail: s('command') };
     case 'memory_stored':        return { verb: 'stored a memory', detail: s('memory_text') };
     case 'conversation_started': return { verb: 'started a conversation' };
+    case 'tool_call': {
+      const tool = s('tool') ?? 'a tool';
+      const status = s('status');
+      const verb = status === 'error' ? `called ${tool} (failed)` : `called ${tool}`;
+      // payload.args is the full args object (kept whole for BQ analysis); show a
+      // compact, truncated view inline.
+      let argsStr: string | undefined;
+      if (p.args && typeof p.args === 'object') {
+        const j = JSON.stringify(p.args);
+        argsStr = j.length > 200 ? `${j.slice(0, 200)}…` : j;
+      }
+      return { verb, detail: s('error') ?? argsStr };
+    }
     default:                     return { verb: ev.event_type.replace(/[._]/g, ' ') };
   }
 }

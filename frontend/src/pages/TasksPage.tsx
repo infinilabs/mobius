@@ -3,10 +3,11 @@ import { Plus, X, MessageSquare, ChevronRight, AlertCircle, CheckCircle2, Clock,
 import {
   listTasks, createTask, getTask, updateTask, deleteTask, updateTaskStatus,
   listTaskComments, addTaskComment, listEmployees, listTaskRuns, updateTaskSchedule,
-  listProjects,
+  listProjects, listEvents,
 } from '../api';
-import type { Task, TaskComment, Employee, Project, SearchResult } from '../types';
+import type { Task, TaskComment, Employee, Project, SearchResult, Event } from '../types';
 import SearchSelect from '../components/SearchSelect';
+import { activityVerb, eventIcon, activityTimeAgo } from '../activity';
 
 const STATUS_COLUMNS: { key: Task['status']; label: string; color: string }[] = [
   { key: 'scheduled',    label: 'Scheduled',     color: 'text-amber-400' },
@@ -495,6 +496,7 @@ function TaskDetailModal({ taskId, employees, onClose, onChanged }: {
   const [error, setError] = useState('');
   const [resultDraft, setResultDraft] = useState('');
   const [runs, setRuns] = useState<Task[]>([]);
+  const [events, setEvents] = useState<Event[]>([]);
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState('');
   const [editBody, setEditBody] = useState('');
@@ -510,6 +512,7 @@ function TaskDetailModal({ taskId, employees, onClose, onChanged }: {
       if (t.is_scheduled) {
         listTaskRuns(taskId).then(setRuns).catch(() => setRuns([]));
       }
+      listEvents({ task_id: taskId, limit: 100 }).then(setEvents).catch(() => setEvents([]));
     } catch {
       setError('Failed to load task');
     } finally {
@@ -809,6 +812,33 @@ function TaskDetailModal({ taskId, employees, onClose, onChanged }: {
                     )}
                   </div>
                 )}
+
+                {/* Activity timeline — per-run step trace (tool calls + curated
+                    domain events), newest first. */}
+                <div className="mb-4">
+                  <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-1">
+                    Activity ({events.length})
+                  </p>
+                  {events.length > 0 ? (
+                    <div className="space-y-1.5 max-h-60 overflow-y-auto border border-zinc-800/40 rounded-lg p-2 bg-zinc-900/20">
+                      {events.map(ev => {
+                        const { verb, detail } = activityVerb(ev);
+                        return (
+                          <div key={ev.id} className="flex items-start gap-2 text-[11px]">
+                            <span className="text-zinc-500 mt-0.5 shrink-0">{eventIcon(ev.event_type)}</span>
+                            <div className="min-w-0 flex-1">
+                              <span className="text-zinc-300">{verb}</span>
+                              {detail && <span className="text-zinc-500"> — {detail}</span>}
+                            </div>
+                            <span className="text-zinc-600 shrink-0">{activityTimeAgo(ev.timestamp)}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-[10px] text-zinc-700 italic">No activity recorded yet</p>
+                  )}
+                </div>
               </>
             )}
 

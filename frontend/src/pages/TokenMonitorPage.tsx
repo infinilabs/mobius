@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { ChevronDown, ChevronUp, ArrowUpRight, ArrowDownRight } from 'lucide-react';
+import { ChevronDown, ChevronUp, ArrowUpRight, ArrowDownRight, RefreshCw } from 'lucide-react';
 import {
   fetchTokenSummary, fetchTokenTimeseries, fetchTokenBreakdown, fetchTokenDetails,
 } from '../api';
@@ -131,7 +131,14 @@ export default function TokenMonitorPage() {
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-zinc-100">Token Monitor</h1>
-        {loading && <span className="text-xs text-zinc-500">Loading...</span>}
+        <button
+          onClick={loadData}
+          disabled={loading}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors bg-zinc-800 text-zinc-400 border border-zinc-700 hover:border-zinc-600 disabled:opacity-50 disabled:cursor-default"
+        >
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+          {loading ? 'Refreshing…' : 'Refresh'}
+        </button>
       </div>
 
       {/* Filters */}

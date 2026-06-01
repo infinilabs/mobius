@@ -62,7 +62,10 @@ func (a *InternalLLMAdapter) Start(ctx context.Context, hb HeartbeatContext) (st
 		// {RunCompleted}); Stop deletes immediately when cancelled.
 		defer time.AfterFunc(terminalRunRetention, func() { a.runs.Delete(runID) })
 
-		result, err := a.executeInternalChat(runCtx, hb, run)
+		// OnText streams the response text into run.output as it arrives, so the
+		// final text is already captured by the time this returns — don't write it
+		// again here or it would double.
+		_, err := a.executeInternalChat(runCtx, hb, run)
 
 		// Terminal state is set under lock; the dispatcher's monitorRun observes
 		// it and finalizes the heartbeat_runs row (it owns that row's lifecycle).
@@ -71,7 +74,6 @@ func (a *InternalLLMAdapter) Start(ctx context.Context, hb HeartbeatContext) (st
 			run.status = RunFailed
 			run.errMsg = err.Error()
 		} else {
-			run.output.WriteString(result)
 			run.status = RunCompleted
 		}
 		run.mu.Unlock()
@@ -152,7 +154,15 @@ func (a *InternalLLMAdapter) executeInternalChat(ctx context.Context, hb Heartbe
 		Model:    modelID,
 		Messages: messages,
 		Tools:    hb.Tools,
-		OnText:   func(string) {},
+		OnText: func(s string) {
+			// Stream the model's response text into the run's output buffer so a
+			// polling Observe sees live progress (mid-run output + a readable
+			// transcript), instead of an empty buffer until completion. Also feeds
+			// the dispatcher's stall-guard output-progress signal (see monitorRun).
+			run.mu.Lock()
+			run.output.WriteString(s)
+			run.mu.Unlock()
+		},
 		OnToolCall: func(call ToolCall) map[string]any {
 			return a.dispatchToolCall(ctx, call, assignee, task)
 		},
@@ -204,7 +214,61 @@ func (a *InternalLLMAdapter) executeInternalChat(ctx context.Context, hb Heartbe
 	return fullResponse, nil
 }
 
+// dispatchToolCall routes a tool call and records a generic 'tool_call' event
+// for the per-run timeline. Tools that already publish a richer, curated event
+// (see toolsWithDomainEvent) are skipped here so they aren't double-logged.
 func (a *InternalLLMAdapter) dispatchToolCall(ctx context.Context, call ToolCall, agent *Employee, task *Task) map[string]any {
+	start := time.Now()
+	result := a.routeToolCall(ctx, call, agent, task)
+	a.recordToolCall(call, result, time.Since(start), agent, task)
+	return result
+}
+
+// toolsWithDomainEvent lists tools that publish their own curated domain event
+// (e.g. file_written, task_delegated) elsewhere in adapter_internal*.go. The
+// generic tool_call event is suppressed for these to avoid duplicate entries in
+// the activity timeline. Keep in sync with the newEvent(...) calls in this package.
+var toolsWithDomainEvent = map[string]bool{
+	"delegate_task":       true,
+	"hire_employee":       true,
+	"submit_task_result":  true,
+	"review_task":         true,
+	"write_project_file":  true,
+	"run_project_command": true,
+	"store_memory":        true,
+}
+
+func (a *InternalLLMAdapter) recordToolCall(call ToolCall, result map[string]any, dur time.Duration, agent *Employee, task *Task) {
+	if a.events == nil || toolsWithDomainEvent[call.Name] {
+		return
+	}
+	payload := map[string]any{
+		"tool":        call.Name,
+		"status":      "ok",
+		"duration_ms": dur.Milliseconds(),
+	}
+	if em, ok := result["error"].(string); ok && em != "" {
+		payload["status"] = "error"
+		payload["error"] = truncateStr(em, 200)
+	}
+	// Capture full tool args as a nested object for rich BQ analysis
+	// (payload is a JSON column in BQ; the ES events index stores payload with
+	// enabled=false, so arbitrary nested args don't cause mapping growth).
+	if len(call.Args) > 0 {
+		payload["args"] = call.Args
+	}
+	var actorID, projectID, taskID *string
+	if agent != nil {
+		actorID = &agent.ID
+	}
+	if task != nil {
+		taskID = &task.ID
+		projectID = task.ProjectID
+	}
+	a.events.Publish(newEvent("tool_call", actorID, projectID, taskID, payload))
+}
+
+func (a *InternalLLMAdapter) routeToolCall(ctx context.Context, call ToolCall, agent *Employee, task *Task) map[string]any {
 	taskID := task.ID
 	switch call.Name {
 	case "delegate_task":
