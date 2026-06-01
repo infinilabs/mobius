@@ -304,47 +304,60 @@ func (pg *PGClient) GetProjectByName(ctx context.Context, name string) (*Project
 	return pg.GetProject(ctx, id)
 }
 
-func (pg *PGClient) CreateProject(ctx context.Context, p *Project, cfg *Config) error {
-	isImport := p.SourcePath != nil
-	if err := validateProjectName(p.Name, isImport); err != nil {
-		return err
+// CreateProjectInput is the normalized input for the single project-creation
+// interface. Every entry point (REST, chat, dispatcher, MCP) builds this and calls
+// CreateProject — there is no other way to create a project.
+type CreateProjectInput struct {
+	Name        string
+	Description string
+	OwnerID     string
+	SourcePath  *string
+	Tags        []string
+}
+
+// CreateProject is the one create interface every entry point (REST, chat,
+// dispatcher, MCP) funnels through. After the row is written it re-mirrors the
+// project into ES via reindexProject (best-effort, centralized). Returns the
+// fully-populated project (owner, counts).
+func (pg *PGClient) CreateProject(ctx context.Context, in CreateProjectInput, cfg *Config) (*Project, error) {
+	isImport := in.SourcePath != nil
+	if err := validateProjectName(in.Name, isImport); err != nil {
+		return nil, err
 	}
 
-	rootDir := p.RootDir(cfg)
+	rootDir := (&Project{Name: in.Name, SourcePath: in.SourcePath}).RootDir(cfg)
 
 	if isImport {
-		if !filepath.IsAbs(*p.SourcePath) {
-			return fmt.Errorf("source_path must be an absolute path")
+		if !filepath.IsAbs(*in.SourcePath) {
+			return nil, fmt.Errorf("source_path must be an absolute path")
 		}
-		info, err := os.Stat(*p.SourcePath)
+		info, err := os.Stat(*in.SourcePath)
 		if err != nil || !info.IsDir() {
-			return fmt.Errorf("source_path %q does not exist or is not a directory", *p.SourcePath)
+			return nil, fmt.Errorf("source_path %q does not exist or is not a directory", *in.SourcePath)
 		}
 	} else {
 		if _, serr := os.Stat(rootDir); !os.IsNotExist(serr) {
-			return fmt.Errorf("project directory already exists on disk: %s", rootDir)
+			return nil, fmt.Errorf("project directory already exists on disk: %s", rootDir)
 		}
 	}
 
 	var ownerID *string
-	if p.Owner != nil && p.Owner.ID != "" {
-		ownerID = &p.Owner.ID
+	if in.OwnerID != "" {
+		ownerID = &in.OwnerID
 	}
-	if p.Tags == nil {
-		p.Tags = []string{}
+	tags := in.Tags
+	if tags == nil {
+		tags = []string{}
 	}
 
-	err := pg.pool.QueryRow(ctx, `
+	var id string
+	if err := pg.pool.QueryRow(ctx, `
 		INSERT INTO projects (name, description, owner_id, status, source_path, tags)
 		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, created_at, updated_at
-	`, p.Name, p.Description, ownerID, "active", p.SourcePath, p.Tags).Scan(
-		&p.ID, &p.CreatedAt, &p.UpdatedAt,
-	)
-	if err != nil {
-		return fmt.Errorf("insert project: %w", err)
+		RETURNING id
+	`, in.Name, in.Description, ownerID, "active", in.SourcePath, tags).Scan(&id); err != nil {
+		return nil, fmt.Errorf("insert project: %w", err)
 	}
-	p.Status = "active"
 
 	if isImport {
 		gitignorePath := filepath.Join(rootDir, ".gitignore")
@@ -360,11 +373,12 @@ func (pg *PGClient) CreateProject(ctx context.Context, p *Project, cfg *Config) 
 
 	mobiusPath := filepath.Join(rootDir, "mobius.md")
 	if _, err := os.Stat(mobiusPath); os.IsNotExist(err) {
-		content := fmt.Sprintf("# %s\n\n%s\n\n## Key Decisions\n\n## Architecture Notes\n\n## Open Questions\n", p.Name, p.Description)
+		content := fmt.Sprintf("# %s\n\n%s\n\n## Key Decisions\n\n## Architecture Notes\n\n## Open Questions\n", in.Name, in.Description)
 		os.WriteFile(mobiusPath, []byte(content), 0644)
 	}
 
-	return nil
+	pg.reindexProject(ctx, id)
+	return pg.GetProject(ctx, id)
 }
 
 func appendGitignoreEntries(path string, entries []string) {
@@ -423,10 +437,10 @@ func (pg *PGClient) UpdateProject(ctx context.Context, id string, name, descript
 	query := fmt.Sprintf("UPDATE projects SET %s WHERE id = $%d", strings.Join(sets, ", "), argN)
 	args = append(args, id)
 
-	_, err := pg.pool.Exec(ctx, query, args...)
-	if err != nil {
+	if _, err := pg.pool.Exec(ctx, query, args...); err != nil {
 		return fmt.Errorf("update project: %w", err)
 	}
+	pg.reindexProject(ctx, id)
 	return nil
 }
 
@@ -529,30 +543,16 @@ func (h *APIHandler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := &Project{
+	full, err := h.pgClient.CreateProject(r.Context(), CreateProjectInput{
 		Name:        body.Name,
 		Description: body.Description,
+		OwnerID:     body.OwnerID,
 		SourcePath:  body.SourcePath,
 		Tags:        body.Tags,
-	}
-	if body.OwnerID != "" {
-		p.Owner = &EmployeeBrief{ID: body.OwnerID}
-	}
-
-	if err := h.pgClient.CreateProject(r.Context(), p, h.config); err != nil {
+	}, h.config)
+	if err != nil {
 		writeError(w, "failed to create project: "+err.Error(), http.StatusBadRequest)
 		return
-	}
-
-	full, err := h.pgClient.GetProject(r.Context(), p.ID)
-	if err != nil {
-		full = p
-	}
-
-	if h.esClient != nil {
-		if err := h.esClient.IndexProject(r.Context(), full); err != nil {
-			slog.Warn("ES index project failed", "id", full.ID, "error", err)
-		}
 	}
 
 	slog.Info("project created", "id", full.ID, "name", full.Name,
@@ -589,17 +589,10 @@ func (h *APIHandler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// pg.UpdateProject re-mirrors the row into ES centrally (see reindexProject).
 	if err := h.pgClient.UpdateProject(r.Context(), id, nil, body.Description, body.Status); err != nil {
 		writeError(w, "failed to update project: "+err.Error(), http.StatusInternalServerError)
 		return
-	}
-
-	if h.esClient != nil {
-		if updated, err := h.pgClient.GetProject(r.Context(), id); err == nil {
-			if err := h.esClient.IndexProject(r.Context(), updated); err != nil {
-				slog.Warn("ES index project failed", "id", id, "error", err)
-			}
-		}
 	}
 
 	p, _ := h.pgClient.GetProject(r.Context(), id)
@@ -640,13 +633,6 @@ func (h *APIHandler) ArchiveOrDeleteProject(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if h.esClient != nil {
-		h.esClient.DeleteProjectAssets(r.Context(), projectID)
-		if err := h.esClient.DeleteESProject(r.Context(), projectID); err != nil {
-			slog.Warn("ES delete project failed", "id", projectID, "error", err)
-		}
-	}
-
 	// Capture tasks still pointing at this project so we can re-mirror them into
 	// ES after their project_id is nullified below.
 	var affectedTaskIDs []string
@@ -680,6 +666,15 @@ func (h *APIHandler) ArchiveOrDeleteProject(w http.ResponseWriter, r *http.Reque
 	}
 
 	projectMemoryLocks.Delete(project.Name)
+
+	// Remove the project (and its ES-only asset docs) from the search index after
+	// the row is durably gone. Best-effort, like reindexProject on the write paths.
+	if h.esClient != nil {
+		if err := h.esClient.DeleteESProject(r.Context(), projectID); err != nil {
+			slog.Warn("ES delete project failed", "id", projectID, "error", err)
+		}
+		h.esClient.DeleteProjectAssets(r.Context(), projectID)
+	}
 
 	for _, tid := range affectedTaskIDs {
 		h.pgClient.reindexTask(r.Context(), tid)

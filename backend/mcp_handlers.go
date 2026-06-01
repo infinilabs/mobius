@@ -632,21 +632,13 @@ func (s *MCPServer) handleCreateProject(ctx context.Context, raw json.RawMessage
 	if name == "" {
 		return nil, fmt.Errorf("name is required")
 	}
-	p := &Project{
+	p, err := s.pgClient.CreateProject(ctx, CreateProjectInput{
 		Name:        name,
 		Description: argStr(args, "description"),
-		Tags:        []string{},
-		Owner:       &EmployeeBrief{ID: caller.AgentID},
-	}
-	if err := s.pgClient.CreateProject(ctx, p, s.config); err != nil {
+		OwnerID:     caller.AgentID,
+	}, s.config)
+	if err != nil {
 		return nil, err
-	}
-	if s.esClient != nil {
-		if full, ferr := s.pgClient.GetProject(ctx, p.ID); ferr == nil {
-			if ierr := s.esClient.IndexProject(ctx, full); ierr != nil {
-				slog.Warn("ES index created project failed", "project_id", p.ID, "error", ierr)
-			}
-		}
 	}
 	return map[string]any{"status": "created", "project_id": p.ID, "name": name}, nil
 }

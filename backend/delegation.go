@@ -201,12 +201,12 @@ func (h *APIHandler) execCreateProject(ctx context.Context, args map[string]any,
 	}
 	description, _ := args["description"].(string)
 
-	p := &Project{
+	p, err := h.pgClient.CreateProject(ctx, CreateProjectInput{
 		Name:        name,
 		Description: description,
-		Owner:       &EmployeeBrief{ID: agent.ID, Name: agent.Name, Title: agent.Title, Role: agent.Role},
-	}
-	if err := h.pgClient.CreateProject(ctx, p, h.config); err != nil {
+		OwnerID:     agent.ID,
+	}, h.config)
+	if err != nil {
 		return map[string]any{"error": "failed to create project: " + err.Error()}
 	}
 

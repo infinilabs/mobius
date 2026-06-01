@@ -43,6 +43,24 @@ func (pg *PGClient) reindexTask(ctx context.Context, id string) {
 	}
 }
 
+// reindexProject re-mirrors a single project from PG into ES. No-op when ES is
+// unavailable. Centralizing this in the PG layer keeps every CRUD path (REST,
+// chat, dispatcher, MCP) in sync, instead of each caller remembering to reindex
+// — the ES-backed project filter (SearchSelect) only sees indexed projects.
+func (pg *PGClient) reindexProject(ctx context.Context, id string) {
+	if pg.esClient == nil {
+		return
+	}
+	p, err := pg.GetProject(ctx, id)
+	if err != nil {
+		slog.Warn("reindexProject: load from PG failed", "id", id, "error", err)
+		return
+	}
+	if err := pg.esClient.IndexProject(ctx, p); err != nil {
+		slog.Warn("reindexProject: ES index failed", "id", id, "error", err)
+	}
+}
+
 func NewPGClient(ctx context.Context, cfg PostgresConfig) (*PGClient, error) {
 	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
 		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.DBName)

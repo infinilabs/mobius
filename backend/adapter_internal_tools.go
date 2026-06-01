@@ -640,20 +640,13 @@ func (a *InternalLLMAdapter) execCreateProject(ctx context.Context, args map[str
 	if name == "" {
 		return map[string]any{"error": "name is required"}
 	}
-	p := &Project{
+	p, err := a.pgClient.CreateProject(ctx, CreateProjectInput{
 		Name:        name,
 		Description: description,
-		Tags:        []string{},
-		Owner:       &EmployeeBrief{ID: agent.ID},
-	}
-	if err := a.pgClient.CreateProject(ctx, p, a.config); err != nil {
+		OwnerID:     agent.ID,
+	}, a.config)
+	if err != nil {
 		return map[string]any{"error": "failed to create project: " + err.Error()}
-	}
-	if a.esClient != nil {
-		full, _ := a.pgClient.GetProject(ctx, p.ID)
-		if full != nil {
-			a.esClient.IndexProject(ctx, full)
-		}
 	}
 	return map[string]any{"status": "created", "project_id": p.ID, "name": name}
 }
