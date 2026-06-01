@@ -43,6 +43,15 @@ func NewTaskDispatcher(pg *PGClient, es *ESClient, tp *TokenPipeline, adapters *
 }
 
 func (d *TaskDispatcher) Start(ctx context.Context) {
+	// Runs left 'active' by a previous process (a hard crash) can never be
+	// finalized by their gone monitor; mark them failed so the budget ledger and
+	// the active-runs view aren't polluted by ghosts.
+	if n, err := d.pgClient.ReconcileOrphanedRuns(ctx); err != nil {
+		slog.Warn("reconcile orphaned runs failed", "error", err)
+	} else if n > 0 {
+		slog.Info("reconciled orphaned heartbeat runs", "count", n)
+	}
+
 	go d.listenLoop(ctx)
 
 	fallbackTicker := time.NewTicker(60 * time.Second)
@@ -370,19 +379,26 @@ func (d *TaskDispatcher) executeAgentTask(parentCtx context.Context, t Task) {
 	slog.Info("agent task started", "task_id", t.ID, "assignee", assignee.Name,
 		"adapter", adapterType, "model", hb.ModelID)
 
+	// Open the heartbeat_runs row up front so in-flight spend becomes visible to
+	// the budget gate (including concurrent runs of the same agent) before the
+	// first monitor tick. The dispatcher owns this row for the run's lifetime.
+	startedAt := time.Now()
+	rowID := d.openRun(t.ID, assignee.ID, string(adapterType), startedAt)
+
 	// Cap the run so a wedged adapter that never returns a terminal Observe
 	// cannot hold its concurrency slot forever. On expiry monitorRun stops the
-	// run and returns; the stale-task reclaimer then re-queues the DB row.
+	// run, finalizes the row, and the stale-task reclaimer re-queues the DB row.
 	runCtx, cancel := context.WithTimeout(parentCtx, 2*d.staleTimeout)
 	defer cancel()
 
 	runID, err := adapter.Start(runCtx, hb)
 	if err != nil {
+		d.finishRun(rowID, RunFailed, "", "adapter start failed: "+err.Error(), nil)
 		d.failTask(parentCtx, t.ID, "adapter start failed: "+err.Error())
 		return
 	}
 
-	d.monitorRun(runCtx, adapter, runID, &t)
+	d.monitorRun(runCtx, adapter, runID, &t, assignee, rowID, startedAt)
 }
 
 func (d *TaskDispatcher) buildHeartbeatContext(ctx context.Context, assignee *Employee, t *Task) HeartbeatContext {
@@ -483,9 +499,29 @@ func (d *TaskDispatcher) buildHeartbeatContext(ctx context.Context, assignee *Em
 	}
 }
 
-func (d *TaskDispatcher) monitorRun(ctx context.Context, adapter Adapter, runID string, t *Task) {
+// monitorRun polls a running agent every 30s. Beyond detecting terminal states
+// it enforces two liveness guards that the bounded chat loop and the hard
+// run-ctx cap don't cover, and keeps the heartbeat_runs row current:
+//   - mid-run token ceiling: kills the run once the agent's month spend crosses
+//     its budget (the pre-flight gate can't see spend accrued during a long run);
+//   - stall guard: kills an LLM run that stops making progress (token-reporting
+//     runs only — process adapters report no tokens and may legitimately run
+//     quiet, so they rely on the run-ctx cap instead).
+//
+// touchTask still fires every tick so the crash-reclaimer (gated on updated_at)
+// stays away while this monitor is alive; the monitor itself owns stall/budget
+// kills so a still-running goroutine is never re-queued underneath it.
+func (d *TaskDispatcher) monitorRun(ctx context.Context, adapter Adapter, runID string, t *Task, assignee *Employee, rowID string, startedAt time.Time) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
+
+	var budgetTokens int64
+	if assignee.MonthlyBudget != nil && *assignee.MonthlyBudget > 0 {
+		budgetTokens = int64(*assignee.MonthlyBudget) * 1000
+	}
+
+	lastOutLen, lastTokens := 0, 0
+	lastProgress := startedAt
 
 	for {
 		select {
@@ -495,26 +531,140 @@ func (d *TaskDispatcher) monitorRun(ctx context.Context, adapter Adapter, runID 
 				slog.Warn("run observation failed", "run_id", runID, "error", err)
 				continue
 			}
+
+			// Flush live state first so the budget query below — and any
+			// concurrent run of the same agent — sees this run's latest spend.
+			d.flushRun(rowID, obs.Output, obs.ErrorMessage, obs.TokenUsage)
 			d.touchTask(ctx, t.ID)
+
+			// Mid-run token ceiling.
+			if budgetTokens > 0 {
+				if used, qerr := d.monthTokens(ctx, assignee.ID); qerr == nil && used >= budgetTokens {
+					slog.Warn("run stopped: budget exceeded mid-run", "task_id", t.ID,
+						"agent_id", assignee.ID, "used_tokens", used, "budget_tokens", budgetTokens)
+					adapter.Stop(ctx, runID)
+					d.finishRun(rowID, RunCancelled, obs.Output, "budget exceeded mid-run", obs.TokenUsage)
+					d.failTask(ctx, t.ID, "agent paused: monthly budget exceeded mid-run")
+					return
+				}
+			}
+
+			// Stall guard (token-reporting runs only).
+			outLen := len(obs.Output)
+			tokens := 0
+			hasTokens := obs.TokenUsage != nil
+			if hasTokens {
+				tokens = int(obs.TokenUsage.TotalTokens)
+			}
+			if madeProgress(outLen, tokens, lastOutLen, lastTokens) {
+				lastOutLen, lastTokens, lastProgress = outLen, tokens, time.Now()
+			} else if shouldStallKill(hasTokens, time.Since(lastProgress), d.staleTimeout) {
+				slog.Warn("run stopped: stalled (no progress)", "task_id", t.ID,
+					"run_id", runID, "stalled_for", time.Since(lastProgress).String())
+				adapter.Stop(ctx, runID)
+				d.finishRun(rowID, RunFailed, obs.Output, "stalled: no progress for "+d.staleTimeout.String(), obs.TokenUsage)
+				d.failTask(ctx, t.ID, "agent stalled: no progress for "+d.staleTimeout.String())
+				return
+			}
 
 			switch obs.Status {
 			case RunCompleted:
+				d.finishRun(rowID, RunCompleted, obs.Output, obs.ErrorMessage, obs.TokenUsage)
 				updated, gerr := d.pgClient.GetTask(ctx, t.ID)
 				if gerr == nil && updated.Status == "in_progress" {
 					d.failTask(ctx, t.ID, "agent finished without calling submit_task_result")
 				}
 				return
 			case RunFailed:
+				d.finishRun(rowID, RunFailed, obs.Output, obs.ErrorMessage, obs.TokenUsage)
 				d.failTask(ctx, t.ID, "run failed: "+obs.ErrorMessage)
 				return
 			case RunCancelled:
+				d.finishRun(rowID, RunCancelled, obs.Output, obs.ErrorMessage, obs.TokenUsage)
 				return
 			}
 		case <-ctx.Done():
+			// Observe before Stop: the internal adapter deletes its run entry on
+			// Stop, so a post-Stop Observe would lose the final output/usage.
+			obs, _ := adapter.Observe(context.Background(), runID)
 			adapter.Stop(ctx, runID)
+			d.finishRun(rowID, RunCancelled, obs.Output, "run cancelled (shutdown or time cap)", obs.TokenUsage)
 			return
 		}
 	}
+}
+
+// madeProgress reports whether the run advanced since the last observation, by
+// either emitting more output or consuming more tokens.
+func madeProgress(outLen, tokens, lastOutLen, lastTokens int) bool {
+	return outLen > lastOutLen || tokens > lastTokens
+}
+
+// shouldStallKill decides whether a non-advancing run should be killed. Only
+// token-reporting (LLM-backed) runs are eligible: process adapters report no
+// tokens and may legitimately produce no output for a while, so their runaway is
+// bounded by the run-ctx cap rather than by progress.
+func shouldStallKill(hasTokens bool, sinceProgress, timeout time.Duration) bool {
+	return hasTokens && sinceProgress > timeout
+}
+
+// openRun records an 'active' heartbeat_runs row and returns its id (empty on
+// failure, which the flush/finish helpers treat as a no-op). Uses a detached
+// context so the write is independent of the run context's lifetime.
+func (d *TaskDispatcher) openRun(taskID, agentID, adapterType string, startedAt time.Time) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	id, err := d.pgClient.StartHeartbeatRun(ctx, taskID, agentID, adapterType, startedAt)
+	if err != nil {
+		slog.Warn("failed to open heartbeat run", "task_id", taskID, "error", err)
+		return ""
+	}
+	return id
+}
+
+// flushRun writes a run's current (non-terminal) output/usage to its row.
+func (d *TaskDispatcher) flushRun(rowID, output, errMsg string, usage *TokenUsage) {
+	if rowID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := d.pgClient.UpdateHeartbeatRun(ctx, rowID, string(RunActive), output, errMsg, usage, nil); err != nil {
+		slog.Warn("failed to flush heartbeat run", "row_id", rowID, "error", err)
+	}
+}
+
+// finishRun finalizes a run's row at a terminal status. Detached ctx so it
+// survives a cancelled run context (shutdown / time cap).
+func (d *TaskDispatcher) finishRun(rowID string, status RunStatus, output, errMsg string, usage *TokenUsage) {
+	if rowID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	now := time.Now()
+	if err := d.pgClient.UpdateHeartbeatRun(ctx, rowID, string(status), output, errMsg, usage, &now); err != nil {
+		slog.Warn("failed to finalize heartbeat run", "row_id", rowID, "error", err)
+	}
+}
+
+// monthTokens sums an agent's total_tokens recorded in heartbeat_runs since the
+// start of the current month. Shared by the pre-flight gate and the mid-run
+// ceiling so both read the same ledger.
+func (d *TaskDispatcher) monthTokens(ctx context.Context, agentID string) (int64, error) {
+	now := time.Now()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	var total int64
+	err := d.pgClient.pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(
+			CASE WHEN token_usage->>'total_tokens' ~ '^[0-9]+$'
+			     THEN (token_usage->>'total_tokens')::bigint
+			     ELSE 0 END
+		), 0)
+		FROM heartbeat_runs
+		WHERE agent_id = $1 AND started_at >= $2
+	`, agentID, monthStart).Scan(&total)
+	return total, err
 }
 
 func (d *TaskDispatcher) reclaimStaleTasks(ctx context.Context) {
@@ -802,19 +952,7 @@ func (d *TaskDispatcher) budgetExceeded(ctx context.Context, agent *Employee) bo
 		return false
 	}
 
-	now := time.Now()
-	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
-
-	var totalTokens int64
-	err := d.pgClient.pool.QueryRow(ctx, `
-		SELECT COALESCE(SUM(
-			CASE WHEN token_usage->>'total_tokens' ~ '^[0-9]+$'
-			     THEN (token_usage->>'total_tokens')::bigint
-			     ELSE 0 END
-		), 0)
-		FROM heartbeat_runs
-		WHERE agent_id = $1 AND started_at >= $2
-	`, agent.ID, monthStart).Scan(&totalTokens)
+	totalTokens, err := d.monthTokens(ctx, agent.ID)
 	if err != nil {
 		slog.Warn("budget check failed, allowing execution", "agent_id", agent.ID, "error", err)
 		return false

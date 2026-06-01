@@ -69,11 +69,14 @@ func (pg *PGClient) Ping(ctx context.Context) error {
 	return pg.pool.Ping(ctx)
 }
 
-// InsertHeartbeatRun records a completed agent run, including its token usage.
-// This is the durable, BigQuery-independent ledger the monthly-budget gate reads
-// from (see TaskDispatcher.budgetExceeded).
-func (pg *PGClient) InsertHeartbeatRun(ctx context.Context, taskID, agentID, adapterType, status, output, errMsg string, usage TokenUsage, startedAt, completedAt time.Time) error {
-	tokenJSON, _ := json.Marshal(map[string]int32{
+// tokenUsageJSON serializes token usage for the heartbeat_runs.token_usage
+// column. Returns nil (SQL NULL) when usage is nil so non-LLM runs (bash/CLI)
+// store no token figures rather than a zeroed object.
+func tokenUsageJSON(usage *TokenUsage) []byte {
+	if usage == nil {
+		return nil
+	}
+	b, _ := json.Marshal(map[string]int32{
 		"prompt_tokens":     usage.PromptTokens,
 		"completion_tokens": usage.CompletionTokens,
 		"total_tokens":      usage.TotalTokens,
@@ -81,19 +84,59 @@ func (pg *PGClient) InsertHeartbeatRun(ctx context.Context, taskID, agentID, ada
 		"thoughts_tokens":   usage.ThoughtsTokens,
 		"tool_use_tokens":   usage.ToolUseTokens,
 	})
+	return b
+}
+
+// StartHeartbeatRun inserts an 'active' run row and returns its id. The
+// dispatcher owns the row for the run's whole lifecycle: it flushes live
+// output/token usage while the run executes (so the monthly-budget gate sees
+// in-flight spend, including across concurrent runs of the same agent) and
+// finalizes the row when the run reaches a terminal state. This is the durable,
+// BigQuery-independent ledger the budget gate reads (see budgetExceeded).
+func (pg *PGClient) StartHeartbeatRun(ctx context.Context, taskID, agentID, adapterType string, startedAt time.Time) (string, error) {
+	var id string
+	err := pg.pool.QueryRow(ctx, `
+		INSERT INTO heartbeat_runs (task_id, agent_id, adapter_type, status, started_at)
+		VALUES ($1, $2, $3, 'active', $4)
+		RETURNING id
+	`, taskID, agentID, adapterType, startedAt).Scan(&id)
+	if err != nil {
+		return "", fmt.Errorf("start heartbeat run: %w", err)
+	}
+	return id, nil
+}
+
+// UpdateHeartbeatRun flushes a run's current output/usage/status. A non-nil
+// completedAt marks the row terminal.
+func (pg *PGClient) UpdateHeartbeatRun(ctx context.Context, rowID, status, output, errMsg string, usage *TokenUsage, completedAt *time.Time) error {
 	var errArg any
 	if errMsg != "" {
 		errArg = errMsg
 	}
 	_, err := pg.pool.Exec(ctx, `
-		INSERT INTO heartbeat_runs
-			(task_id, agent_id, adapter_type, status, output_text, error_message, token_usage, started_at, completed_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-	`, taskID, agentID, adapterType, status, output, errArg, tokenJSON, startedAt, completedAt)
+		UPDATE heartbeat_runs
+		SET status = $2, output_text = $3, error_message = $4, token_usage = $5, completed_at = $6
+		WHERE id = $1
+	`, rowID, status, output, errArg, tokenUsageJSON(usage), completedAt)
 	if err != nil {
-		return fmt.Errorf("insert heartbeat run: %w", err)
+		return fmt.Errorf("update heartbeat run: %w", err)
 	}
 	return nil
+}
+
+// ReconcileOrphanedRuns marks runs left 'active' by a previous process (a hard
+// crash) as failed. Graceful shutdown finalizes its own runs as cancelled, so
+// this only ever touches crash survivors. Called once at dispatcher startup.
+func (pg *PGClient) ReconcileOrphanedRuns(ctx context.Context) (int64, error) {
+	tag, err := pg.pool.Exec(ctx, `
+		UPDATE heartbeat_runs
+		SET status = 'failed', error_message = 'orphaned by restart', completed_at = NOW()
+		WHERE status = 'active'
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("reconcile orphaned runs: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 func (pg *PGClient) Close() {

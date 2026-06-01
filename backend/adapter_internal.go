@@ -51,7 +51,6 @@ func (a *InternalLLMAdapter) Start(ctx context.Context, hb HeartbeatContext) (st
 	// ignore graceful shutdown. Callers that need the run to outlive a request
 	// must pass a non-request ctx, as the dispatcher already does.
 	runCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-	startedAt := time.Now()
 
 	run := &internalRun{cancel: cancel, status: RunActive}
 	a.runs.Store(runID, run)
@@ -65,6 +64,8 @@ func (a *InternalLLMAdapter) Start(ctx context.Context, hb HeartbeatContext) (st
 
 		result, err := a.executeInternalChat(runCtx, hb, run)
 
+		// Terminal state is set under lock; the dispatcher's monitorRun observes
+		// it and finalizes the heartbeat_runs row (it owns that row's lifecycle).
 		run.mu.Lock()
 		if err != nil {
 			run.status = RunFailed
@@ -73,28 +74,10 @@ func (a *InternalLLMAdapter) Start(ctx context.Context, hb HeartbeatContext) (st
 			run.output.WriteString(result)
 			run.status = RunCompleted
 		}
-		status, output, errMsg, usage := run.status, run.output.String(), run.errMsg, run.usage
 		run.mu.Unlock()
-
-		a.recordHeartbeatRun(hb, status, output, errMsg, usage, startedAt)
 	}()
 
 	return runID, nil
-}
-
-// recordHeartbeatRun persists the run's terminal state and token usage to the
-// PG heartbeat_runs ledger that the monthly-budget gate reads. Uses a detached
-// context because the run context is cancelled as the goroutine exits.
-func (a *InternalLLMAdapter) recordHeartbeatRun(hb HeartbeatContext, status RunStatus, output, errMsg string, usage TokenUsage, startedAt time.Time) {
-	if a.pgClient == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := a.pgClient.InsertHeartbeatRun(ctx, hb.TaskID, hb.AgentID,
-		string(AdapterInternal), string(status), output, errMsg, usage, startedAt, time.Now()); err != nil {
-		slog.Warn("failed to record heartbeat run", "task_id", hb.TaskID, "error", err)
-	}
 }
 
 func (a *InternalLLMAdapter) Observe(_ context.Context, runID string) (RunObservation, error) {
