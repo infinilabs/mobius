@@ -1,6 +1,6 @@
 # Makefile for Mobius
 
-.PHONY: build-frontend build-backend build-all build-sandbox serve test sanity clean \
+.PHONY: build-frontend build-backend build-all build-sandbox build-nsjail build-infinishield serve test sanity clean \
         docker-up docker-up-postgres docker-up-elasticsearch docker-down docker-status \
         wipe-data bq-connection
 
@@ -43,6 +43,37 @@ build-sandbox:
 	docker build -t $(SANDBOX_IMAGE) sandbox/
 	@echo "==> Sandbox image built. Agents run commands inside this image."
 
+build-nsjail:
+	@echo "==> Cloning nsjail..."
+	@mkdir -p tmp
+	@if [ ! -d "tmp/nsjail" ]; then \
+		git clone --depth 1 https://github.com/google/nsjail.git tmp/nsjail; \
+	else \
+		cd tmp/nsjail && git pull && git submodule update --init --recursive; \
+	fi
+	@echo "==> Building nsjail (this may fail if system dependencies are missing)..."
+	@echo "To install dependencies on Debian/Ubuntu/gLinux: sudo apt install autoconf bison flex gcc g++ git libprotobuf-dev libnl-route-3-dev libtool make pkg-config protobuf-compiler"
+	PATH=/usr/bin:/bin:$$PATH $(MAKE) -C tmp/nsjail DEBUG=
+	@mkdir -p bin
+	@cp tmp/nsjail/nsjail bin/
+	@echo "==> nsjail built successfully at bin/nsjail"
+
+build-infinishield:
+	@echo "==> Cloning infinishield..."
+	@mkdir -p tmp
+	@if [ ! -d "tmp/infinishield" ]; then \
+		git clone --depth 1 https://github.com/infinilabs/infinishield.git tmp/infinishield; \
+	else \
+		cd tmp/infinishield && git pull; \
+	fi
+	@echo "==> Building infinishield..."
+	cd tmp/infinishield && cargo build --release
+	@mkdir -p bin
+	@cp tmp/infinishield/target/release/infinishield bin/
+	@echo "==> infinishield built successfully at bin/infinishield"
+
+
+
 serve: docker-up build-all
 	@if [ ! -f conf.yaml ]; then \
 		echo "==> conf.yaml not found, copying from template..."; \
@@ -71,9 +102,13 @@ sanity:
 
 clean:
 	@echo "==> Cleaning up..."
-	rm -f bin/$(BINARY_NAME)
+	rm -f bin/$(BINARY_NAME) bin/nsjail bin/infinishield
 	rm -rf frontend/dist
 	rm -rf backend/static
+	@if [ -d "tmp/nsjail" ]; then $(MAKE) -C tmp/nsjail clean || true; fi
+	@if [ -d "tmp/infinishield" ]; then cd tmp/infinishield && cargo clean || true; fi
+
+
 
 # --- Docker Infrastructure ---
 

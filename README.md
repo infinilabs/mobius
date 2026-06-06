@@ -62,12 +62,15 @@ Data directories are mounted from `data/` so Docker container restarts do not ca
 | Command | Description |
 |---------|-------------|
 | `make build-all` | Build frontend + backend |
+| `make build-nsjail` | Build NsJail sandbox locally from source (Linux) |
+| `make build-sandbox` | Build the agent sandbox Docker image |
 | `make serve` | Start Docker + build all + launch server |
 | `make docker-up` | Start PostgreSQL + Elasticsearch containers |
 | `make docker-down` | Stop containers (data preserved) |
 | `make docker-destroy` | Remove containers (data still preserved) |
 | `make docker-status` | Show container status |
 | `make clean` | Remove build artifacts |
+
 
 ## Development
 
@@ -83,6 +86,49 @@ cd backend && go run .
 # Terminal 2: Start Vite dev server (proxies /api to :1983)
 cd frontend && npm run dev
 ```
+
+## Agent Sandboxing
+
+To run agent commands in a secure sandbox, Mobius supports both **Docker** and **NsJail** (Linux only).
+
+### NsJail Sandbox Setup (Linux only)
+
+To build NsJail locally, you must first install the system dependencies:
+
+```bash
+sudo apt install autoconf bison flex gcc g++ git libprotobuf-dev libnl-route-3-dev libtool make pkg-config protobuf-compiler
+```
+
+Then compile NsJail:
+
+```bash
+make build-nsjail
+```
+
+This will clone NsJail and place the compiled binary at `bin/nsjail`.
+
+## Infinishield Setup (Watermarking)
+
+Mobius uses **Infinishield** for robust watermarking of multimedia files.
+
+### Prerequisites
+
+To compile Infinishield, you must have the **Rust toolchain** (Cargo) installed.
+If not already installed, you can install Rust via:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+### Build instructions
+
+Compile and install the binary:
+
+```bash
+make build-infinishield
+```
+
+This will clone Infinishield and place the compiled release binary at `bin/infinishield`.
 
 ## API Endpoints
 
