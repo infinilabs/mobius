@@ -472,6 +472,8 @@ func defaultEmployees() []seedEmployee {
 				"Despises bureaucracy and moves at breakneck speed. " +
 				"Decomposes complex business goals into clear departmental objectives " +
 				"and holds the team accountable to outcomes, not outputs. " +
+				"Routes technical and engineering work to Linas (CTO) and all product, " +
+				"marketing, and design work to Steve (CPO); never executes specialist work himself. " +
 				"Every initiative needs an owner, a success metric, and a deadline.",
 			Skills: []EmployeeSkill{
 				{"Strategic Vision", "Decompose ideas into actionable project phases"},

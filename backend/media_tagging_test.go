@@ -165,6 +165,25 @@ func TestTaggingTools_NilBQ(t *testing.T) {
 	}
 }
 
+func TestCreativeTaggerHasVideoTaggingSkill(t *testing.T) {
+	// The video-tagging SKILL.md must be a default assignment for Creative Tagger.
+	// Tool ACCESS is tag-gated (media_tagger), but the SKILL.md guidance only
+	// reaches the prompt via skill_assignments (chat.go:142, dispatcher.go:410).
+	// Without this binding the employee has the tools but no manual. Creative
+	// Tagger is a non-founder, so it lives in employeeSkillDefaults, not
+	// founderSkillDefaults (the latter feeds the founder-only reset path).
+	var found bool
+	for _, s := range employeeSkillDefaults()["Creative Tagger"] {
+		if s == "video-tagging" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Creative Tagger default skills must include video-tagging, got %v",
+			employeeSkillDefaults()["Creative Tagger"])
+	}
+}
+
 func TestDefaultTaxonomyPromptID_MatchesSeed(t *testing.T) {
 	// Must equal seedPrompts' id for "video_label_tagging" (prompts.go), else the
 	// default taxonomy can't be resolved.

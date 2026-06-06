@@ -469,12 +469,28 @@ func founderSkillDefaults() map[string][]string {
 	}
 }
 
+// employeeSkillDefaults binds on-disk SKILL.md guidance to non-founder employees
+// by name. Tool ACCESS is tag-gated (e.g. media_tagger), but the SKILL.md manual
+// only reaches the prompt via skill_assignments; without an entry here the
+// employee has the tools but no manual. Kept separate from founderSkillDefaults
+// so the founder-only ResetEmployeeSkills path stays correct.
+func employeeSkillDefaults() map[string][]string {
+	return map[string][]string{
+		"Creative Tagger": {
+			"video-tagging",
+		},
+	}
+}
+
 func (pg *PGClient) SeedDefaultSkillAssignments(ctx context.Context, es *ESClient) error {
 	if es == nil {
 		return nil
 	}
 
 	defaults := founderSkillDefaults()
+	for empName, skillNames := range employeeSkillDefaults() {
+		defaults[empName] = append(defaults[empName], skillNames...)
+	}
 
 	for empName, skillNames := range defaults {
 		var empID string
