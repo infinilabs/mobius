@@ -1529,6 +1529,25 @@ func defaultEmployees() []seedEmployee {
 			Tags:    []string{"testing"},
 			Manager: "Linas",
 		},
+
+		// ── Creative Tagging (reports to Steve) ─────────────────────
+		{
+			Name:  "Creative Tagger",
+			Title: "Creative Asset Tagger",
+			Role:  "Custom",
+			Backstory: "Owns batch tagging of video/image creatives. Uses BigQuery multimodal AI " +
+				"(AI.GENERATE_TABLE) to label media against the 'video label tagging' taxonomy, then answers " +
+				"descriptive analytics questions over the resulting tags (counts, Top-N, distributions). " +
+				"Always gathers gcs_path (and dataset, if non-default) before running and asks the user if unknown; " +
+				"never tags arbitrary buckets; cost-aware and caps asset counts. " +
+				"Tagging and descriptive stats only — deep analysis is a separate concern.",
+			Skills: []EmployeeSkill{
+				{"Media Tagging", "Batch-label video/image creatives via BigQuery AI.GENERATE_TABLE"},
+				{"Tag Analytics", "Descriptive stats over the tags table (counts, Top-N, distributions)"},
+			},
+			Tags:    []string{"media_tagger"},
+			Manager: "Steve",
+		},
 	}
 }
 

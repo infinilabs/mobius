@@ -193,6 +193,15 @@ type BigQueryConfig struct {
 	Dataset    string `yaml:"dataset" json:"dataset"`
 	EventTable string `yaml:"event_table" json:"event_table"`
 	TokenTable string `yaml:"token_table" json:"token_table"`
+
+	// Media tagging (video_tagging.md §4.1). Business data lives in a DEDICATED
+	// dataset (mobius_creatives), never the system `Dataset` above. Empty fields
+	// fall back to the defaults in bq.go (mobius_creatives / us.mobius_conn /
+	// gemini-2.5-flash / tagging_gemini).
+	CreativesDataset     string `yaml:"creatives_dataset,omitempty" json:"creatives_dataset,omitempty"`
+	Connection           string `yaml:"connection,omitempty" json:"connection,omitempty"`
+	TaggingModelEndpoint string `yaml:"tagging_model_endpoint,omitempty" json:"tagging_model_endpoint,omitempty"`
+	TaggingModelName     string `yaml:"tagging_model_name,omitempty" json:"tagging_model_name,omitempty"`
 }
 
 type GCSConfig struct {

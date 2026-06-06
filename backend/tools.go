@@ -558,6 +558,59 @@ var suggestTasksToolDef = ToolDef{
 	},
 }
 
+// --- Media tagging (video_tagging.md §4.4, §11). Gated on the media_tagger tag. ---
+
+var tagMediaToolDef = ToolDef{
+	Name: "tag_media",
+	Description: "Batch-tag video/image media under a GCS path using BigQuery multimodal AI. " +
+		"Creates an object table over the media, runs schema-enforced tagging, and stores a tags table. " +
+		"Collect gcs_path (and bq_dataset if non-default) from the user before calling; ask if unknown.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"gcs_path": map[string]any{
+				"type":        "string",
+				"description": "Source media prefix as a glob, e.g. gs://bucket/creatives/*",
+			},
+			"taxonomy_prompt_id": map[string]any{
+				"type":        "string",
+				"description": "Optional prompt ID for the label taxonomy. Defaults to the 'video label tagging' template.",
+			},
+		},
+		"required": []string{"gcs_path"},
+	},
+}
+
+var getTagResultsToolDef = ToolDef{
+	Name:        "get_tag_results",
+	Description: "Fetch per-asset labels for a completed tagging job. Provide job_id (or tags_table); optionally asset_id.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"job_id":     map[string]any{"type": "string", "description": "Job ID returned by tag_media"},
+			"tags_table": map[string]any{"type": "string", "description": "Tags table name (alternative to job_id)"},
+			"asset_id":   map[string]any{"type": "string", "description": "Optional: filter to a single asset"},
+		},
+	},
+}
+
+var queryTagsToolDef = ToolDef{
+	Name: "query_tags",
+	Description: "Run a READ-ONLY SELECT over the creatives tags dataset to answer analytics questions " +
+		"(counts, Top-N, per-tag totals). Translate the user's question into a single SELECT (use UNNEST(labels) " +
+		"to count tags). Results are row-capped. Then narrate the answer and emit ONE ```mobius-viz``` JSON block.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"sql": map[string]any{
+				"type":        "string",
+				"description": "A single SELECT statement over the creatives tags dataset. No DML/DDL, no comments.",
+			},
+		},
+		"required": []string{"sql"},
+	},
+}
+
 func buildAgentTools(agent *Employee, task *Task) []ToolDef {
 	var tools []ToolDef
 
@@ -583,6 +636,12 @@ func buildAgentTools(agent *Employee, task *Task) []ToolDef {
 
 	if task != nil && task.ProjectID != nil {
 		tools = append(tools, writeFileToolDef, readFileToolDef, searchAssetsToolDef, listAssetsToolDef, runCommandToolDef)
+	}
+
+	// Media tagging is gated on the media_tagger tag (not project context): the
+	// Creative Tagger employee batch-tags GCS prefixes and answers tag analytics.
+	if hasTag(agent.Tags, "media_tagger") {
+		tools = append(tools, tagMediaToolDef, getTagResultsToolDef, queryTagsToolDef)
 	}
 
 	return tools

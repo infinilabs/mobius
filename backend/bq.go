@@ -12,9 +12,16 @@ import (
 
 type BQClient struct {
 	client     *bigquery.Client
+	projectID  string
 	dataset    string
 	table      string
 	tokenTable string
+
+	// Media tagging (video_tagging.md §4.1). Defaulted in NewBQClient.
+	creativesDataset string
+	connection       string
+	taggingEndpoint  string
+	taggingModel     string
 }
 
 func NewBQClient(ctx context.Context, cfg *Config) (*BQClient, error) {
@@ -41,7 +48,29 @@ func NewBQClient(ctx context.Context, cfg *Config) (*BQClient, error) {
 		tokenTable = "token_usage"
 	}
 
-	bq := &BQClient{client: client, dataset: gc.BigQuery.Dataset, table: table, tokenTable: tokenTable}
+	creativesDataset := gc.BigQuery.CreativesDataset
+	if creativesDataset == "" {
+		creativesDataset = "mobius_creatives"
+	}
+	connection := gc.BigQuery.Connection
+	if connection == "" {
+		connection = "us.mobius_conn"
+	}
+	taggingEndpoint := gc.BigQuery.TaggingModelEndpoint
+	if taggingEndpoint == "" {
+		taggingEndpoint = "gemini-2.5-flash"
+	}
+	taggingModel := gc.BigQuery.TaggingModelName
+	if taggingModel == "" {
+		taggingModel = "tagging_gemini"
+	}
+
+	bq := &BQClient{
+		client: client, projectID: projectID,
+		dataset: gc.BigQuery.Dataset, table: table, tokenTable: tokenTable,
+		creativesDataset: creativesDataset, connection: connection,
+		taggingEndpoint: taggingEndpoint, taggingModel: taggingModel,
+	}
 
 	if err := bq.EnsureDataset(ctx); err != nil {
 		client.Close()

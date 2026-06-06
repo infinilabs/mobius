@@ -2,7 +2,7 @@
 
 .PHONY: build-frontend build-backend build-all build-sandbox serve test sanity clean \
         docker-up docker-up-postgres docker-up-elasticsearch docker-down docker-status \
-        wipe-data
+        wipe-data bq-connection
 
 # Variables
 PORT=1983
@@ -11,6 +11,14 @@ POSTGRES_CONTAINER=mobius-postgres
 ES_CONTAINER=mobius-elasticsearch
 DATA_DIR=$(shell pwd)/data
 SANDBOX_IMAGE=mobius-agent:latest
+
+# BigQuery media-tagging connection (override on the command line if needed).
+# Defaults match conf.yaml's bigquery block / video_tagging.md §4.1 (project
+# du-hast-mich, connection us.mobius_conn). The app reads the same connection
+# from conf.yaml (bigquery.connection); these vars only drive `make bq-connection`.
+BQ_PROJECT?=du-hast-mich
+BQ_LOCATION?=us
+BQ_CONNECTION?=mobius_conn
 
 # --- Build ---
 
@@ -124,6 +132,45 @@ docker-destroy:
 
 docker-status:
 	@docker ps -a -f name=mobius --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+
+# --- BigQuery media tagging (§6 of video_tagging.md) ---
+
+# One-time, idempotent setup of the BQ cloud-resource connection used by
+# AI.GENERATE_TABLE for media tagging. Creates the connection (if absent) and
+# grants its service agent the two roles it needs: Vertex AI (call Gemini) and
+# GCS read (object table reads media). The dataset + remote model are created
+# in-process by the app (EnsureTaggingInfra), so this target stops at the
+# connection + IAM — the part that needs admin/CLI perms. Override defaults with
+# e.g. make bq-connection BQ_PROJECT=my-proj BQ_CONNECTION=my_conn
+bq-connection:
+	@command -v bq >/dev/null     || { echo "ERROR: 'bq' CLI not found — install the Google Cloud SDK."; exit 1; }
+	@command -v gcloud >/dev/null || { echo "ERROR: 'gcloud' CLI not found — install the Google Cloud SDK."; exit 1; }
+	@echo "==> [1/3] Ensuring connection $(BQ_LOCATION).$(BQ_CONNECTION) in project $(BQ_PROJECT)..."
+	@if bq --project_id=$(BQ_PROJECT) show --connection $(BQ_LOCATION).$(BQ_CONNECTION) >/dev/null 2>&1; then \
+		echo "    connection already exists — skipping create."; \
+	else \
+		bq --project_id=$(BQ_PROJECT) mk --connection --location=$(BQ_LOCATION) \
+			--connection_type=CLOUD_RESOURCE $(BQ_CONNECTION); \
+	fi
+	@echo "==> [2/3] Reading connection service account..."
+	@SA=$$(bq --project_id=$(BQ_PROJECT) show --format=prettyjson --connection $(BQ_LOCATION).$(BQ_CONNECTION) \
+		| grep serviceAccountId | cut -d '"' -f 4); \
+	if [ -z "$$SA" ]; then echo "ERROR: could not read the connection's service account."; exit 1; fi; \
+	echo "    service account: $$SA"; \
+	echo "==> [3/3] Granting roles on $(BQ_PROJECT) (idempotent)..."; \
+	gcloud projects add-iam-policy-binding $(BQ_PROJECT) \
+		--member="serviceAccount:$$SA" --role=roles/aiplatform.user --condition=None >/dev/null \
+		|| { echo "ERROR: failed to grant roles/aiplatform.user to $$SA (needs a project Owner/IAM-Admin account)."; \
+		     echo "  Run as such an account:"; \
+		     echo "    gcloud projects add-iam-policy-binding $(BQ_PROJECT) --member=serviceAccount:$$SA --role=roles/aiplatform.user --condition=None"; exit 1; }; \
+	gcloud projects add-iam-policy-binding $(BQ_PROJECT) \
+		--member="serviceAccount:$$SA" --role=roles/storage.objectViewer --condition=None >/dev/null \
+		|| { echo "ERROR: failed to grant roles/storage.objectViewer to $$SA (needs a project Owner/IAM-Admin account)."; \
+		     echo "  Run as such an account:"; \
+		     echo "    gcloud projects add-iam-policy-binding $(BQ_PROJECT) --member=serviceAccount:$$SA --role=roles/storage.objectViewer --condition=None"; exit 1; }; \
+	echo "==> Done. $(BQ_LOCATION).$(BQ_CONNECTION) is ready (Vertex AI + GCS read granted)."
+	@echo "    Note: the app's own BQ service account still needs roles/bigquery.jobUser +"
+	@echo "    edit on the target dataset (usually already set for the token/event pipeline)."
 
 # Wipe ALL local data stores so the next boot starts clean. This removes the
 # containers and erases Postgres, Elasticsearch, and on-disk project files —

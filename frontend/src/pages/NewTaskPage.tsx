@@ -13,6 +13,7 @@ export type ChatTarget =
   | { kind: 'agent'; agent: Employee }
   | { kind: 'model'; model: VertexModel };
 import { log } from '../logger';
+import { MessageContent } from '../components/MobiusViz';
 
 const QUICK_ACTIONS = [
   { icon: <BarChart3 size={18} />, title: 'Analyze Competitor Ads', desc: 'See what\'s winning in your niche', tag: 'Name or URL', color: '#38bdf8', prompt: 'Analyze my competitors\' ad strategies and tell me what\'s working in my niche.' },
@@ -491,7 +492,7 @@ function MessageBubble({ message, isStreaming, onEdit, onRegenerate }: {
               </div>
             </div>
           ) : (
-            <div className="whitespace-pre-wrap">{message.content}</div>
+            <MessageContent content={message.content} />
           )}
 
           {isStreaming && message.content && !editing && (

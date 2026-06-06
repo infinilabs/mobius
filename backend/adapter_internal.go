@@ -13,6 +13,7 @@ type InternalLLMAdapter struct {
 	providers     *ProviderRegistry
 	pgClient      *PGClient
 	esClient      *ESClient
+	bqClient      *BQClient
 	config        *Config
 	tokenPipeline *TokenPipeline
 	events        *EventPipeline
@@ -28,12 +29,13 @@ type internalRun struct {
 	mu     sync.Mutex
 }
 
-func NewInternalLLMAdapter(providers *ProviderRegistry, pg *PGClient, es *ESClient,
+func NewInternalLLMAdapter(providers *ProviderRegistry, pg *PGClient, es *ESClient, bq *BQClient,
 	cfg *Config, tp *TokenPipeline, events *EventPipeline) *InternalLLMAdapter {
 	return &InternalLLMAdapter{
 		providers:     providers,
 		pgClient:      pg,
 		esClient:      es,
+		bqClient:      bq,
 		config:        cfg,
 		tokenPipeline: tp,
 		events:        events,
@@ -366,6 +368,12 @@ func (a *InternalLLMAdapter) routeToolCall(ctx context.Context, call ToolCall, a
 		return a.execAskUser(ctx, call.Args, agent, task)
 	case "suggest_tasks":
 		return a.execSuggestTasks(ctx, call.Args, agent, task)
+	case "tag_media":
+		return execTagMediaTool(ctx, a.bqClient, a.esClient, a.events, agent.ID, call.Args)
+	case "get_tag_results":
+		return execGetTagResultsTool(ctx, a.bqClient, call.Args)
+	case "query_tags":
+		return execQueryTagsTool(ctx, a.bqClient, call.Args)
 	default:
 		return map[string]any{"error": "unknown tool: " + call.Name}
 	}

@@ -43,9 +43,15 @@ google_cloud:
   api_key: ""           # optional: AI Studio API key for Gemini models (overrides service account for Gemini)
   bigquery:
     project_id: ""  # leave empty to use top-level project_id
-    dataset: "mobius"
+    dataset: "mobius"          # system-internal data ONLY (events, token usage)
     event_table: "events"
     token_table: "token_usage"
+    # Media tagging (video_tagging.md §4.1). Business data lives in a DEDICATED
+    # dataset, never `dataset` above. All optional — these are the code defaults.
+    creatives_dataset: "mobius_creatives"      # dedicated business dataset for tags
+    connection: "us.mobius_conn"               # BQ cloud-resource connection (see `make bq-connection`)
+    tagging_model_endpoint: "gemini-2.5-flash" # multimodal model
+    tagging_model_name: "tagging_gemini"       # remote model name created in creatives_dataset
   gcs:
     project_id: ""  # leave empty to use top-level project_id
     bucket: "mobius"

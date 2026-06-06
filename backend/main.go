@@ -481,7 +481,7 @@ func main() {
 	// Agent adapter registry
 	adapterRegistry := NewAdapterRegistry()
 	adapterRegistry.Register(AdapterInternal, NewInternalLLMAdapter(
-		providers, pgClient, esClient, cfg, api.tokenPipeline, eventPipeline,
+		providers, pgClient, esClient, bqClient, cfg, api.tokenPipeline, eventPipeline,
 	))
 	var claudeMintSession func(agentID, taskID string) string
 	if mcpServer != nil {

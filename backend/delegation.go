@@ -76,6 +76,12 @@ func (h *APIHandler) executeToolCall(
 		return h.execSearchProjectAssets(ctx, call.Args)
 	case "list_project_assets":
 		return h.execListProjectAssets(ctx, call.Args)
+	case "tag_media":
+		return execTagMediaTool(ctx, h.bqClient, h.esClient, h.events, agent.ID, call.Args)
+	case "get_tag_results":
+		return execGetTagResultsTool(ctx, h.bqClient, call.Args)
+	case "query_tags":
+		return execQueryTagsTool(ctx, h.bqClient, call.Args)
 	default:
 		return map[string]any{"error": "unknown tool: " + call.Name}
 	}
