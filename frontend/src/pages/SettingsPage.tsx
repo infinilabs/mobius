@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
   Settings, Database, Search, Cloud, Link2, Upload,
-  Save, Check, AlertCircle, Loader2, Plus, Trash2,
+  Save, Check, AlertCircle, Loader2, Plus, Trash2, Shield,
 } from 'lucide-react';
 import { fetchSettings, updateSettings, fetchHealth, listModels, addModel, removeModel } from '../api';
 import type { SettingsData, VertexModel } from '../types';
@@ -35,6 +35,8 @@ export default function SettingsPage() {
           vertex_ai: { llm_model_id: 'gemini-3.1-pro-preview', llm_location: 'global', img_model_id: '', img_location: 'us-central1', video_model_id: '', video_location: 'us-central1' },
         },
         chat_upload: { max_file_size_mb: 20 },
+        sandbox: { enabled: false, provider: 'none', nsjail_path: '', image: '', network: '', memory_mb: 0, cpus: '', pids_limit: 0 },
+        effective_provider: 'none (offline)',
       }))
       .finally(() => setLoading(false));
     fetchHealth().then(h => setHealth(h.services || {})).catch(() => {});
@@ -171,6 +173,34 @@ export default function SettingsPage() {
         <div className="mt-5 pt-4 border-t border-zinc-800/40">
           <SubsectionHeader label="Vertex AI Models" status={health.llm} />
           <ModelRegistry />
+        </div>
+      </ConfigSection>
+
+      {/* Sandbox Confinement */}
+      <ConfigSection icon={<Shield size={16} />} title="Sandbox Confinement" desc="Confinement for agent-issued bash commands (configured in conf.yaml)" color="#10b981">
+        <div className="mb-4 flex items-center gap-3">
+          <span className="text-[10px] font-mono text-zinc-500 uppercase">Effective Sandbox:</span>
+          <span className="px-2 py-0.5 rounded text-xs font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20">
+            {settings.sandbox.enabled ? settings.effective_provider : 'none (disabled)'}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-4 text-xs font-mono text-zinc-400">
+          <div>
+            <span className="block text-[9px] text-zinc-600 uppercase mb-1">Configured Provider</span>
+            <span className="block bg-zinc-900/50 border border-zinc-800/30 rounded px-3 py-2 text-zinc-300">{settings.sandbox.provider}</span>
+          </div>
+          <div>
+            <span className="block text-[9px] text-zinc-600 uppercase mb-1">NsJail Path</span>
+            <span className="block bg-zinc-900/50 border border-zinc-800/30 rounded px-3 py-2 text-zinc-300">{settings.sandbox.nsjail_path || '(default)'}</span>
+          </div>
+          <div>
+            <span className="block text-[9px] text-zinc-600 uppercase mb-1">Memory Limit (MB)</span>
+            <span className="block bg-zinc-900/50 border border-zinc-800/30 rounded px-3 py-2 text-zinc-300">{settings.sandbox.memory_mb === 0 ? 'Unlimited' : `${settings.sandbox.memory_mb} MB`}</span>
+          </div>
+          <div>
+            <span className="block text-[9px] text-zinc-600 uppercase mb-1">Docker Image (Fallback)</span>
+            <span className="block bg-zinc-900/50 border border-zinc-800/30 rounded px-3 py-2 text-zinc-300">{settings.sandbox.image}</span>
+          </div>
         </div>
       </ConfigSection>
 

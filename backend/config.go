@@ -258,10 +258,12 @@ type UploadConfig struct {
 }
 
 type SettingsData struct {
-	Postgres      PostgresConfig      `json:"postgres"`
-	Elasticsearch ElasticsearchConfig `json:"elasticsearch"`
-	GoogleCloud   GoogleCloudConfig   `json:"google_cloud"`
-	Upload        UploadConfig        `json:"chat_upload"`
+	Postgres          PostgresConfig      `json:"postgres"`
+	Elasticsearch     ElasticsearchConfig `json:"elasticsearch"`
+	GoogleCloud       GoogleCloudConfig   `json:"google_cloud"`
+	Upload            UploadConfig        `json:"chat_upload"`
+	Sandbox           SandboxConfig       `json:"sandbox"`
+	EffectiveProvider string              `json:"effective_provider"`
 }
 
 func (c *Config) MaxUploadBytes() int64 {
@@ -279,11 +281,22 @@ func (c *Config) GetSettings() SettingsData {
 	if mb <= 0 {
 		mb = 20
 	}
+
+	eff := string(c.Sandbox.Provider)
+	switch {
+	case !c.Sandbox.Enabled:
+		eff = "none (disabled)"
+	case c.Sandbox.Provider == ProviderNsJail && !nsjailUsable.Load():
+		eff = "docker (nsjail unavailable)"
+	}
+
 	return SettingsData{
-		Postgres:      c.Postgres,
-		Elasticsearch: c.Elasticsearch,
-		GoogleCloud:   c.GoogleCloud,
-		Upload:        UploadConfig{MaxFileSizeMB: mb},
+		Postgres:          c.Postgres,
+		Elasticsearch:     c.Elasticsearch,
+		GoogleCloud:       c.GoogleCloud,
+		Upload:            UploadConfig{MaxFileSizeMB: mb},
+		Sandbox:           c.Sandbox,
+		EffectiveProvider: eff,
 	}
 }
 

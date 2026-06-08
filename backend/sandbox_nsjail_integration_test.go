@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -138,4 +139,50 @@ func TestIntegration_NsJail(t *testing.T) {
 			t.Errorf("expected timeout to kill process in ~2s, took %v", duration)
 		}
 	})
+}
+
+func TestIntegration_DockerFallback(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not found, skipping fallback test")
+	}
+
+	// Preserve global state and restore on cleanup
+	oldUsable := nsjailUsable.Load()
+	t.Cleanup(func() {
+		nsjailUsable.Store(oldUsable)
+	})
+
+	// 1. Force probe failure by using bad path
+	sb := SandboxConfig{
+		Enabled:    true,
+		Provider:   ProviderNsJail,
+		NsJailPath: "/nonexistent/nsjail",
+		Image:      "alpine", // Use local image
+	}
+	sb.applyDefaults()
+
+	nsjailUsable.Store(false)
+	probeNsJail(sb)
+
+	if nsjailUsable.Load() {
+		t.Fatalf("expected nsjail to be unusable, but it was marked usable")
+	}
+
+	// 2. Run command, should fallback to Docker
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	tmp, _ := os.MkdirTemp("", "mobius-fallback-test-")
+	defer os.RemoveAll(tmp)
+
+	stdout, stderr, code, err := runSandboxedCommand(ctx, sb, tmp, "echo 'fallback works'", nil)
+	if err != nil {
+		t.Fatalf("fallback execution failed: %v. stderr: %s", err, stderr)
+	}
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d. stderr: %s", code, stderr)
+	}
+	if strings.TrimSpace(stdout) != "fallback works" {
+		t.Errorf("expected 'fallback works', got %q", stdout)
+	}
 }

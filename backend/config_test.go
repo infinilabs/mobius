@@ -246,3 +246,37 @@ func TestMaxUploadBytes_Explicit(t *testing.T) {
 		t.Errorf("expected 50MB, got %d", got)
 	}
 }
+
+func TestGetSettings_EffectiveProvider(t *testing.T) {
+	oldUsable := nsjailUsable.Load()
+	defer func() { nsjailUsable.Store(oldUsable) }()
+
+	tests := []struct {
+		name     string
+		enabled  bool
+		provider SandboxProvider
+		usable   bool
+		expected string
+	}{
+		{"Disabled", false, ProviderNsJail, true, "none (disabled)"},
+		{"Disabled None", false, ProviderNone, false, "none (disabled)"},
+		{"Docker Enabled", true, ProviderDocker, false, "docker"},
+		{"NsJail Usable", true, ProviderNsJail, true, "nsjail"},
+		{"NsJail Unusable Fallback", true, ProviderNsJail, false, "docker (nsjail unavailable)"},
+		{"None Enabled", true, ProviderNone, false, "none"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			nsjailUsable.Store(tc.usable)
+			cfg := &Config{}
+			cfg.Sandbox.Enabled = tc.enabled
+			cfg.Sandbox.Provider = tc.provider
+
+			settings := cfg.GetSettings()
+			if settings.EffectiveProvider != tc.expected {
+				t.Errorf("expected %q, got %q", tc.expected, settings.EffectiveProvider)
+			}
+		})
+	}
+}

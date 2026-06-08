@@ -59,11 +59,24 @@ export interface UploadConfig {
   max_file_size_mb: number;
 }
 
+export interface SandboxConfig {
+  enabled: boolean;
+  provider: 'nsjail' | 'docker' | 'none';
+  nsjail_path: string;
+  image: string;
+  network: string;
+  memory_mb: number;
+  cpus: string;
+  pids_limit: number;
+}
+
 export interface SettingsData {
   postgres: PostgresConfig;
   elasticsearch: ElasticsearchConfig;
   google_cloud: GoogleCloudConfig;
   chat_upload: UploadConfig;
+  sandbox: SandboxConfig;
+  effective_provider: string;
 }
 
 export interface FileRef {
