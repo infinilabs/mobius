@@ -31,11 +31,13 @@ chat_upload:
 # Set enabled: false to run commands directly on the host instead (no isolation).
 sandbox:
   enabled: true
-  image: "mobius-agent:latest" # built by `make build-sandbox` (see sandbox/Dockerfile)
-  network: "bridge"            # "bridge" to allow pip/go mod/cargo/git fetch; "none" for full offline
-  memory_mb: 2048
-  cpus: "2"
-  pids_limit: 512
+  provider: "nsjail"           # "nsjail" | "docker" | "none"
+  nsjail_path: "./bin/nsjail"  # resolved via LookPath if relative/unset
+  image: "mobius-agent:latest" # built by `make build-sandbox` (docker fallback)
+  network: "bridge"            # "bridge" to allow pip/go mod/cargo/git fetch (docker fallback)
+  memory_mb: 0                 # 0 = no rlimit_as cap (nsjail default); >0 = best-effort
+  cpus: "2"                    # docker fallback
+  pids_limit: 512              # docker fallback
 
 google_cloud:
   project_id: "your-gcp-project-id"

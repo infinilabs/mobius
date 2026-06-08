@@ -74,6 +74,8 @@ func main() {
 	accessLogger := newLogger(accessLogWriter, debug)
 	slog.SetDefault(serverLogger)
 
+	probeNsJail(cfg.Sandbox)
+
 	ctx := context.Background()
 	vertexClient, geminiClient, err := NewGenAIClients(ctx, cfg)
 	if err != nil {

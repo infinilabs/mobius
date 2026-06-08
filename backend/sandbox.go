@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
+	"runtime"
+	"sync/atomic"
 	"syscall"
 )
 
@@ -14,24 +17,34 @@ import (
 // attacker: running inside an ephemeral container whose only writable mount is
 // the project (or an ephemeral temp dir) means a runaway `rm -rf /` cannot reach
 // anything on the host outside that directory.
+type SandboxProvider string
+
+const (
+	ProviderDocker SandboxProvider = "docker"
+	ProviderNsJail SandboxProvider = "nsjail"
+	ProviderNone   SandboxProvider = "none"
+)
+
 type SandboxConfig struct {
-	Enabled   bool   `yaml:"enabled" json:"enabled"`
-	Image     string `yaml:"image" json:"image"`
-	Network   string `yaml:"network" json:"network"`
-	MemoryMB  int    `yaml:"memory_mb" json:"memory_mb"`
-	CPUs      string `yaml:"cpus" json:"cpus"`
-	PidsLimit int    `yaml:"pids_limit" json:"pids_limit"`
+	Enabled    bool            `yaml:"enabled"     json:"enabled"`
+	Provider   SandboxProvider `yaml:"provider"    json:"provider"`
+	NsJailPath string          `yaml:"nsjail_path" json:"nsjail_path"`
+	Image      string          `yaml:"image"       json:"image"`
+	Network    string          `yaml:"network"     json:"network"`     // docker fallback
+	MemoryMB   int             `yaml:"memory_mb"   json:"memory_mb"`   // nsjail: rlimit_as (0=off); docker: --memory
+	CPUs       string          `yaml:"cpus"        json:"cpus"`        // docker fallback
+	PidsLimit  int             `yaml:"pids_limit"  json:"pids_limit"`  // docker fallback
 }
 
 func (sb *SandboxConfig) applyDefaults() {
+	if sb.Provider == "" {
+		sb.Provider = ProviderDocker
+	}
 	if sb.Image == "" {
 		sb.Image = "mobius-agent:latest"
 	}
 	if sb.Network == "" {
 		sb.Network = "bridge"
-	}
-	if sb.MemoryMB == 0 {
-		sb.MemoryMB = 2048
 	}
 	if sb.CPUs == "" {
 		sb.CPUs = "2"
@@ -39,6 +52,7 @@ func (sb *SandboxConfig) applyDefaults() {
 	if sb.PidsLimit == 0 {
 		sb.PidsLimit = 512
 	}
+	// MemoryMB intentionally defaults to 0 (no rlimit_as cap).
 }
 
 // dockerRunArgs builds the `docker run ...` argument list (up to and including
@@ -49,9 +63,13 @@ func (sb SandboxConfig) dockerRunArgs(workdir, name string, env []string) []stri
 	if name != "" {
 		args = append(args, "--name", name)
 	}
+	mem := sb.MemoryMB
+	if mem == 0 {
+		mem = 2048 // Default memory for Docker fallback
+	}
 	args = append(args,
 		"--network", sb.Network,
-		"--memory", fmt.Sprintf("%dm", sb.MemoryMB),
+		"--memory", fmt.Sprintf("%dm", mem),
 		"--cpus", sb.CPUs,
 		"--pids-limit", fmt.Sprintf("%d", sb.PidsLimit),
 		"-v", workdir+":/work",
@@ -64,11 +82,37 @@ func (sb SandboxConfig) dockerRunArgs(workdir, name string, env []string) []stri
 	return args
 }
 
-// runSandboxedCommand runs `sh -c <command>` inside an ephemeral container and
-// returns its captured output. Shell features (pipes, &&, redirects) work; the
-// blast radius is the workdir mount. A missing Docker binary is a hard error —
-// we never silently fall back to running on the host.
+// nsjailUsable is set once by the startup probe. When nsjail is
+// configured but unusable on this host, the dispatcher transparently uses Docker.
+var nsjailUsable atomic.Bool
+
+// runSandboxedCommand runs `sh -c <command>` inside a sandbox (either NsJail or Docker)
+// depending on configuration and host capabilities.
 func runSandboxedCommand(ctx context.Context, sb SandboxConfig, workdir, command string, env []string) (stdout, stderr string, exitCode int, err error) {
+	provider := sb.Provider
+
+	if provider == ProviderNsJail {
+		if runtime.GOOS != "linux" {
+			slog.Warn("nsjail unsupported off Linux; using Docker", "os", runtime.GOOS)
+			provider = ProviderDocker
+		} else if !nsjailUsable.Load() {
+			slog.Warn("nsjail probe failed on this host; using Docker")
+			provider = ProviderDocker
+		}
+	}
+
+	switch provider {
+	case ProviderNsJail:
+		return runNsJailCommand(ctx, sb, workdir, command, env)
+	case ProviderDocker:
+		return runDockerCommand(ctx, sb, workdir, command, env)
+	default:
+		return runHostCommand(ctx, workdir, command, env)
+	}
+}
+
+// runDockerCommand runs `sh -c <command>` inside an ephemeral container.
+func runDockerCommand(ctx context.Context, sb SandboxConfig, workdir, command string, env []string) (stdout, stderr string, exitCode int, err error) {
 	if _, lookErr := exec.LookPath("docker"); lookErr != nil {
 		return "", "", -1, fmt.Errorf("sandbox enabled but docker not found: install Docker and run `make build-sandbox`")
 	}
