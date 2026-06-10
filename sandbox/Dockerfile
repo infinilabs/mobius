@@ -42,7 +42,8 @@ RUN set -eux; \
         | sh -s -- -y --default-toolchain stable --profile minimal; \
     rustc --version
 
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers \
+    NODE_PATH=/usr/lib/node_modules
 
 # Node.js (v20) and Playwright Chromium dependencies
 RUN set -eux; \
