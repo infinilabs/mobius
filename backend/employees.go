@@ -1568,6 +1568,68 @@ func defaultEmployees() []seedEmployee {
 			Tags:    []string{"media_watermarker"},
 			Manager: "Steve",
 		},
+
+		// ── Playable Ads Pipeline (reports to Linas) ───────────────
+		{
+			Name:  "Playable Planner",
+			Title: "Playable Ads Planner",
+			Role:  "Custom",
+			Backstory: "Analytical game planner. Decomposes ad requirements into structured game rules, state machines, and difficulty balances. Writes playable_plan.json.",
+			Skills: []EmployeeSkill{
+				{"Game Design", "Design rules, scoring, and pacing for mini-games"},
+				{"Structured Planning", "Produce JSON blueprints for developer consumption"},
+			},
+			Tags:    []string{"planning"},
+			Manager: "Linas",
+		},
+		{
+			Name:  "Playable Designer",
+			Title: "Playable Ads UI/UX Designer",
+			Role:  "Designer",
+			Backstory: "Visual designer specialized in interactive banners. Designs game assets, UI layouts, color palettes, and exports mockups.",
+			Skills: []EmployeeSkill{
+				{"UI/UX Design", "Layout game screens for mobile ratios (9:16 and 16:9)"},
+				{"Asset Sourcing", "Write prompts to generate game sprites and audio references"},
+			},
+			Tags:    []string{"design"},
+			Manager: "Linas",
+		},
+		{
+			Name:  "Playable Developer",
+			Title: "Playable Ads Developer",
+			Role:  "Custom",
+			Backstory: "Expert HTML5 game developer. Adapts game templates into single-file responsive ads. Uses procedural Web Audio. Inlines all assets.",
+			Skills: []EmployeeSkill{
+				{"HTML5 Development", "Write self-contained canvas/DOM interactive ads"},
+				{"Asset Compiling", "Inline binary assets as base64 data URIs"},
+			},
+			Tags:    []string{"engineering"},
+			Manager: "Linas",
+		},
+		{
+			Name:  "Playable Reviewer",
+			Title: "Playable Ads Quality Assurance",
+			Role:  "Custom",
+			Backstory: "Meticulous QA engineer. Validates playable ads against AppLovin/MRAID specs using Playwright automation. Assures no network leak, correct timer, and audio mute rules.",
+			Skills: []EmployeeSkill{
+				{"QA Automation", "Run Playwright test scripts inside sandboxed environments"},
+				{"Specification Compliance", "Validate viewport responsiveness, audio context blocks, and MRAID APIs"},
+			},
+			Tags:    []string{"engineering"},
+			Manager: "Linas",
+		},
+		{
+			Name:  "Playable Publisher",
+			Title: "Playable Ads Publisher",
+			Role:  "Custom",
+			Backstory: "Reliable build engineer. Bundles assets, uploads playables to GCS, and returns signed preview/production links.",
+			Skills: []EmployeeSkill{
+				{"Cloud Operations", "Upload files to GCS bucket storage"},
+				{"Build Delivery", "Manage pipeline version tags and assets"},
+			},
+			Tags:    []string{"engineering"},
+			Manager: "Linas",
+		},
 	}
 }
 
