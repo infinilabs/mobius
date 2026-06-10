@@ -138,3 +138,19 @@ func TestPlayableMediaGenerationMock(t *testing.T) {
 		t.Errorf("Expected audio file to be created at %s", audioPath)
 	}
 }
+
+func TestPlayablePublishAd(t *testing.T) {
+	cfg := &Config{}
+	projectDir := "/work/projects/test_proj"
+	pipelineID := "test_pipe_99"
+
+	url, err := publishPlayableAdImpl(context.Background(), cfg, projectDir, pipelineID)
+	if err != nil {
+		t.Fatalf("publishPlayableAdImpl failed: %v", err)
+	}
+
+	expectedUrl := "https://storage.googleapis.com/mobius-playables/test_pipe_99/preview_inline.html"
+	if url != expectedUrl {
+		t.Errorf("Expected URL %q, got %q", expectedUrl, url)
+	}
+}
