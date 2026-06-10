@@ -42,6 +42,18 @@ RUN set -eux; \
         | sh -s -- -y --default-toolchain stable --profile minimal; \
     rustc --version
 
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+
+# Node.js (v20) and Playwright Chromium dependencies
+RUN set -eux; \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -; \
+    apt-get install -y --no-install-recommends nodejs; \
+    npx playwright install-deps chromium; \
+    npm install -g playwright; \
+    npx playwright install chromium; \
+    chmod -R 755 /opt/pw-browsers; \
+    rm -rf /var/lib/apt/lists/*
+
 COPY bin/infinishield /usr/local/bin/infinishield
 RUN chmod +x /usr/local/bin/infinishield
 
