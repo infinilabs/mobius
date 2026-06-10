@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,5 +110,31 @@ func TestPlayableWriteHTML(t *testing.T) {
 	reportUrl, _ := writeHTMLImpl(tmpDir, pipelineID, `<html><script src="https://example.com/api.js"></script></html>`, valScript)
 	if reportUrl.Passed {
 		t.Error("Expected network URL check to fail")
+	}
+}
+
+func TestPlayableMediaGenerationMock(t *testing.T) {
+	cfg := &Config{}
+	adapter := &InternalLLMAdapter{config: cfg}
+
+	tmpDir, _ := os.MkdirTemp("", "mobius-test-media-")
+	defer os.RemoveAll(tmpDir)
+
+	imgPath := filepath.Join(tmpDir, "sprite.png")
+	err := adapter.generateImageClientCall(context.Background(), "a cute cat", "512x512", imgPath)
+	if err != nil {
+		t.Fatalf("generateImageClientCall failed: %v", err)
+	}
+	if _, err := os.Stat(imgPath); os.IsNotExist(err) {
+		t.Errorf("Expected image file to be created at %s", imgPath)
+	}
+
+	audioPath := filepath.Join(tmpDir, "laser.wav")
+	err = adapter.generateAudioClientCall(context.Background(), "laser beep", 3, audioPath)
+	if err != nil {
+		t.Fatalf("generateAudioClientCall failed: %v", err)
+	}
+	if _, err := os.Stat(audioPath); os.IsNotExist(err) {
+		t.Errorf("Expected audio file to be created at %s", audioPath)
 	}
 }
