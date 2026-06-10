@@ -1155,7 +1155,8 @@ func writeHTMLImpl(projectDir, pipelineID, htmlContent, validationScriptPath str
 		report.Errors = append(report.Errors, "Forbidden 'eval()' function call detected")
 	}
 	if regexp.MustCompile(`http(s)?://`).MatchString(htmlContent) {
-		report.Errors = append(report.Errors, "Warning: absolute network URL found in code")
+		report.Passed = false
+		report.Errors = append(report.Errors, "Forbidden absolute network URL found in code")
 	}
 
 	return report, nil
