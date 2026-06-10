@@ -168,6 +168,84 @@ func runHostCommand(ctx context.Context, workdir, command string, env []string) 
 	return outBuf.String(), errBuf.String(), 0, nil
 }
 
+// runSandboxedArgv runs a command directly via argv inside a sandbox
+func runSandboxedArgv(ctx context.Context, sb SandboxConfig, workdir string, argv []string, env []string) (stdout, stderr string, exitCode int, err error) {
+	provider := sb.Provider
+
+	if provider == ProviderNsJail {
+		if runtime.GOOS != "linux" {
+			slog.Warn("nsjail unsupported off Linux; using Docker", "os", runtime.GOOS)
+			provider = ProviderDocker
+		} else if !nsjailUsable.Load() {
+			slog.Warn("nsjail probe failed on this host; using Docker")
+			provider = ProviderDocker
+		}
+	}
+
+	switch provider {
+	case ProviderNsJail:
+		return runNsJailArgv(ctx, sb, workdir, argv, env)
+	case ProviderDocker:
+		return runDockerArgv(ctx, sb, workdir, argv, env)
+	default:
+		return runHostArgv(ctx, workdir, argv, env)
+	}
+}
+
+func runDockerArgv(ctx context.Context, sb SandboxConfig, workdir string, argv []string, env []string) (stdout, stderr string, exitCode int, err error) {
+	if _, lookErr := exec.LookPath("docker"); lookErr != nil {
+		return "", "", -1, fmt.Errorf("sandbox enabled but docker not found: install Docker and run `make build-sandbox`")
+	}
+
+	args := sb.dockerRunArgs(workdir, "", env)
+	args = append(args, argv...)
+
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+
+	runErr := cmd.Run()
+	if runErr != nil {
+		if exitErr, ok := runErr.(*exec.ExitError); ok {
+			return outBuf.String(), errBuf.String(), exitErr.ExitCode(), nil
+		}
+		return outBuf.String(), errBuf.String(), -1, fmt.Errorf("sandbox execution failed: %w", runErr)
+	}
+	return outBuf.String(), errBuf.String(), 0, nil
+}
+
+func runHostArgv(ctx context.Context, workdir string, argv []string, env []string) (stdout, stderr string, exitCode int, err error) {
+	if len(argv) == 0 {
+		return "", "", -1, fmt.Errorf("empty argv")
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Dir = workdir
+	cmd.Env = append(os.Environ(), "PATH=/usr/local/bin:/usr/bin:/bin")
+	cmd.Env = append(cmd.Env, env...)
+
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+
+	runErr := cmd.Run()
+	if runErr != nil {
+		if exitErr, ok := runErr.(*exec.ExitError); ok {
+			return outBuf.String(), errBuf.String(), exitErr.ExitCode(), nil
+		}
+		return outBuf.String(), errBuf.String(), -1, fmt.Errorf("command execution failed: %w", runErr)
+	}
+	return outBuf.String(), errBuf.String(), 0, nil
+}
+
 // truncateOutput caps command output to maxCommandOutput bytes (rune-safe).
 func truncateOutput(s string) string {
 	if len(s) > maxCommandOutput {

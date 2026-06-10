@@ -24,7 +24,7 @@ RUN set -eux; \
         build-essential clang cmake gdb \
         python3 python3-pip python3-venv python3-dev \
         default-jdk \
-        ripgrep jq unzip; \
+        ripgrep jq unzip ffmpeg; \
     rm -rf /var/lib/apt/lists/*
 
 # Go — latest stable, resolved at build time from the official release feed.
@@ -41,5 +41,8 @@ RUN set -eux; \
     curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
         | sh -s -- -y --default-toolchain stable --profile minimal; \
     rustc --version
+
+COPY bin/infinishield /usr/local/bin/infinishield
+RUN chmod +x /usr/local/bin/infinishield
 
 WORKDIR /work

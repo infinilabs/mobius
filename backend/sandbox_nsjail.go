@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"syscall"
@@ -52,6 +53,13 @@ func nsjailArgs(sb SandboxConfig, workdir, jailTmp, jailRoot string, env []strin
 	// Device nodes (nsjail does NOT auto-create /dev).
 	for _, dev := range []string{"/dev/null", "/dev/zero", "/dev/urandom", "/dev/random"} {
 		args = append(args, "--bindmount", dev)
+	}
+
+	// Bind-mount host's bin/infinishield read-only to /usr/local/bin/infinishield
+	if absPath, err := filepath.Abs("bin/infinishield"); err == nil {
+		if _, statErr := os.Stat(absPath); statErr == nil {
+			args = append(args, "--bindmount_ro", absPath+":/usr/local/bin/infinishield")
+		}
 	}
 
 	// Caches -> the host-backed /tmp (Mode has no writable $HOME).
@@ -112,6 +120,58 @@ func runNsJailCommand(ctx context.Context, sb SandboxConfig, workdir, command st
 	// Own process group; SIGKILL the group on cancel so no helper (nsjail,
 	// newuidmap, jailed children) is orphaned. Mirrors runHostCommand at
 	// sandbox.go:105.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &outBuf, &errBuf
+
+	runErr := cmd.Run()
+	if runErr != nil {
+		if exitErr, ok := runErr.(*exec.ExitError); ok {
+			return outBuf.String(), errBuf.String(), exitErr.ExitCode(), nil
+		}
+		return outBuf.String(), errBuf.String(), -1, fmt.Errorf("nsjail run failed: %w", runErr)
+	}
+	return outBuf.String(), errBuf.String(), 0, nil
+}
+
+// runNsJailArgv runs a command directly via argv inside a host-shared nsjail jail.
+func runNsJailArgv(ctx context.Context, sb SandboxConfig, workdir string, argv []string, env []string) (stdout, stderr string, exitCode int, err error) {
+	nsjailPath := sb.NsJailPath
+	if nsjailPath == "" {
+		nsjailPath = "nsjail"
+	}
+	nsjailAbs, lookErr := exec.LookPath(nsjailPath)
+	if lookErr != nil {
+		return "", "", -1, fmt.Errorf("nsjail not found at %q: %w", nsjailPath, lookErr)
+	}
+
+	// Per-run writable /tmp (dodges nsjail's ~4 MB tmpfs default) and an empty
+	// dir to chroot into. Both removed on return.
+	jailTmp, err := os.MkdirTemp("", "mobius-jail-tmp-")
+	if err != nil {
+		return "", "", -1, fmt.Errorf("create jail tmp: %w", err)
+	}
+	defer os.RemoveAll(jailTmp)
+	jailRoot, err := os.MkdirTemp("", "mobius-jail-root-")
+	if err != nil {
+		return "", "", -1, fmt.Errorf("create jail root: %w", err)
+	}
+	defer os.RemoveAll(jailRoot)
+
+	args := nsjailArgs(sb, workdir, jailTmp, jailRoot, env, ctxDeadlineSecs(ctx))
+	args = append(args, "--")
+	args = append(args, argv...)
+
+	cmd := exec.CommandContext(ctx, nsjailAbs, args...)
+	// Own process group; SIGKILL the group on cancel so no helper (nsjail,
+	// newuidmap, jailed children) is orphaned.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {

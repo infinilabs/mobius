@@ -17,6 +17,8 @@ import (
 	"google.golang.org/genai"
 )
 
+const uploadsDir = "tmp/uploads"
+
 type APIHandler struct {
 	config        *Config
 	configPath    string
@@ -342,9 +344,8 @@ func (h *APIHandler) UploadFile(w http.ResponseWriter, r *http.Request) {
 		}
 		ref.GCSURI = gcsURI
 	} else {
-		uploadDir := "tmp/uploads"
-		os.MkdirAll(uploadDir, 0755)
-		savePath := filepath.Join(uploadDir, fileID+ext)
+		os.MkdirAll(uploadsDir, 0755)
+		savePath := filepath.Join(uploadsDir, fileID+ext)
 
 		dst, err := os.Create(savePath)
 		if err != nil {

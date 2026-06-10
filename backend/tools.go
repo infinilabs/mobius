@@ -611,6 +611,56 @@ var queryTagsToolDef = ToolDef{
 	},
 }
 
+var watermarkAssetsToolDef = ToolDef{
+	Name: "watermark_assets",
+	Description: "Embed an invisible watermark into an image or video asset (chat upload) or bulk prefix inside the configured GCS bucket. Large folders or videos run asynchronously.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"input_path": map[string]any{
+				"type":        "string",
+				"description": "GCS path relative to configured bucket (e.g. inputs/image.png) or local file path from chat upload",
+			},
+			"output_path": map[string]any{
+				"type":        "string",
+				"description": "GCS destination path or directory relative to bucket (e.g. outputs/)",
+			},
+			"message": map[string]any{
+				"type":        "string",
+				"description": "Message to embed",
+			},
+			"password": map[string]any{
+				"type":        "string",
+				"description": "Password for encryption. Must be at least 4 characters.",
+			},
+			"intensity": map[string]any{
+				"type":        "integer",
+				"description": "Optional: intensity 1-10. Defaults to 0 (auto).",
+			},
+		},
+		"required": []string{"input_path", "output_path", "message", "password"},
+	},
+}
+
+var verifyWatermarkToolDef = ToolDef{
+	Name: "verify_watermark",
+	Description: "Extract and verify an invisible watermark from an image or video file path in the configured GCS bucket (or local path) using a password.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"input_path": map[string]any{
+				"type":        "string",
+				"description": "GCS path relative to bucket (e.g. inputs/image.png) or local file path",
+			},
+			"password": map[string]any{
+				"type":        "string",
+				"description": "Password used during embedding.",
+			},
+		},
+		"required": []string{"input_path", "password"},
+	},
+}
+
 func buildAgentTools(agent *Employee, task *Task) []ToolDef {
 	var tools []ToolDef
 
@@ -642,6 +692,10 @@ func buildAgentTools(agent *Employee, task *Task) []ToolDef {
 	// Creative Tagger employee batch-tags GCS prefixes and answers tag analytics.
 	if hasTag(agent.Tags, "media_tagger") {
 		tools = append(tools, tagMediaToolDef, getTagResultsToolDef, queryTagsToolDef)
+	}
+
+	if hasTag(agent.Tags, "media_watermarker") {
+		tools = append(tools, watermarkAssetsToolDef, verifyWatermarkToolDef)
 	}
 
 	return tools

@@ -13,6 +13,7 @@ type InternalLLMAdapter struct {
 	providers     *ProviderRegistry
 	pgClient      *PGClient
 	esClient      *ESClient
+	gcsClient     *GCSClient
 	bqClient      *BQClient
 	config        *Config
 	tokenPipeline *TokenPipeline
@@ -29,12 +30,13 @@ type internalRun struct {
 	mu     sync.Mutex
 }
 
-func NewInternalLLMAdapter(providers *ProviderRegistry, pg *PGClient, es *ESClient, bq *BQClient,
+func NewInternalLLMAdapter(providers *ProviderRegistry, pg *PGClient, es *ESClient, bq *BQClient, gcs *GCSClient,
 	cfg *Config, tp *TokenPipeline, events *EventPipeline) *InternalLLMAdapter {
 	return &InternalLLMAdapter{
 		providers:     providers,
 		pgClient:      pg,
 		esClient:      es,
+		gcsClient:     gcs,
 		bqClient:      bq,
 		config:        cfg,
 		tokenPipeline: tp,
@@ -374,6 +376,10 @@ func (a *InternalLLMAdapter) routeToolCall(ctx context.Context, call ToolCall, a
 		return execGetTagResultsTool(ctx, a.bqClient, call.Args)
 	case "query_tags":
 		return execQueryTagsTool(ctx, a.bqClient, call.Args)
+	case "watermark_assets":
+		return execWatermarkAssetsTool(ctx, a.pgClient, a.gcsClient, a.config, a.events, agent.ID, call.Args)
+	case "verify_watermark":
+		return execVerifyWatermarkTool(ctx, a.gcsClient, a.config, agent.ID, call.Args)
 	default:
 		return map[string]any{"error": "unknown tool: " + call.Name}
 	}

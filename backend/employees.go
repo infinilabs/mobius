@@ -1550,6 +1550,24 @@ func defaultEmployees() []seedEmployee {
 			Tags:    []string{"media_tagger"},
 			Manager: "Steve",
 		},
+
+		// ── Asset Watermarking (reports to Steve) ───────────────────
+		{
+			Name:  "Asset Watermarker",
+			Title: "Media Asset Watermarker",
+			Role:  "Custom",
+			Backstory: "Owns embedding and verifying invisible watermarks in media assets (images/videos). " +
+				"Uses infinishield and ffmpeg/ffprobe to secure assets. " +
+				"Collects password, message, and intensity from the user before executing. " +
+				"Handles bulk folder or video jobs asynchronously via Tasks. " +
+				"Always redacts passwords from public logs and chat responses.",
+			Skills: []EmployeeSkill{
+				{"Watermark Embedding", "Embeds invisible watermarks in images and videos"},
+				{"Watermark Verification", "Verifies and extracts watermark messages using cryptographic passwords"},
+			},
+			Tags:    []string{"media_watermarker"},
+			Manager: "Steve",
+		},
 	}
 }
 

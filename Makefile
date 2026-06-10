@@ -38,9 +38,9 @@ build-backend:
 build-all: build-frontend build-backend
 	@echo "==> Mobius built successfully."
 
-build-sandbox:
+build-sandbox: build-infinishield
 	@echo "==> Building agent sandbox image ($(SANDBOX_IMAGE))..."
-	docker build -t $(SANDBOX_IMAGE) sandbox/
+	docker build -t $(SANDBOX_IMAGE) -f sandbox/Dockerfile .
 	@echo "==> Sandbox image built. Agents run commands inside this image."
 
 build-nsjail:

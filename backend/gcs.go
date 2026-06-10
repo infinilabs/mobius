@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"strings"
 
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/iterator"
@@ -76,7 +78,12 @@ func (g *GCSClient) Ping(ctx context.Context) error {
 }
 
 func (g *GCSClient) Upload(ctx context.Context, prefix, fileID, ext string, data io.Reader, contentType string) (string, error) {
-	objectName := fmt.Sprintf("%s/%s%s", prefix, fileID, ext)
+	var objectName string
+	if prefix == "" || prefix == "." {
+		objectName = fmt.Sprintf("%s%s", fileID, ext)
+	} else {
+		objectName = fmt.Sprintf("%s/%s%s", prefix, fileID, ext)
+	}
 	obj := g.client.Bucket(g.bucket).Object(objectName)
 
 	w := obj.NewWriter(ctx)
@@ -130,4 +137,45 @@ func (g *GCSClient) DeletePrefix(ctx context.Context, prefix string) error {
 
 func (g *GCSClient) Close() error {
 	return g.client.Close()
+}
+
+func (g *GCSClient) Download(ctx context.Context, relativePath, localPath string) error {
+	obj := g.client.Bucket(g.bucket).Object(relativePath)
+	r, err := obj.NewReader(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to open GCS reader for %s: %w", relativePath, err)
+	}
+	defer r.Close()
+
+	f, err := os.Create(localPath)
+	if err != nil {
+		return fmt.Errorf("failed to create local file %s: %w", localPath, err)
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(f, r); err != nil {
+		return fmt.Errorf("failed to copy GCS object to local file: %w", err)
+	}
+
+	slog.Debug("GCS download complete", "object", relativePath, "local", localPath)
+	return nil
+}
+
+func (g *GCSClient) ListPrefix(ctx context.Context, prefix string) ([]string, error) {
+	it := g.client.Bucket(g.bucket).Objects(ctx, &storage.Query{Prefix: prefix})
+	var objects []string
+	for {
+		attrs, err := it.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("GCS list objects prefix %q: %w", prefix, err)
+		}
+		if strings.HasSuffix(attrs.Name, "/") {
+			continue
+		}
+		objects = append(objects, attrs.Name)
+	}
+	return objects, nil
 }

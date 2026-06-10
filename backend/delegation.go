@@ -82,6 +82,10 @@ func (h *APIHandler) executeToolCall(
 		return execGetTagResultsTool(ctx, h.bqClient, call.Args)
 	case "query_tags":
 		return execQueryTagsTool(ctx, h.bqClient, call.Args)
+	case "watermark_assets":
+		return execWatermarkAssetsTool(ctx, h.pgClient, h.gcsClient, h.config, h.events, agent.ID, call.Args)
+	case "verify_watermark":
+		return execVerifyWatermarkTool(ctx, h.gcsClient, h.config, agent.ID, call.Args)
 	default:
 		return map[string]any{"error": "unknown tool: " + call.Name}
 	}

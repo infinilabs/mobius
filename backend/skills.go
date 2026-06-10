@@ -479,6 +479,9 @@ func employeeSkillDefaults() map[string][]string {
 		"Creative Tagger": {
 			"video-tagging",
 		},
+		"Asset Watermarker": {
+			"asset-watermarking",
+		},
 	}
 }
 
