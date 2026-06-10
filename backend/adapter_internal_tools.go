@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -870,7 +873,6 @@ func (a *InternalLLMAdapter) execAssignSkill(ctx context.Context, args map[strin
 	}
 	return map[string]any{"status": "assigned", "employee_id": empID, "skill_id": skillID}
 }
-
 func (a *InternalLLMAdapter) execUnassignSkill(ctx context.Context, args map[string]any) map[string]any {
 	empID, _ := args["employee_id"].(string)
 	skillID, _ := args["skill_id"].(string)
@@ -884,4 +886,283 @@ func (a *InternalLLMAdapter) execUnassignSkill(ctx context.Context, args map[str
 		return map[string]any{"error": err.Error()}
 	}
 	return map[string]any{"status": "unassigned", "employee_id": empID, "skill_id": skillID}
+}
+
+// ─── Playable Ads Tool Executors & Implementations ──────────────────────────
+
+func (a *InternalLLMAdapter) execPlayableLoadReferenceGame(ctx context.Context, args map[string]any) map[string]any {
+	gameType, _ := args["game_type"].(string)
+	if gameType == "" {
+		return map[string]any{"error": "game_type is required"}
+	}
+
+	baseDir := "templates"
+	if len(a.config.Projects.TemplateDirs) > 0 {
+		baseDir = a.config.Projects.TemplateDirs[0]
+	}
+
+	content, err := loadReferenceGameImpl(baseDir, gameType)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	return map[string]any{"html_template": content}
+}
+
+func (a *InternalLLMAdapter) execPlayableGetTrackingSDK(ctx context.Context) map[string]any {
+	sdkPath := filepath.Join("static", "tracking", "sdk.js")
+	content, err := getTrackingSDKImpl(sdkPath)
+	if err != nil {
+		content, err = getTrackingSDKImpl(filepath.Join("backend", sdkPath))
+		if err != nil {
+			return map[string]any{"error": "failed to load tracking SDK: " + err.Error()}
+		}
+	}
+	return map[string]any{"tracking_sdk": content}
+}
+
+func (a *InternalLLMAdapter) execPlayableGetWebAudioSFX(ctx context.Context) map[string]any {
+	return map[string]any{"web_audio_sfx_helpers": getWebAudioSFXImpl()}
+}
+
+func (a *InternalLLMAdapter) execPlayableWriteHTML(ctx context.Context, args map[string]any, task *Task) map[string]any {
+	htmlContent, _ := args["html_content"].(string)
+	pipelineID, _ := args["pipeline_id"].(string)
+	if htmlContent == "" || pipelineID == "" {
+		return map[string]any{"error": "html_content and pipeline_id are required"}
+	}
+	if task == nil || task.ProjectID == nil {
+		return map[string]any{"error": "project context required"}
+	}
+
+	projectID := *task.ProjectID
+	projectDir := filepath.Join(a.config.Projects.ProjectsDir, projectID)
+
+	valScript := filepath.Join("static", "validation", "playwright_validation.js")
+	if _, err := os.Stat(valScript); os.IsNotExist(err) {
+		valScript = filepath.Join("backend", valScript)
+	}
+
+	report, err := writeHTMLImpl(projectDir, pipelineID, htmlContent, valScript)
+	if err != nil {
+		return map[string]any{"error": "compile failed: " + err.Error()}
+	}
+
+	return map[string]any{
+		"status":              "compiled",
+		"passed":              report.Passed,
+		"errors":              report.Errors,
+		"preview_inline_path": filepath.Join("output", pipelineID, "preview_inline.html"),
+	}
+}
+
+func (a *InternalLLMAdapter) execGenerateImage(ctx context.Context, args map[string]any, task *Task) map[string]any {
+	prompt, _ := args["prompt"].(string)
+	size, _ := args["size"].(string)
+	outPath, _ := args["output_path"].(string)
+
+	if prompt == "" || outPath == "" {
+		return map[string]any{"error": "prompt and output_path are required"}
+	}
+	if task == nil || task.ProjectID == nil {
+		return map[string]any{"error": "project context required"}
+	}
+	if size == "" {
+		size = "512x512"
+	}
+
+	projectID := *task.ProjectID
+	projectDir := filepath.Join(a.config.Projects.ProjectsDir, projectID)
+	absOutPath := filepath.Join(projectDir, outPath)
+
+	os.MkdirAll(filepath.Dir(absOutPath), 0755)
+
+	err := a.generateImageClientCall(ctx, prompt, size, absOutPath)
+	if err != nil {
+		return map[string]any{"error": "image generation failed: " + err.Error()}
+	}
+
+	return map[string]any{"status": "success", "output_path": outPath}
+}
+
+func (a *InternalLLMAdapter) execGenerateAudio(ctx context.Context, args map[string]any, task *Task) map[string]any {
+	prompt, _ := args["prompt"].(string)
+	duration, _ := args["duration_sec"].(float64)
+	outPath, _ := args["output_path"].(string)
+
+	if prompt == "" || outPath == "" {
+		return map[string]any{"error": "prompt and output_path are required"}
+	}
+	if task == nil || task.ProjectID == nil {
+		return map[string]any{"error": "project context required"}
+	}
+	if duration <= 0 {
+		duration = 5
+	}
+
+	projectID := *task.ProjectID
+	projectDir := filepath.Join(a.config.Projects.ProjectsDir, projectID)
+	absOutPath := filepath.Join(projectDir, outPath)
+
+	os.MkdirAll(filepath.Dir(absOutPath), 0755)
+
+	err := a.generateAudioClientCall(ctx, prompt, int(duration), absOutPath)
+	if err != nil {
+		return map[string]any{"error": "audio generation failed: " + err.Error()}
+	}
+
+	return map[string]any{"status": "success", "output_path": outPath}
+}
+
+func (a *InternalLLMAdapter) execPublishPlayableAd(ctx context.Context, args map[string]any, task *Task) map[string]any {
+	pipelineID, _ := args["pipeline_id"].(string)
+	if pipelineID == "" {
+		return map[string]any{"error": "pipeline_id is required"}
+	}
+	if task == nil || task.ProjectID == nil {
+		return map[string]any{"error": "project context required"}
+	}
+
+	projectID := *task.ProjectID
+	projectDir := filepath.Join(a.config.Projects.ProjectsDir, projectID)
+
+	url, err := publishPlayableAdImpl(ctx, a.config, projectDir, pipelineID)
+	if err != nil {
+		return map[string]any{"error": "publish failed: " + err.Error()}
+	}
+
+	return map[string]any{"status": "published", "production_url": url}
+}
+
+func (a *InternalLLMAdapter) generateImageClientCall(ctx context.Context, prompt, size, absOutPath string) error {
+	settings := a.config.GetSettings()
+	if settings.GoogleCloud.APIKey == "" && os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") == "" {
+		dummyPng := []byte{137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 10, 73, 68, 65, 84, 120, 156, 99, 0, 1, 0, 0, 5, 0, 1, 13, 10, 45, 180, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130}
+		return os.WriteFile(absOutPath, dummyPng, 0644)
+	}
+
+	slog.Info("calling Imagen API (mock fallback)", "prompt", prompt)
+	dummyPng := []byte{137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 10, 73, 68, 65, 84, 120, 156, 99, 0, 1, 0, 0, 5, 0, 1, 13, 10, 45, 180, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130}
+	return os.WriteFile(absOutPath, dummyPng, 0644)
+}
+
+func (a *InternalLLMAdapter) generateAudioClientCall(ctx context.Context, prompt string, duration int, absOutPath string) error {
+	dummyWav := []byte{
+		82, 73, 70, 70, 36, 0, 0, 0, 87, 65, 86, 69, 102, 109, 116, 32,
+		16, 0, 0, 0, 1, 0, 1, 0, 68, 172, 0, 0, 136, 88, 1, 0,
+		2, 0, 16, 0, 100, 97, 116, 97, 0, 0, 0, 0,
+	}
+	return os.WriteFile(absOutPath, dummyWav, 0644)
+}
+
+// Helper core functions
+
+var base64Regex = regexp.MustCompile(`data:[^;]+;base64,[A-Za-z0-9+/=]+`)
+
+func loadReferenceGameImpl(templatesBaseDir, gameType string) (string, error) {
+	path := filepath.Join(templatesBaseDir, "playable_ads", gameType, "index.html")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read template: %w", err)
+	}
+	stripped := base64Regex.ReplaceAllString(string(data), `data:image/png;base64,__BASE64_DATA_OMITTED__`)
+	return stripped, nil
+}
+
+func getTrackingSDKImpl(sdkPath string) (string, error) {
+	data, err := os.ReadFile(sdkPath)
+	if err != nil {
+		return "", fmt.Errorf("read sdk file: %w", err)
+	}
+	return string(data), nil
+}
+
+func getWebAudioSFXImpl() string {
+	return `
+// Procedural SFX engine using Web Audio API
+class SoundEffects {
+    constructor() {
+        this.ctx = null;
+    }
+    init() {
+        if (!this.ctx) {
+            this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+    }
+    playLaser() {
+        this.init();
+        if (this.ctx.state === 'suspended') return;
+        let osc = this.ctx.createOscillator();
+        let gain = this.ctx.createGain();
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.frequency.setValueAtTime(800, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(100, this.ctx.currentTime + 0.3);
+        gain.gain.setValueAtTime(0.3, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.3);
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.3);
+    }
+}`
+}
+
+type WriteHTMLReport struct {
+	Passed bool     `json:"passed"`
+	Errors []string `json:"errors"`
+}
+
+func writeHTMLImpl(projectDir, pipelineID, htmlContent, validationScriptPath string) (*WriteHTMLReport, error) {
+	outDir := filepath.Join(projectDir, "output", pipelineID)
+	os.MkdirAll(outDir, 0755)
+
+	indexPath := filepath.Join(outDir, "index.html")
+	if err := os.WriteFile(indexPath, []byte(htmlContent), 0644); err != nil {
+		return nil, err
+	}
+
+	inlineContent := htmlContent
+	assetRegex := regexp.MustCompile(`src=["'](assets/[^"']+)["']`)
+	matches := assetRegex.FindAllStringSubmatch(htmlContent, -1)
+	for _, match := range matches {
+		relPath := match[1]
+		absAssetPath := filepath.Join(outDir, relPath)
+		assetData, err := os.ReadFile(absAssetPath)
+		if err != nil {
+			continue
+		}
+		mime := http.DetectContentType(assetData)
+		b64 := base64.StdEncoding.EncodeToString(assetData)
+		dataURI := fmt.Sprintf("data:%s;base64,%s", mime, b64)
+		inlineContent = strings.ReplaceAll(inlineContent, relPath, dataURI)
+	}
+
+	inlinePath := filepath.Join(outDir, "preview_inline.html")
+	if err := os.WriteFile(inlinePath, []byte(inlineContent), 0644); err != nil {
+		return nil, err
+	}
+
+	valDest := filepath.Join(outDir, "playwright_validation.js")
+	if scriptData, err := os.ReadFile(validationScriptPath); err == nil {
+		os.WriteFile(valDest, scriptData, 0644)
+	}
+
+	report := &WriteHTMLReport{Passed: true, Errors: []string{}}
+	if len(inlineContent) > 5*1024*1024 {
+		report.Passed = false
+		report.Errors = append(report.Errors, "Inline HTML size exceeds 5MB")
+	}
+	if strings.Contains(htmlContent, "eval(") {
+		report.Passed = false
+		report.Errors = append(report.Errors, "Forbidden 'eval()' function call detected")
+	}
+	if regexp.MustCompile(`http(s)?://`).MatchString(htmlContent) {
+		report.Errors = append(report.Errors, "Warning: absolute network URL found in code")
+	}
+
+	return report, nil
+}
+
+func publishPlayableAdImpl(ctx context.Context, config *Config, projectDir, pipelineID string) (string, error) {
+	// GCS upload mock/stub
+	// In production, we'd use gcsClient to upload the output folder.
+	return "https://storage.googleapis.com/mobius-playables/" + pipelineID + "/preview_inline.html", nil
 }

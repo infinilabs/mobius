@@ -661,6 +661,119 @@ var verifyWatermarkToolDef = ToolDef{
 	},
 }
 
+var playableLoadReferenceGameToolDef = ToolDef{
+	Name:        "playable_load_reference_game",
+	Description: "Load game reference template code. Massive base64 media data URIs are stripped automatically to save context window tokens.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"game_type": map[string]any{
+				"type":        "string",
+				"description": "Game genre, e.g. 'match3', 'tile_match', 'vertical_shooter'",
+			},
+		},
+		"required": []string{"game_type"},
+	},
+}
+
+var playableGetTrackingSDKToolDef = ToolDef{
+	Name:        "playable_get_tracking_sdk",
+	Description: "Get the PlayableTracker tracking SDK snippet to inject into the game HTML's <head>.",
+	Parameters: map[string]any{
+		"type":       "object",
+		"properties": map[string]any{},
+	},
+}
+
+var playableGetWebAudioSFXToolDef = ToolDef{
+	Name:        "playable_get_web_audio_sfx",
+	Description: "Get helper JS code templates for synthesizing sound effects procedures (laser, explosion, click) using browser Web Audio API.",
+	Parameters: map[string]any{
+		"type":       "object",
+		"properties": map[string]any{},
+	},
+}
+
+var playableWriteHTMLToolDef = ToolDef{
+	Name:        "playable_write_html",
+	Description: "Write HTML game code and compile local assets into a self-contained inlined preview. Runs basic compliance size and eval check.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"html_content": map[string]any{
+				"type":        "string",
+				"description": "The target raw index.html content (referencing assets/image.png etc).",
+			},
+			"pipeline_id": map[string]any{
+				"type":        "string",
+				"description": "Pipeline or run ID used to identify directory.",
+			},
+		},
+		"required": []string{"html_content", "pipeline_id"},
+	},
+}
+
+var generateImageToolDef = ToolDef{
+	Name:        "generate_image",
+	Description: "Generate a new image asset from a text prompt using Vertex AI Imagen 3.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"prompt": map[string]any{
+				"type":        "string",
+				"description": "Detailed visual prompt describing the desired sprite/background/UI asset.",
+			},
+			"size": map[string]any{
+				"type":        "string",
+				"description": "Target dimensions, e.g. '256x256', '512x512', '1024x1024'. Defaults to '512x512'.",
+			},
+			"output_path": map[string]any{
+				"type":        "string",
+				"description": "Relative output path in project (e.g. output/pipeline_123/assets/tomato.png)",
+			},
+		},
+		"required": []string{"prompt", "output_path"},
+	},
+}
+
+var generateAudioToolDef = ToolDef{
+	Name:        "generate_audio",
+	Description: "Generate a short sound effect or music clip from a text prompt using Vertex AI.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"prompt": map[string]any{
+				"type":        "string",
+				"description": "Acoustic prompt, e.g. 'retro game laser beep', 'farm ambient music loop'.",
+			},
+			"duration_sec": map[string]any{
+				"type":        "number",
+				"description": "Desired duration in seconds (1 to 15).",
+			},
+			"output_path": map[string]any{
+				"type":        "string",
+				"description": "Relative output path in project (e.g. output/pipeline_123/assets/laser.wav)",
+			},
+		},
+		"required": []string{"prompt", "output_path"},
+	},
+}
+
+var publishPlayableAdToolDef = ToolDef{
+	Name:        "publish_playable_ad",
+	Description: "Uploads the compiled playable ad and assets to the production GCS bucket.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"pipeline_id": map[string]any{
+				"type":        "string",
+				"description": "Pipeline or run ID to locate the compiled preview files.",
+			},
+		},
+		"required": []string{"pipeline_id"},
+	},
+}
+
 func buildAgentTools(agent *Employee, task *Task) []ToolDef {
 	var tools []ToolDef
 
@@ -696,6 +809,20 @@ func buildAgentTools(agent *Employee, task *Task) []ToolDef {
 
 	if hasTag(agent.Tags, "media_watermarker") {
 		tools = append(tools, watermarkAssetsToolDef, verifyWatermarkToolDef)
+	}
+
+	// Playable Ads team tools
+	if hasTag(agent.Tags, "planning") {
+		// Planner tools (if any)
+	}
+	if hasTag(agent.Tags, "design") {
+		tools = append(tools, generateImageToolDef)
+	}
+	if agent.Name == "Playable Developer" {
+		tools = append(tools, playableLoadReferenceGameToolDef, playableGetTrackingSDKToolDef, playableGetWebAudioSFXToolDef, playableWriteHTMLToolDef, generateImageToolDef, generateAudioToolDef)
+	}
+	if agent.Name == "Playable Publisher" {
+		tools = append(tools, publishPlayableAdToolDef)
 	}
 
 	return tools

@@ -380,6 +380,20 @@ func (a *InternalLLMAdapter) routeToolCall(ctx context.Context, call ToolCall, a
 		return execWatermarkAssetsTool(ctx, a.pgClient, a.gcsClient, a.config, a.events, agent.ID, call.Args)
 	case "verify_watermark":
 		return execVerifyWatermarkTool(ctx, a.gcsClient, a.config, agent.ID, call.Args)
+	case "playable_load_reference_game":
+		return a.execPlayableLoadReferenceGame(ctx, call.Args)
+	case "playable_get_tracking_sdk":
+		return a.execPlayableGetTrackingSDK(ctx)
+	case "playable_get_web_audio_sfx":
+		return a.execPlayableGetWebAudioSFX(ctx)
+	case "playable_write_html":
+		return a.execPlayableWriteHTML(ctx, call.Args, task)
+	case "generate_image":
+		return a.execGenerateImage(ctx, call.Args, task)
+	case "generate_audio":
+		return a.execGenerateAudio(ctx, call.Args, task)
+	case "publish_playable_ad":
+		return a.execPublishPlayableAd(ctx, call.Args, task)
 	default:
 		return map[string]any{"error": "unknown tool: " + call.Name}
 	}
