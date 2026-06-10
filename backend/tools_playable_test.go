@@ -31,3 +31,21 @@ func TestPlayableLoadReferenceGame(t *testing.T) {
 		t.Errorf("Raw base64 data was not stripped")
 	}
 }
+
+func TestPlayableGetTrackingSDK(t *testing.T) {
+	// static/tracking/sdk.js should exist relative to backend/ CWD.
+	content, err := getTrackingSDKImpl("static/tracking/sdk.js")
+	if err != nil {
+		t.Fatalf("failed to load sdk: %v", err)
+	}
+	if !strings.Contains(content, "PlayableTracker") {
+		t.Errorf("Expected sdk content to contain PlayableTracker, got: %s", content)
+	}
+}
+
+func TestPlayableGetWebAudioSFX(t *testing.T) {
+	content := getWebAudioSFXImpl()
+	if !strings.Contains(content, "SoundEffects") {
+		t.Errorf("Expected web audio sfx helper to contain SoundEffects class, got: %s", content)
+	}
+}
