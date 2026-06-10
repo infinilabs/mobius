@@ -1,8 +1,6 @@
 # Build output
 bin/
-backend/static/*
-!backend/static/validation/
-!backend/static/tracking/
+backend/static/
 backend/mobius
 frontend/dist/
 *.tsbuildinfo

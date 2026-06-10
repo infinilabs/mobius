@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -152,5 +155,77 @@ func TestPlayablePublishAd(t *testing.T) {
 	expectedUrl := "https://storage.googleapis.com/mobius-playables/test_pipe_99/preview_inline.html"
 	if url != expectedUrl {
 		t.Errorf("Expected URL %q, got %q", expectedUrl, url)
+	}
+}
+
+func TestPlayablePreviewServer(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "mobius-test-projects-")
+	defer os.RemoveAll(tmpDir)
+
+	pipelineID := "pipe_abc"
+	outDir := filepath.Join(tmpDir, "proj_1", "output", pipelineID)
+	os.MkdirAll(outDir, 0755)
+
+	htmlContent := "<html><body>Preview!</body></html>"
+	os.WriteFile(filepath.Join(outDir, "preview_inline.html"), []byte(htmlContent), 0644)
+	os.WriteFile(filepath.Join(outDir, "extra.js"), []byte("console.log('extra')"), 0644)
+
+	cfg := &Config{}
+	cfg.Projects.ProjectsDir = tmpDir
+	api := &APIHandler{config: cfg}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /playable-preview/{pipeline_id}", api.PlayablePreviewRedirect)
+	mux.HandleFunc("GET /playable-preview/{pipeline_id}/{path...}", api.PlayablePreviewHandler)
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Get(ts.URL + "/playable-preview/pipe_abc")
+	if err != nil {
+		t.Fatalf("GET redirect failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusMovedPermanently {
+		t.Errorf("Expected status 301, got %v", resp.StatusCode)
+	}
+	loc := resp.Header.Get("Location")
+	if !strings.HasSuffix(loc, "/playable-preview/pipe_abc/") {
+		t.Errorf("Expected redirect location to have trailing slash, got %q", loc)
+	}
+
+	resp2, err := http.Get(ts.URL + "/playable-preview/pipe_abc/")
+	if err != nil {
+		t.Fatalf("GET preview failed: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %v", resp2.StatusCode)
+	}
+	body, _ := io.ReadAll(resp2.Body)
+	if string(body) != htmlContent {
+		t.Errorf("Expected body %q, got %q", htmlContent, string(body))
+	}
+
+	resp3, err := http.Get(ts.URL + "/playable-preview/pipe_abc/extra.js")
+	if err != nil {
+		t.Fatalf("GET extra failed: %v", err)
+	}
+	defer resp3.Body.Close()
+	if resp3.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %v", resp3.StatusCode)
+	}
+	body3, _ := io.ReadAll(resp3.Body)
+	if string(body3) != "console.log('extra')" {
+		t.Errorf("Expected extra.js content, got %q", string(body3))
+	}
+
+	resp5, err := http.Get(ts.URL + "/playable-preview/missing_pipe/")
+	if resp5.StatusCode != http.StatusNotFound {
+		t.Errorf("Expected 404 for missing pipeline, got %v", resp5.StatusCode)
 	}
 }

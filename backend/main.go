@@ -428,6 +428,10 @@ func main() {
 	// File upload
 	mux.Handle("POST /api/upload", h(api.UploadFile))
 
+	// Playable Previews
+	mux.HandleFunc("GET /playable-preview/{pipeline_id}", api.PlayablePreviewRedirect)
+	mux.Handle("GET /playable-preview/{pipeline_id}/{path...}", h(api.PlayablePreviewHandler))
+
 	// Static files
 	staticDir := "backend/static"
 	if _, err := os.Stat(staticDir); os.IsNotExist(err) {

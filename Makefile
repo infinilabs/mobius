@@ -29,8 +29,15 @@ build-frontend:
 	mkdir -p backend/static
 	rm -rf backend/static/*
 	cp -r frontend/dist/* backend/static/
+	mkdir -p backend/static/tracking backend/static/validation
+	cp backend/static_src/tracking/sdk.js backend/static/tracking/
+	cp backend/static_src/validation/playwright_validation.js backend/static/validation/
 
 build-backend:
+	@echo "==> Copying playable static assets..."
+	mkdir -p backend/static/tracking backend/static/validation
+	cp backend/static_src/tracking/sdk.js backend/static/tracking/
+	cp backend/static_src/validation/playwright_validation.js backend/static/validation/
 	@echo "==> Building Go backend..."
 	mkdir -p bin
 	cd backend && go build -o ../bin/$(BINARY_NAME) .
