@@ -465,6 +465,7 @@ func founderSkillDefaults() map[string][]string {
 			"security-and-hardening",
 			"source-driven-development",
 			"mcp-builder",
+			"playable-orchestration",
 		},
 	}
 }
