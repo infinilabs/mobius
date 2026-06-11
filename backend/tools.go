@@ -761,13 +761,17 @@ var generateAudioToolDef = ToolDef{
 
 var publishPlayableAdToolDef = ToolDef{
 	Name:        "publish_playable_ad",
-	Description: "Uploads the compiled playable ad and assets to the production GCS bucket.",
+	Description: "Registers the compiled playable ad in the project creatives library and optionally uploads to production GCS.",
 	Parameters: map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"pipeline_id": map[string]any{
 				"type":        "string",
 				"description": "Pipeline or run ID to locate the compiled preview files.",
+			},
+			"publish_to_gcs": map[string]any{
+				"type":        "boolean",
+				"description": "If true, uploads assets to production GCS bucket and returns a signed production URL. Otherwise, registers locally and returns a local preview URL.",
 			},
 		},
 		"required": []string{"pipeline_id"},

@@ -178,7 +178,8 @@ func TestPlayablePublishAd(t *testing.T) {
 	projectDir := "/work/projects/test_proj"
 	pipelineID := "test_pipe_99"
 
-	url, err := publishPlayableAdImpl(context.Background(), nil, cfg, projectDir, pipelineID)
+	// 1. Test publishToGCS = false
+	url, gcsURI, err := publishPlayableAdImpl(context.Background(), nil, cfg, projectDir, pipelineID, false)
 	if err != nil {
 		t.Fatalf("publishPlayableAdImpl failed: %v", err)
 	}
@@ -186,6 +187,21 @@ func TestPlayablePublishAd(t *testing.T) {
 	expectedUrl := "http://localhost:1983/playable-preview/test_pipe_99/preview_inline.html"
 	if url != expectedUrl {
 		t.Errorf("Expected URL %q, got %q", expectedUrl, url)
+	}
+	if gcsURI != "" {
+		t.Errorf("Expected empty GCS URI for local-only, got %q", gcsURI)
+	}
+
+	// 2. Test publishToGCS = true but GCS is nil
+	url2, gcsURI2, err := publishPlayableAdImpl(context.Background(), nil, cfg, projectDir, pipelineID, true)
+	if err != nil {
+		t.Fatalf("publishPlayableAdImpl failed: %v", err)
+	}
+	if url2 != expectedUrl {
+		t.Errorf("Expected URL %q, got %q", expectedUrl, url2)
+	}
+	if gcsURI2 != "" {
+		t.Errorf("Expected empty GCS URI when GCS not configured, got %q", gcsURI2)
 	}
 }
 

@@ -1027,15 +1027,84 @@ func (a *InternalLLMAdapter) execPublishPlayableAd(ctx context.Context, args map
 		return map[string]any{"error": "project context required"}
 	}
 
+	publishToGCS, _ := args["publish_to_gcs"].(bool)
+
 	projectID := *task.ProjectID
 	projectDir := filepath.Join(a.config.Projects.ProjectsDir, projectID)
 
-	url, err := publishPlayableAdImpl(ctx, a.gcsClient, a.config, projectDir, pipelineID)
+	url, gcsURI, err := publishPlayableAdImpl(ctx, a.gcsClient, a.config, projectDir, pipelineID, publishToGCS)
 	if err != nil {
 		return map[string]any{"error": "publish failed: " + err.Error()}
 	}
 
-	return map[string]any{"status": "published", "production_url": url}
+	// Register the asset in Elasticsearch (creatives library)
+	if a.esClient != nil {
+		outDir := filepath.Join(projectDir, "output", pipelineID)
+		inlinePath := filepath.Join(outDir, "preview_inline.html")
+
+		var sizeBytes int64
+		var content string
+		var checksum string
+
+		if data, err := os.ReadFile(inlinePath); err == nil {
+			sizeBytes = int64(len(data))
+			checksum = calculateSHA256(data)
+
+			maxIdx := a.config.Projects.ContentMaxIndex
+			if maxIdx <= 0 {
+				maxIdx = 100000
+			}
+			if len(data) > maxIdx {
+				content = string(data[:maxIdx])
+			} else {
+				content = string(data)
+			}
+		} else {
+			slog.Warn("Failed to read compiled playable for asset registration", "path", inlinePath, "error", err)
+		}
+
+		now := time.Now().Format(time.RFC3339)
+		relativePath := filepath.Join("output", pipelineID, "preview_inline.html")
+
+		gcsStatus := "none"
+		if gcsURI != "" {
+			gcsStatus = "uploaded"
+		}
+
+		asset := &ProjectAsset{
+			ID:           generateID(),
+			ProjectID:    projectID,
+			Filename:     "preview_inline.html",
+			RelativePath: relativePath,
+			MIMEType:     "text/html",
+			SizeBytes:    sizeBytes,
+			Content:      content,
+			ContentType:  "document",
+			GCSStatus:    gcsStatus,
+			GCSURI:       gcsURI,
+			Checksum:     checksum,
+			Tags:         []string{"playable", "html5_ad"},
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}
+
+		if err := a.esClient.IndexProjectAsset(ctx, asset); err != nil {
+			slog.Warn("Failed to index playable asset in ES", "error", err)
+		} else {
+			slog.Info("Playable registered in project creatives library", "project", projectID, "path", relativePath)
+		}
+	}
+
+	status := "registered"
+	if publishToGCS && gcsURI != "" {
+		status = "published"
+	}
+
+	return map[string]any{
+		"status":         status,
+		"production_url": url,
+		"preview_url":    url,
+	}
 }
 
 func (a *InternalLLMAdapter) generateImageClientCall(ctx context.Context, prompt, size, absOutPath string) error {
@@ -1385,24 +1454,27 @@ func writeHTMLImpl(projectDir, pipelineID, htmlContent, validationScriptPath str
 	return report, nil
 }
 
-func publishPlayableAdImpl(ctx context.Context, gcs *GCSClient, config *Config, projectDir, pipelineID string) (string, error) {
+func publishPlayableAdImpl(ctx context.Context, gcs *GCSClient, config *Config, projectDir, pipelineID string, publishToGCS bool) (string, string, error) {
 	port := config.Server.Port
 	if port == 0 {
 		port = 1983
 	}
 	localURL := fmt.Sprintf("http://localhost:%d/playable-preview/%s/preview_inline.html", port, pipelineID)
 
-	if gcs == nil {
-		slog.Info("GCS client not configured, using local preview URL", "url", localURL)
-		return localURL, nil
+	if !publishToGCS || gcs == nil {
+		if publishToGCS && gcs == nil {
+			slog.Warn("GCS publish requested but GCS client not configured; falling back to local URL")
+		}
+		return localURL, "", nil
 	}
 
 	outDir := filepath.Join(projectDir, "output", pipelineID)
 	url, err := gcs.PublishPlayable(ctx, pipelineID, outDir)
 	if err != nil {
 		slog.Warn("GCS upload failed, falling back to local preview", "error", err, "url", localURL)
-		return localURL, nil
+		return localURL, "", nil
 	}
 
-	return url, nil
+	gcsURI := fmt.Sprintf("gs://%s/playable-ads/%s/index.html", gcs.bucket, pipelineID)
+	return url, gcsURI, nil
 }
