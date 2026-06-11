@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/iterator"
@@ -179,3 +182,90 @@ func (g *GCSClient) ListPrefix(ctx context.Context, prefix string) ([]string, er
 	}
 	return objects, nil
 }
+
+func (g *GCSClient) PublishPlayable(ctx context.Context, pipelineID, outputDir string) (string, error) {
+	if g == nil || g.client == nil {
+		return "", fmt.Errorf("GCS client not initialized")
+	}
+
+	absDir, err := filepath.Abs(outputDir)
+	if err != nil {
+		return "", err
+	}
+
+	uploadedCount := 0
+
+	err = filepath.Walk(absDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(absDir, path)
+		if err != nil {
+			return err
+		}
+
+		targetName := relPath
+		if relPath == "preview_inline.html" {
+			targetName = "index.html"
+		} else if relPath == "index.html" {
+			targetName = "source.html"
+		}
+
+		objectName := fmt.Sprintf("playable-ads/%s/%s", pipelineID, filepath.ToSlash(targetName))
+
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		contentType := mime.TypeByExtension(filepath.Ext(path))
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+
+		obj := g.client.Bucket(g.bucket).Object(objectName)
+		w := obj.NewWriter(ctx)
+		w.ContentType = contentType
+		w.CacheControl = "public, max-age=3600"
+
+		if _, err := io.Copy(w, file); err != nil {
+			w.Close()
+			return fmt.Errorf("failed to upload %s: %w", relPath, err)
+		}
+		if err := w.Close(); err != nil {
+			return fmt.Errorf("failed to close GCS writer for %s: %w", relPath, err)
+		}
+
+		uploadedCount++
+		return nil
+	})
+
+	if err != nil {
+		return "", err
+	}
+
+	slog.Info("Playable folder uploaded to GCS", "pipeline_id", pipelineID, "files_uploaded", uploadedCount)
+
+	indexObjectName := fmt.Sprintf("playable-ads/%s/index.html", pipelineID)
+	
+	opts := &storage.SignedURLOptions{
+		Scheme:  storage.SigningSchemeV4,
+		Method:  "GET",
+		Expires: time.Now().Add(7 * 24 * time.Hour),
+	}
+
+	signedURL, err := g.client.Bucket(g.bucket).SignedURL(indexObjectName, opts)
+	if err != nil {
+		slog.Warn("GCS signing failed, returning public URL", "error", err)
+		publicURL := fmt.Sprintf("https://storage.googleapis.com/%s/%s", g.bucket, indexObjectName)
+		return publicURL, nil
+	}
+
+	return signedURL, nil
+}
+

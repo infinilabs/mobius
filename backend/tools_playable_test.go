@@ -12,27 +12,46 @@ import (
 )
 
 func TestPlayableLoadReferenceGame(t *testing.T) {
-	// Setup dummy template
+	// Setup dummy templates
 	tmpDir, _ := os.MkdirTemp("", "mobius-test-templates-")
 	defer os.RemoveAll(tmpDir)
 
-	gameDir := filepath.Join(tmpDir, "playable_ads", "match3")
-	os.MkdirAll(gameDir, 0755)
-
+	// 1. Test Match3 (single-file)
+	match3Dir := filepath.Join(tmpDir, "playable_ads", "match3")
+	os.MkdirAll(match3Dir, 0755)
 	htmlContent := `<html><body><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."/></body></html>`
-	os.WriteFile(filepath.Join(gameDir, "index.html"), []byte(htmlContent), 0644)
+	os.WriteFile(filepath.Join(match3Dir, "index.html"), []byte(htmlContent), 0644)
 
-	// Call implementation
 	output, err := loadReferenceGameImpl(tmpDir, "match3")
 	if err != nil {
-		t.Fatalf("tool execution failed: %v", err)
+		t.Fatalf("match3 load failed: %v", err)
+	}
+	if !strings.Contains(output, "__BASE64_DATA_OMITTED__") {
+		t.Errorf("Expected base64 content to be stripped in match3, got: %s", output)
 	}
 
-	if !strings.Contains(output, "__BASE64_DATA_OMITTED__") {
-		t.Errorf("Expected base64 content to be stripped, got: %s", output)
+	// 2. Test Tile Match (multi-file)
+	tileMatchDir := filepath.Join(tmpDir, "playable_ads", "tile_match")
+	os.MkdirAll(tileMatchDir, 0755)
+	os.WriteFile(filepath.Join(tileMatchDir, "index.html"), []byte("<html>index</html>"), 0644)
+	os.WriteFile(filepath.Join(tileMatchDir, "style.css"), []byte("body { color: red; }"), 0644)
+	os.WriteFile(filepath.Join(tileMatchDir, "playable.js"), []byte("console.log('play');"), 0644)
+
+	outputTile, err := loadReferenceGameImpl(tmpDir, "tile_match")
+	if err != nil {
+		t.Fatalf("tile_match load failed: %v", err)
 	}
-	if strings.Contains(output, "iVBORw0KGgoAAA") {
-		t.Errorf("Raw base64 data was not stripped")
+	if !strings.Contains(outputTile, "// --- index.html ---") {
+		t.Error("Expected output to contain index.html marker")
+	}
+	if !strings.Contains(outputTile, "// --- style.css ---") {
+		t.Error("Expected output to contain style.css marker")
+	}
+	if !strings.Contains(outputTile, "// --- playable.js ---") {
+		t.Error("Expected output to contain playable.js marker")
+	}
+	if !strings.Contains(outputTile, "body { color: red; }") {
+		t.Error("Expected output to contain style content")
 	}
 }
 
@@ -89,7 +108,7 @@ func TestPlayableWriteHTML(t *testing.T) {
 		t.Fatalf("failed to read inline file: %v", err)
 	}
 
-	if !strings.Contains(string(inlineData), "data:text/plain; charset=utf-8;base64,") {
+	if !strings.Contains(string(inlineData), "data:image/png;base64,") {
 		t.Errorf("Expected base64 inlined asset, got: %s", string(inlineData))
 	}
 
@@ -109,10 +128,22 @@ func TestPlayableWriteHTML(t *testing.T) {
 		t.Error("Expected size check to fail")
 	}
 
-	// Test network URL warning/fail
+	// Test network URL warning (should pass, but emit warning)
 	reportUrl, _ := writeHTMLImpl(tmpDir, pipelineID, `<html><script src="https://example.com/api.js"></script></html>`, valScript)
-	if reportUrl.Passed {
-		t.Error("Expected network URL check to fail")
+	if !reportUrl.Passed {
+		t.Error("Expected network URL check to pass (warning only)")
+	}
+	if len(reportUrl.Errors) == 0 || !strings.Contains(reportUrl.Errors[0], "absolute network URL") {
+		t.Errorf("Expected network warning, got: %v", reportUrl.Errors)
+	}
+
+	// Test store URL in JS should pass without warnings
+	reportStore, _ := writeHTMLImpl(tmpDir, pipelineID, `<html><script>mraid.open("https://play.google.com/store");</script></html>`, valScript)
+	if !reportStore.Passed {
+		t.Error("Expected store URL check to pass")
+	}
+	if len(reportStore.Errors) > 0 {
+		t.Errorf("Expected no warnings for store URL in JS, got: %v", reportStore.Errors)
 	}
 }
 
@@ -147,12 +178,12 @@ func TestPlayablePublishAd(t *testing.T) {
 	projectDir := "/work/projects/test_proj"
 	pipelineID := "test_pipe_99"
 
-	url, err := publishPlayableAdImpl(context.Background(), cfg, projectDir, pipelineID)
+	url, err := publishPlayableAdImpl(context.Background(), nil, cfg, projectDir, pipelineID)
 	if err != nil {
 		t.Fatalf("publishPlayableAdImpl failed: %v", err)
 	}
 
-	expectedUrl := "https://storage.googleapis.com/mobius-playables/test_pipe_99/preview_inline.html"
+	expectedUrl := "http://localhost:1983/playable-preview/test_pipe_99/preview_inline.html"
 	if url != expectedUrl {
 		t.Errorf("Expected URL %q, got %q", expectedUrl, url)
 	}

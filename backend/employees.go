@@ -1579,7 +1579,7 @@ func defaultEmployees() []seedEmployee {
 				{"Game Design", "Design rules, scoring, and pacing for mini-games"},
 				{"Structured Planning", "Produce JSON blueprints for developer consumption"},
 			},
-			Tags:    []string{"planning"},
+			Tags:    []string{"planning", "playable_planner"},
 			Manager: "Linas",
 		},
 		{
@@ -1591,7 +1591,7 @@ func defaultEmployees() []seedEmployee {
 				{"UI/UX Design", "Layout game screens for mobile ratios (9:16 and 16:9)"},
 				{"Asset Sourcing", "Write prompts to generate game sprites and audio references"},
 			},
-			Tags:    []string{"design"},
+			Tags:    []string{"design", "playable_designer"},
 			Manager: "Linas",
 		},
 		{
@@ -1603,7 +1603,7 @@ func defaultEmployees() []seedEmployee {
 				{"HTML5 Development", "Write self-contained canvas/DOM interactive ads"},
 				{"Asset Compiling", "Inline binary assets as base64 data URIs"},
 			},
-			Tags:    []string{"engineering"},
+			Tags:    []string{"engineering", "playable_developer"},
 			Manager: "Linas",
 		},
 		{
@@ -1615,7 +1615,7 @@ func defaultEmployees() []seedEmployee {
 				{"QA Automation", "Run Playwright test scripts inside sandboxed environments"},
 				{"Specification Compliance", "Validate viewport responsiveness, audio context blocks, and MRAID APIs"},
 			},
-			Tags:    []string{"engineering"},
+			Tags:    []string{"engineering", "playable_reviewer"},
 			Manager: "Linas",
 		},
 		{
@@ -1627,7 +1627,7 @@ func defaultEmployees() []seedEmployee {
 				{"Cloud Operations", "Upload files to GCS bucket storage"},
 				{"Build Delivery", "Manage pipeline version tags and assets"},
 			},
-			Tags:    []string{"engineering"},
+			Tags:    []string{"engineering", "playable_publisher"},
 			Manager: "Linas",
 		},
 	}

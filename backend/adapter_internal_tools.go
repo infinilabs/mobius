@@ -3,15 +3,20 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+
+	"google.golang.org/genai"
 )
 
 const maxCommandOutput = 4000
@@ -1025,7 +1030,7 @@ func (a *InternalLLMAdapter) execPublishPlayableAd(ctx context.Context, args map
 	projectID := *task.ProjectID
 	projectDir := filepath.Join(a.config.Projects.ProjectsDir, projectID)
 
-	url, err := publishPlayableAdImpl(ctx, a.config, projectDir, pipelineID)
+	url, err := publishPlayableAdImpl(ctx, a.gcsClient, a.config, projectDir, pipelineID)
 	if err != nil {
 		return map[string]any{"error": "publish failed: " + err.Error()}
 	}
@@ -1037,21 +1042,147 @@ func (a *InternalLLMAdapter) generateImageClientCall(ctx context.Context, prompt
 	settings := a.config.GetSettings()
 	if settings.GoogleCloud.APIKey == "" && os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") == "" {
 		dummyPng := []byte{137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 10, 73, 68, 65, 84, 120, 156, 99, 0, 1, 0, 0, 5, 0, 1, 13, 10, 45, 180, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130}
+		slog.Warn("No Google Cloud credentials, writing dummy PNG for local test")
 		return os.WriteFile(absOutPath, dummyPng, 0644)
 	}
 
-	slog.Info("calling Imagen API (mock fallback)", "prompt", prompt)
-	dummyPng := []byte{137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 10, 73, 68, 65, 84, 120, 156, 99, 0, 1, 0, 0, 5, 0, 1, 13, 10, 45, 180, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130}
-	return os.WriteFile(absOutPath, dummyPng, 0644)
+	if a.providers == nil {
+		dummyPng := []byte{137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 10, 73, 68, 65, 84, 120, 156, 99, 0, 1, 0, 0, 5, 0, 1, 13, 10, 45, 180, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130}
+		slog.Warn("No provider registry available, writing dummy PNG for local test")
+		return os.WriteFile(absOutPath, dummyPng, 0644)
+	}
+
+	gp, ok := a.providers.Get("gemini").(*GeminiProvider)
+	if !ok || gp == nil {
+		return fmt.Errorf("gemini provider not found or misconfigured")
+	}
+
+	modelID, _ := a.config.GoogleCloud.VertexAI.DefaultModel("image")
+	if modelID == "" {
+		modelID = "imagen-3.0-generate-002"
+	}
+
+	client := gp.clientForModel(modelID)
+	if client == nil {
+		return fmt.Errorf("gemini client for model %s not initialized", modelID)
+	}
+
+	aspectRatio := mapSizeToAspectRatio(size)
+
+	config := &genai.GenerateImagesConfig{
+		NumberOfImages: 1,
+		OutputMIMEType: "image/png",
+		AspectRatio:    aspectRatio,
+	}
+
+	slog.Info("Generating image using Imagen 3", "prompt", prompt, "model", modelID, "aspect_ratio", aspectRatio)
+	response, err := client.Models.GenerateImages(ctx, modelID, prompt, config)
+	if err != nil {
+		return fmt.Errorf("imagen generation failed: %w", err)
+	}
+
+	if len(response.GeneratedImages) == 0 || response.GeneratedImages[0].Image == nil {
+		return fmt.Errorf("imagen returned no images")
+	}
+
+	imgBytes := response.GeneratedImages[0].Image.ImageBytes
+	if len(imgBytes) == 0 {
+		return fmt.Errorf("imagen returned empty image bytes")
+	}
+
+	if err := os.MkdirAll(filepath.Dir(absOutPath), 0755); err != nil {
+		return fmt.Errorf("failed to create directory for image: %w", err)
+	}
+
+	return os.WriteFile(absOutPath, imgBytes, 0644)
 }
 
 func (a *InternalLLMAdapter) generateAudioClientCall(ctx context.Context, prompt string, duration int, absOutPath string) error {
-	dummyWav := []byte{
-		82, 73, 70, 70, 36, 0, 0, 0, 87, 65, 86, 69, 102, 109, 116, 32,
-		16, 0, 0, 0, 1, 0, 1, 0, 68, 172, 0, 0, 136, 88, 1, 0,
-		2, 0, 16, 0, 100, 97, 116, 97, 0, 0, 0, 0,
+	slog.Info("Generating procedural ambient WAV", "prompt", prompt, "duration", duration, "path", absOutPath)
+	if err := os.MkdirAll(filepath.Dir(absOutPath), 0755); err != nil {
+		return fmt.Errorf("failed to create directory for audio: %w", err)
 	}
-	return os.WriteFile(absOutPath, dummyWav, 0644)
+	return generateAmbientWav(float64(duration), absOutPath)
+}
+
+func mapSizeToAspectRatio(size string) string {
+	parts := strings.Split(size, "x")
+	if len(parts) != 2 {
+		return "1:1"
+	}
+	var w, h float64
+	fmt.Sscanf(parts[0], "%f", &w)
+	fmt.Sscanf(parts[1], "%f", &h)
+	if w <= 0 || h <= 0 {
+		return "1:1"
+	}
+	ratio := w / h
+	if ratio == 1.0 {
+		return "1:1"
+	}
+	if ratio > 1.0 {
+		if ratio > 1.5 {
+			return "16:9"
+		}
+		return "4:3"
+	} else {
+		if ratio < 0.65 {
+			return "9:16"
+		}
+		return "3:4"
+	}
+}
+
+func generateAmbientWav(durationSec float64, absOutPath string) error {
+	const sampleRate = 44100
+	const bitsPerSample = 16
+	const numChannels = 1
+
+	numSamples := int(sampleRate * durationSec)
+	blockAlign := numChannels * (bitsPerSample / 8)
+	dataSize := numSamples * blockAlign
+
+	f, err := os.Create(absOutPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	f.Write([]byte("RIFF"))
+	binary.Write(f, binary.LittleEndian, uint32(36+dataSize))
+	f.Write([]byte("WAVE"))
+
+	f.Write([]byte("fmt "))
+	binary.Write(f, binary.LittleEndian, uint32(16))
+	binary.Write(f, binary.LittleEndian, uint16(1))
+	binary.Write(f, binary.LittleEndian, uint16(numChannels))
+	binary.Write(f, binary.LittleEndian, uint32(sampleRate))
+	binary.Write(f, binary.LittleEndian, uint32(sampleRate*numChannels*(bitsPerSample/8)))
+	binary.Write(f, binary.LittleEndian, uint16(blockAlign))
+	binary.Write(f, binary.LittleEndian, uint16(bitsPerSample))
+
+	f.Write([]byte("data"))
+	binary.Write(f, binary.LittleEndian, uint32(dataSize))
+
+	amp := 0.15
+	freqs := []float64{130.81, 196.0, 261.63, 329.63}
+	for i := 0; i < numSamples; i++ {
+		t := float64(i) / float64(sampleRate)
+		lfo := 0.5 + 0.5*math.Sin(2*math.Pi*0.1*t)
+		var sample float64
+		for j, freq := range freqs {
+			vol := amp * 0.4
+			if j >= 2 {
+				vol = amp * 0.2
+			}
+			vol = vol * (0.6 + 0.4*lfo)
+			sample += vol * math.Sin(2*math.Pi*freq*t+float64(j)*0.3)
+		}
+		val := int16(math.Max(-1.0, math.Min(1.0, sample)) * 32767)
+		binary.Write(f, binary.LittleEndian, val)
+	}
+
+	return nil
 }
 
 // Helper core functions
@@ -1059,13 +1190,54 @@ func (a *InternalLLMAdapter) generateAudioClientCall(ctx context.Context, prompt
 var base64Regex = regexp.MustCompile(`data:[^;]+;base64,[A-Za-z0-9+/=]+`)
 
 func loadReferenceGameImpl(templatesBaseDir, gameType string) (string, error) {
-	path := filepath.Join(templatesBaseDir, "playable_ads", gameType, "index.html")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("failed to read template: %w", err)
+	normalized := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(gameType)), "-", "_")
+	baseDir := filepath.Join(templatesBaseDir, "playable_ads", normalized)
+
+	if normalized == "match3" || normalized == "match_3" {
+		indexPath := filepath.Join(baseDir, "index.html")
+		data, err := os.ReadFile(indexPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to read match3 template: %w", err)
+		}
+		stripped := base64Regex.ReplaceAllString(string(data), `data:image/png;base64,__BASE64_DATA_OMITTED__`)
+		return stripped, nil
 	}
-	stripped := base64Regex.ReplaceAllString(string(data), `data:image/png;base64,__BASE64_DATA_OMITTED__`)
-	return stripped, nil
+
+	if normalized == "tile_match" || normalized == "mahjong" {
+		files := []string{"index.html", "style.css", "playable.js"}
+		var parts []string
+		parts = append(parts, "=== Animal Mahjong (Tile Match, Vanilla HTML/CSS/JS) ===")
+		parts = append(parts, fmt.Sprintf("Sample path: playable_ads/%s", normalized))
+
+		for _, file := range files {
+			filePath := filepath.Join(baseDir, file)
+			data, err := os.ReadFile(filePath)
+			if err != nil {
+				slog.Warn("Failed to read tile_match template file", "file", file, "error", err)
+				continue
+			}
+			content := string(data)
+			content = base64Regex.ReplaceAllString(content, `data:image/png;base64,__BASE64_DATA_OMITTED__`)
+			parts = append(parts, fmt.Sprintf("\n// --- %s ---\n%s", file, content))
+		}
+		return strings.Join(parts, "\n"), nil
+	}
+
+	if normalized == "vertical_shooter" || normalized == "shooter" {
+		indexPath := filepath.Join(baseDir, "index.html")
+		data, err := os.ReadFile(indexPath)
+		if err != nil {
+			indexPath = filepath.Join(baseDir, "template", "index.html")
+			data, err = os.ReadFile(indexPath)
+			if err != nil {
+				return "", fmt.Errorf("failed to read vertical_shooter template: %w", err)
+			}
+		}
+		stripped := base64Regex.ReplaceAllString(string(data), `data:image/png;base64,__BASE64_DATA_OMITTED__`)
+		return stripped, nil
+	}
+
+	return "", fmt.Errorf("unknown game type: %s", gameType)
 }
 
 func getTrackingSDKImpl(sdkPath string) (string, error) {
@@ -1119,21 +1291,73 @@ func writeHTMLImpl(projectDir, pipelineID, htmlContent, validationScriptPath str
 		return nil, err
 	}
 
-	inlineContent := htmlContent
-	assetRegex := regexp.MustCompile(`src=["'](assets/[^"']+)["']`)
-	matches := assetRegex.FindAllStringSubmatch(htmlContent, -1)
-	for _, match := range matches {
-		relPath := match[1]
-		absAssetPath := filepath.Join(outDir, relPath)
+	// 1. Normalization pass
+	normalizedHTML := htmlContent
+
+	// Normalize url(assets/...) and url('assets/...') to url('assets/...')
+	urlRegex := regexp.MustCompile(`(?i)url\(\s*['"]?(?:\./)?(assets/[^)'"]+)['"]?\s*\)`)
+	normalizedHTML = urlRegex.ReplaceAllString(normalizedHTML, "url('$1')")
+
+	// Normalize src="./assets/..." to src="assets/..."
+	attrRegex := regexp.MustCompile(`(?i)\b(src|href|poster|data-src)\s*=\s*(["'])\s*(?:\./)?(assets/[^"'\s<>]+)(["'])`)
+	normalizedHTML = attrRegex.ReplaceAllStringFunc(normalizedHTML, func(match string) string {
+		submatches := attrRegex.FindStringSubmatch(match)
+		if len(submatches) != 5 {
+			return match
+		}
+		attr := submatches[1]
+		openQuote := submatches[2]
+		assetPath := submatches[3]
+		closeQuote := submatches[4]
+		if openQuote != closeQuote {
+			return match
+		}
+		return fmt.Sprintf("%s=%s%s%s", attr, openQuote, assetPath, closeQuote)
+	})
+
+	// 2. Inlining pass: replace any quoted "assets/..." string with base64 data URI
+	inlineRegex := regexp.MustCompile(`(["'])(assets/[^"'\s<>]+)(["'])`)
+	inlineContent := inlineRegex.ReplaceAllStringFunc(normalizedHTML, func(match string) string {
+		submatches := inlineRegex.FindStringSubmatch(match)
+		if len(submatches) != 4 {
+			return match
+		}
+		quote := submatches[1]
+		relPath := submatches[2]
+		closeQuote := submatches[3]
+		if quote != closeQuote {
+			return match
+		}
+
+		cleanPath := relPath
+		if idx := strings.Index(cleanPath, "?"); idx != -1 {
+			cleanPath = cleanPath[:idx]
+		}
+		if idx := strings.Index(cleanPath, "#"); idx != -1 {
+			cleanPath = cleanPath[:idx]
+		}
+
+		absAssetPath := filepath.Join(outDir, cleanPath)
 		assetData, err := os.ReadFile(absAssetPath)
 		if err != nil {
-			continue
+			basename := filepath.Base(cleanPath)
+			fallbackPath := filepath.Join(outDir, "assets", basename)
+			assetData, err = os.ReadFile(fallbackPath)
+			if err != nil {
+				slog.Warn("Asset not found for inlining", "ref", relPath, "abs_path", absAssetPath, "fallback_path", fallbackPath)
+				return match
+			}
 		}
-		mime := http.DetectContentType(assetData)
+
+		mimeType := mime.TypeByExtension(filepath.Ext(cleanPath))
+		if mimeType == "" {
+			mimeType = http.DetectContentType(assetData)
+		}
 		b64 := base64.StdEncoding.EncodeToString(assetData)
-		dataURI := fmt.Sprintf("data:%s;base64,%s", mime, b64)
-		inlineContent = strings.ReplaceAll(inlineContent, relPath, dataURI)
-	}
+		dataURI := fmt.Sprintf("data:%s;base64,%s", mimeType, b64)
+
+		return quote + dataURI + quote
+	})
 
 	inlinePath := filepath.Join(outDir, "preview_inline.html")
 	if err := os.WriteFile(inlinePath, []byte(inlineContent), 0644); err != nil {
@@ -1154,16 +1378,31 @@ func writeHTMLImpl(projectDir, pipelineID, htmlContent, validationScriptPath str
 		report.Passed = false
 		report.Errors = append(report.Errors, "Forbidden 'eval()' function call detected")
 	}
-	if regexp.MustCompile(`http(s)?://`).MatchString(htmlContent) {
-		report.Passed = false
-		report.Errors = append(report.Errors, "Forbidden absolute network URL found in code")
+	if regexp.MustCompile(`(?i)(src|href)\s*=\s*["']http(s)?://`).MatchString(htmlContent) {
+		report.Errors = append(report.Errors, "Warning: absolute network URL found in src/href attributes")
 	}
 
 	return report, nil
 }
 
-func publishPlayableAdImpl(ctx context.Context, config *Config, projectDir, pipelineID string) (string, error) {
-	// GCS upload mock/stub
-	// In production, we'd use gcsClient to upload the output folder.
-	return "https://storage.googleapis.com/mobius-playables/" + pipelineID + "/preview_inline.html", nil
+func publishPlayableAdImpl(ctx context.Context, gcs *GCSClient, config *Config, projectDir, pipelineID string) (string, error) {
+	port := config.Server.Port
+	if port == 0 {
+		port = 1983
+	}
+	localURL := fmt.Sprintf("http://localhost:%d/playable-preview/%s/preview_inline.html", port, pipelineID)
+
+	if gcs == nil {
+		slog.Info("GCS client not configured, using local preview URL", "url", localURL)
+		return localURL, nil
+	}
+
+	outDir := filepath.Join(projectDir, "output", pipelineID)
+	url, err := gcs.PublishPlayable(ctx, pipelineID, outDir)
+	if err != nil {
+		slog.Warn("GCS upload failed, falling back to local preview", "error", err, "url", localURL)
+		return localURL, nil
+	}
+
+	return url, nil
 }

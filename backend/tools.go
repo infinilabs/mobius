@@ -812,16 +812,16 @@ func buildAgentTools(agent *Employee, task *Task) []ToolDef {
 	}
 
 	// Playable Ads team tools
-	if hasTag(agent.Tags, "planning") {
+	if hasTag(agent.Tags, "playable_planner") {
 		// Planner tools (if any)
 	}
-	if hasTag(agent.Tags, "design") {
+	if hasTag(agent.Tags, "playable_designer") {
 		tools = append(tools, generateImageToolDef)
 	}
-	if agent.Name == "Playable Developer" {
+	if hasTag(agent.Tags, "playable_developer") {
 		tools = append(tools, playableLoadReferenceGameToolDef, playableGetTrackingSDKToolDef, playableGetWebAudioSFXToolDef, playableWriteHTMLToolDef, generateImageToolDef, generateAudioToolDef)
 	}
-	if agent.Name == "Playable Publisher" {
+	if hasTag(agent.Tags, "playable_publisher") {
 		tools = append(tools, publishPlayableAdToolDef)
 	}
 
