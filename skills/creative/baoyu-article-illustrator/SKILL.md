@@ -3,7 +3,7 @@ name: baoyu-article-illustrator
 description: "Article illustrations: type × style × palette consistency."
 version: 1.57.0
 category: creative
-tags: [article-illustration, creative, hermes, image-generation]
+tags: [article-illustration, creative, hermes-optional, image-generation]
 ---
 
 # Article Illustrator

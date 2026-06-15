@@ -847,6 +847,25 @@ func (h *APIHandler) ListProjectAssets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, assets)
 }
 
+// ListCreatives serves the global Creatives library across all projects, optionally
+// filtered by tag (e.g. "playable") or content type. Backs the Creatives UI page.
+func (h *APIHandler) ListCreatives(w http.ResponseWriter, r *http.Request) {
+	if h.esClient == nil {
+		writeError(w, "Elasticsearch not available", http.StatusServiceUnavailable)
+		return
+	}
+	query := r.URL.Query().Get("q")
+	contentType := r.URL.Query().Get("type")
+	tag := r.URL.Query().Get("tag")
+
+	assets, err := h.esClient.SearchCreatives(r.Context(), query, contentType, tag, 200)
+	if err != nil {
+		writeError(w, "failed to search creatives: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, assets)
+}
+
 func (h *APIHandler) UploadProjectAsset(w http.ResponseWriter, r *http.Request) {
 	if h.pgClient == nil || h.esClient == nil {
 		writeError(w, "required services not available", http.StatusServiceUnavailable)
@@ -1026,6 +1045,54 @@ func (h *APIHandler) GetProjectAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, asset)
+}
+
+// GetProjectAssetContent streams the raw bytes of an asset from disk so the UI can
+// preview images and render playable HTML in an iframe. GetProjectAsset returns only
+// JSON metadata; this serves the actual file content with its stored MIME type.
+func (h *APIHandler) GetProjectAssetContent(w http.ResponseWriter, r *http.Request) {
+	if h.esClient == nil || h.pgClient == nil {
+		writeError(w, "required services not available", http.StatusServiceUnavailable)
+		return
+	}
+	projectID := r.PathValue("id")
+	assetID := r.PathValue("assetId")
+
+	asset, err := h.esClient.GetProjectAsset(r.Context(), assetID)
+	if err != nil || asset.ProjectID != projectID {
+		writeError(w, "asset not found", http.StatusNotFound)
+		return
+	}
+
+	project, err := h.pgClient.GetProject(r.Context(), projectID)
+	if err != nil {
+		writeError(w, "project not found", http.StatusNotFound)
+		return
+	}
+
+	fullPath, err := resolveWithinRoot(project.RootDir(h.config), asset.RelativePath)
+	if err != nil {
+		writeError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	f, err := os.Open(fullPath)
+	if err != nil {
+		writeError(w, "asset file not found", http.StatusNotFound)
+		return
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		writeError(w, "failed to stat asset", http.StatusInternalServerError)
+		return
+	}
+
+	if asset.MIMEType != "" {
+		w.Header().Set("Content-Type", asset.MIMEType)
+	}
+	http.ServeContent(w, r, asset.Filename, info.ModTime(), f)
 }
 
 func (h *APIHandler) UpdateProjectAsset(w http.ResponseWriter, r *http.Request) {

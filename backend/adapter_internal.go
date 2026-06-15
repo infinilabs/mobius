@@ -381,19 +381,22 @@ func (a *InternalLLMAdapter) routeToolCall(ctx context.Context, call ToolCall, a
 	case "verify_watermark":
 		return execVerifyWatermarkTool(ctx, a.gcsClient, a.config, agent.ID, call.Args)
 	case "playable_load_reference_game":
-		return a.execPlayableLoadReferenceGame(ctx, call.Args)
+		return execPlayableLoadReferenceGameTool(a.config, call.Args)
 	case "playable_get_tracking_sdk":
-		return a.execPlayableGetTrackingSDK(ctx)
+		return execPlayableGetTrackingSDKTool()
 	case "playable_get_web_audio_sfx":
-		return a.execPlayableGetWebAudioSFX(ctx)
+		return execPlayableGetWebAudioSFXTool()
 	case "playable_write_html":
-		return a.execPlayableWriteHTML(ctx, call.Args, task)
+		return execPlayableWriteHTMLTool(ctx, a.config, a.pgClient, resolvePlayableProjectID(task, call.Args), call.Args)
 	case "generate_image":
-		return a.execGenerateImage(ctx, call.Args, task)
+		return execGenerateImageTool(ctx, a.config, a.providers, a.gcsClient, a.esClient, a.pgClient, resolvePlayableProjectID(task, call.Args), call.Args)
 	case "generate_audio":
-		return a.execGenerateAudio(ctx, call.Args, task)
+		return execGenerateAudioTool(ctx, a.config, a.pgClient, resolvePlayableProjectID(task, call.Args), call.Args)
 	case "publish_playable_ad":
-		return a.execPublishPlayableAd(ctx, call.Args, task)
+		return execPublishPlayableAdTool(ctx, a.gcsClient, a.esClient, a.config, a.pgClient, resolvePlayableProjectID(task, call.Args), call.Args)
+	case "save_upload_to_assets":
+		// Autonomous task runs have no chat upload to save; srcFile is nil.
+		return execSaveUploadToAssetsTool(ctx, a.gcsClient, a.esClient, a.pgClient, a.config, resolvePlayableProjectID(task, call.Args), nil, call.Args)
 	default:
 		return map[string]any{"error": "unknown tool: " + call.Name}
 	}

@@ -775,6 +775,85 @@ func (es *ESClient) SearchAssetsByTask(ctx context.Context, taskID string) ([]Pr
 	return assets, nil
 }
 
+// SearchCreatives returns visual creative assets across ALL projects for the Creatives
+// library UI. Optional tag (e.g. "playable") and contentType narrow results. When neither
+// is given, results are restricted to visual creatives (image/video) or playable ads so
+// the library does not surface arbitrary text/code assets.
+func (es *ESClient) SearchCreatives(ctx context.Context, query, contentType, tag string, size int) ([]ProjectAsset, error) {
+	filter := []any{}
+	if contentType != "" {
+		filter = append(filter, map[string]any{"term": map[string]any{"content_type": contentType}})
+	}
+	if tag != "" {
+		filter = append(filter, map[string]any{"term": map[string]any{"tags": tag}})
+	}
+
+	boolQuery := map[string]any{}
+	if query != "" {
+		boolQuery["must"] = []any{
+			map[string]any{
+				"multi_match": map[string]any{
+					"query":  query,
+					"fields": []string{"content", "content_summary", "filename"},
+					"type":   "best_fields",
+				},
+			},
+		}
+	}
+	if len(filter) > 0 {
+		boolQuery["filter"] = filter
+	}
+	// Default creative whitelist when no explicit tag/type is requested.
+	if contentType == "" && tag == "" {
+		boolQuery["should"] = []any{
+			map[string]any{"terms": map[string]any{"content_type": []string{"image", "video"}}},
+			map[string]any{"term": map[string]any{"tags": "playable"}},
+		}
+		boolQuery["minimum_should_match"] = 1
+	}
+
+	body := map[string]any{
+		"query": map[string]any{"bool": boolQuery},
+		"sort":  []any{map[string]any{"updated_at": "desc"}},
+		"size":  size,
+	}
+
+	buf, _ := json.Marshal(body)
+	res, err := es.client.Search(
+		es.client.Search.WithContext(ctx),
+		es.client.Search.WithIndex(IdxProjectAssets),
+		es.client.Search.WithBody(bytes.NewReader(buf)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ES search creatives failed: %w", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return nil, fmt.Errorf("ES search creatives error: %s", res.String())
+	}
+
+	var result struct {
+		Hits struct {
+			Hits []struct {
+				Source ProjectAsset `json:"_source"`
+			} `json:"hits"`
+		} `json:"hits"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("ES decode creatives failed: %w", err)
+	}
+
+	assets := make([]ProjectAsset, 0, len(result.Hits.Hits))
+	for _, hit := range result.Hits.Hits {
+		a := hit.Source
+		if a.Tags == nil {
+			a.Tags = []string{}
+		}
+		assets = append(assets, a)
+	}
+	return assets, nil
+}
+
 func (es *ESClient) GetProjectAsset(ctx context.Context, id string) (*ProjectAsset, error) {
 	res, err := es.client.Get(IdxProjectAssets, id,
 		es.client.Get.WithContext(ctx),

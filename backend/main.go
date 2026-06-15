@@ -376,9 +376,13 @@ func main() {
 	mux.Handle("GET /api/projects/{id}/assets", h(api.ListProjectAssets))
 	mux.Handle("POST /api/projects/{id}/assets", h(api.UploadProjectAsset))
 	mux.Handle("GET /api/projects/{id}/assets/{assetId}", h(api.GetProjectAsset))
+	mux.Handle("GET /api/projects/{id}/assets/{assetId}/content", h(api.GetProjectAssetContent))
 	mux.Handle("PUT /api/projects/{id}/assets/{assetId}", h(api.UpdateProjectAsset))
 	mux.Handle("DELETE /api/projects/{id}/assets/{assetId}", h(api.DeleteProjectAsset))
 	mux.Handle("POST /api/projects/{id}/assets/reindex", h(api.ReindexProjectAssets))
+
+	// Creatives library (global, cross-project)
+	mux.Handle("GET /api/creatives", h(api.ListCreatives))
 
 	// Project Memory
 	mux.Handle("GET /api/projects/{id}/memory", h(api.GetProjectMemory))

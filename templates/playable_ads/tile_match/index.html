@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+  <meta name="format-detection" content="telephone=no">
+  <title>Mahjong Match Playable</title>
+  <link rel="stylesheet" href="style.css?v=20260509-animal-icons">
+</head>
+<body>
+  <main id="ad" class="playable" aria-label="Mahjong Match playable ad">
+    <canvas id="fxCanvas" class="fx-canvas"></canvas>
+
+    <header class="hud">
+      <div class="level-pill">
+        <span>LEVEL</span>
+        <strong>18</strong>
+      </div>
+      <div class="timer">
+        <div class="timer-top">
+          <strong id="timerText">01:00</strong>
+          <span id="goalText">0/7</span>
+        </div>
+        <div class="timer-track">
+          <div id="progressFill" class="timer-fill"></div>
+        </div>
+      </div>
+    </header>
+
+    <section class="stage" aria-label="Mahjong board">
+      <div class="table-glow"></div>
+      <div class="table-treasure" aria-hidden="true"></div>
+      <div id="board" class="board"></div>
+      <div id="hintHand" class="hint-hand"></div>
+    </section>
+
+    <section class="rack-wrap" aria-label="Collection bar">
+      <div id="rack" class="rack">
+        <div class="slot"></div>
+        <div class="slot"></div>
+        <div class="slot"></div>
+        <div class="slot"></div>
+        <div class="slot"></div>
+        <div class="slot"></div>
+        <div class="slot"></div>
+      </div>
+    </section>
+
+    <div class="main-cta-wrap">
+      <button id="mainCtaButton" class="main-cta" type="button">PLAY NOW</button>
+    </div>
+
+    <section id="winOverlay" class="win-overlay" aria-live="polite">
+      <div class="treasure" aria-hidden="true">
+        <div class="coin-pile"></div>
+        <div class="treasure-lid"></div>
+        <div class="treasure-box"></div>
+        <div class="treasure-lock"></div>
+      </div>
+      <h1 id="endTitle">Animal Mahjong</h1>
+      <p id="endCopy">You cleared the tray!</p>
+      <button id="ctaButton" class="cta" type="button">Play Now</button>
+    </section>
+  </main>
+
+  <script src="playable.js?v=20260509-animal-icons"></script>
+</body>
+</html>

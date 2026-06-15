@@ -3,7 +3,7 @@ name: pixel-art
 description: "Pixel art w/ era palettes (NES, Game Boy, PICO-8)."
 version: 2.0.0
 category: creative
-tags: [arcade, creative, gameboy, hermes, image, nes, pixel-art, retro, snes, video]
+tags: [arcade, creative, gameboy, hermes-optional, image, nes, pixel-art, retro, snes, video]
 ---
 
 # Pixel Art

@@ -2,12 +2,13 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   Plus, Search, FolderKanban, FileText, Database, Settings,
   Trash2, Upload, RefreshCw, X, Archive, Folder, ChevronUp, MessageSquare,
+  Eye, Gamepad2,
 } from 'lucide-react';
 import {
   listProjects, createProject, getProject, updateProject, deleteProject,
   listProjectAssets, uploadProjectAsset, deleteProjectAsset, reindexProjectAssets,
   getProjectMemory, updateProjectMemory, listEmployees, browseDirectories,
-  listConversations,
+  listConversations, assetContentUrl,
 } from '../api';
 import type { Project, ProjectAsset, Employee } from '../types';
 
@@ -186,6 +187,7 @@ function AssetsTab({ project }: { project: Project }) {
   const [assets, setAssets] = useState<ProjectAsset[]>([]);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
+  const [preview, setPreview] = useState<ProjectAsset | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -243,27 +245,76 @@ function AssetsTab({ project }: { project: Project }) {
         <p className="text-zinc-600 text-xs text-center py-8">No assets found</p>
       ) : (
         <div className="grid gap-2">
-          {assets.map(a => (
-            <div key={a.id} className="flex items-center gap-3 px-4 py-3 rounded-lg border border-zinc-800/40 bg-zinc-900/30 hover:border-zinc-700/60 transition-colors">
-              <FileText size={16} className="text-zinc-500 shrink-0" />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-zinc-200 truncate">{a.relative_path}</p>
-                <div className="flex items-center gap-3 text-[10px] text-zinc-500 mt-0.5">
-                  <span>{a.content_type}</span>
-                  <span>{(a.size_bytes / 1024).toFixed(1)} KB</span>
-                  <span className={a.gcs_status === 'synced' ? 'text-green-500' : a.gcs_status === 'failed' ? 'text-red-400' : 'text-amber-400'}>
-                    {a.gcs_status}
-                  </span>
-                  {a.content_truncated && <span className="text-amber-400">truncated</span>}
+          {assets.map(a => {
+            const previewable = isImageAsset(a) || isPlayableAsset(a);
+            return (
+              <div key={a.id} className="flex items-center gap-3 px-4 py-3 rounded-lg border border-zinc-800/40 bg-zinc-900/30 hover:border-zinc-700/60 transition-colors">
+                {isImageAsset(a) ? (
+                  <button onClick={() => setPreview(a)} className="shrink-0 cursor-pointer" title="Preview">
+                    <img src={assetContentUrl(project.id, a.id)} alt={a.filename} className="w-10 h-10 rounded object-cover border border-zinc-800" loading="lazy" />
+                  </button>
+                ) : isPlayableAsset(a) ? (
+                  <Gamepad2 size={16} className="text-cyan-400 shrink-0" />
+                ) : (
+                  <FileText size={16} className="text-zinc-500 shrink-0" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-zinc-200 truncate">{a.relative_path}</p>
+                  <div className="flex items-center gap-3 text-[10px] text-zinc-500 mt-0.5">
+                    <span>{a.content_type}</span>
+                    <span>{(a.size_bytes / 1024).toFixed(1)} KB</span>
+                    <span className={a.gcs_status === 'synced' ? 'text-green-500' : a.gcs_status === 'failed' ? 'text-red-400' : 'text-amber-400'}>
+                      {a.gcs_status}
+                    </span>
+                    {a.content_truncated && <span className="text-amber-400">truncated</span>}
+                    {a.tags?.filter(t => t !== '').map(t => (
+                      <span key={t} className={`px-1.5 py-0.5 rounded ${t === 'playable' ? 'bg-cyan-900/40 text-cyan-300 border border-cyan-700/40' : 'bg-zinc-800/60 text-zinc-400'}`}>{t}</span>
+                    ))}
+                  </div>
                 </div>
+                {previewable && (
+                  <button onClick={() => setPreview(a)} className="p-1.5 rounded text-zinc-500 hover:text-cyan-400 cursor-pointer transition-colors" title="Preview">
+                    <Eye size={14} />
+                  </button>
+                )}
+                <button onClick={() => handleDelete(a.id)} className="p-1.5 rounded text-zinc-600 hover:text-red-400 cursor-pointer transition-colors">
+                  <Trash2 size={14} />
+                </button>
               </div>
-              <button onClick={() => handleDelete(a.id)} className="p-1.5 rounded text-zinc-600 hover:text-red-400 cursor-pointer transition-colors">
-                <Trash2 size={14} />
-              </button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
+
+      {preview && <AssetPreviewModal projectId={project.id} asset={preview} onClose={() => setPreview(null)} />}
+    </div>
+  );
+}
+
+function isImageAsset(a: ProjectAsset): boolean {
+  return a.content_type === 'image' || a.mime_type?.startsWith('image/');
+}
+
+function isPlayableAsset(a: ProjectAsset): boolean {
+  return a.tags?.includes('playable') || a.mime_type === 'text/html';
+}
+
+function AssetPreviewModal({ projectId, asset, onClose }: { projectId: string; asset: ProjectAsset; onClose: () => void }) {
+  const url = assetContentUrl(projectId, asset.id);
+  const playable = isPlayableAsset(asset);
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-6" onClick={onClose}>
+      <div className="relative max-w-[90vw] max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs text-zinc-300 font-mono truncate">{asset.relative_path}</span>
+          <button onClick={onClose} className="p-1 rounded text-zinc-400 hover:text-white cursor-pointer"><X size={18} /></button>
+        </div>
+        {playable ? (
+          <iframe src={url} title={asset.filename} className="bg-white rounded-lg border border-zinc-700" style={{ width: '420px', height: '720px', maxHeight: '80vh' }} />
+        ) : (
+          <img src={url} alt={asset.filename} className="rounded-lg object-contain" style={{ maxWidth: '90vw', maxHeight: '80vh' }} />
+        )}
+      </div>
     </div>
   );
 }

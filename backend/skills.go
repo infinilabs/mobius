@@ -483,6 +483,21 @@ func employeeSkillDefaults() map[string][]string {
 		"Asset Watermarker": {
 			"asset-watermarking",
 		},
+		"Playable Planner": {
+			"playable-planning",
+		},
+		"Playable Designer": {
+			"playable-design",
+		},
+		"Playable Developer": {
+			"playable-development",
+		},
+		"Playable Reviewer": {
+			"playable-review",
+		},
+		"Playable Publisher": {
+			"playable-publishing",
+		},
 	}
 }
 

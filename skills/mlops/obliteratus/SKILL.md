@@ -3,7 +3,7 @@ name: obliteratus
 description: "OBLITERATUS: abliterate LLM refusals (diff-in-means)."
 version: 2.0.0
 category: mlops
-tags: [abliteration, hermes, huggingface, llm, mechanistic-interpretability, mlops, model-surgery, refusal-removal, svd, uncensoring, weight-projection]
+tags: [abliteration, hermes-optional, huggingface, llm, mechanistic-interpretability, mlops, model-surgery, refusal-removal, svd, uncensoring, weight-projection]
 ---
 
 # OBLITERATUS Skill

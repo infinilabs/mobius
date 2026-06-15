@@ -3,7 +3,7 @@ name: pokemon-player
 description: "Play Pokemon via headless emulator + RAM reads."
 version: 1.0.0
 category: gaming
-tags: [gaming, hermes]
+tags: [gaming, hermes-optional]
 ---
 
 # Pokemon Player

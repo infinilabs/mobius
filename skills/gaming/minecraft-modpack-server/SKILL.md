@@ -3,7 +3,7 @@ name: minecraft-modpack-server
 description: "Host modded Minecraft servers (CurseForge, Modrinth)."
 version: 1.0.0
 category: gaming
-tags: [gaming, hermes]
+tags: [gaming, hermes-optional]
 ---
 
 # Minecraft Modpack Server Setup

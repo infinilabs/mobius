@@ -142,6 +142,15 @@ func (g *GCSClient) Close() error {
 	return g.client.Close()
 }
 
+// DownloadURI downloads a gs:// object identified by its full URI to a local path.
+func (g *GCSClient) DownloadURI(ctx context.Context, gcsURI, localPath string) error {
+	prefix := fmt.Sprintf("gs://%s/", g.bucket)
+	if len(gcsURI) <= len(prefix) {
+		return fmt.Errorf("invalid GCS URI: %s", gcsURI)
+	}
+	return g.Download(ctx, gcsURI[len(prefix):], localPath)
+}
+
 func (g *GCSClient) Download(ctx context.Context, relativePath, localPath string) error {
 	obj := g.client.Bucket(g.bucket).Object(relativePath)
 	r, err := obj.NewReader(ctx)

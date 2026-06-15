@@ -11,6 +11,19 @@ import (
 	"time"
 )
 
+// latestUploadedFile returns the most recent file attached to any message in the
+// conversation, or nil if none. Lets save_upload_to_assets pick up "the image I just
+// uploaded" without the model echoing back an exact file identifier.
+func latestUploadedFile(conv *Conversation) *FileRef {
+	for i := len(conv.Messages) - 1; i >= 0; i-- {
+		if files := conv.Messages[i].Files; len(files) > 0 {
+			f := files[len(files)-1]
+			return &f
+		}
+	}
+	return nil
+}
+
 func (h *APIHandler) executeToolCall(
 	ctx context.Context,
 	call ToolCall,
@@ -76,6 +89,26 @@ func (h *APIHandler) executeToolCall(
 		return h.execSearchProjectAssets(ctx, call.Args)
 	case "list_project_assets":
 		return h.execListProjectAssets(ctx, call.Args)
+	case "playable_load_reference_game":
+		return execPlayableLoadReferenceGameTool(h.config, call.Args)
+	case "playable_get_tracking_sdk":
+		return execPlayableGetTrackingSDKTool()
+	case "playable_get_web_audio_sfx":
+		return execPlayableGetWebAudioSFXTool()
+	case "playable_write_html":
+		return execPlayableWriteHTMLTool(ctx, h.config, h.pgClient, resolvePlayableProjectID(nil, call.Args), call.Args)
+	case "generate_image":
+		return execGenerateImageTool(ctx, h.config, h.providers, h.gcsClient, h.esClient, h.pgClient, resolvePlayableProjectID(nil, call.Args), call.Args)
+	case "generate_audio":
+		return execGenerateAudioTool(ctx, h.config, h.pgClient, resolvePlayableProjectID(nil, call.Args), call.Args)
+	case "publish_playable_ad":
+		return execPublishPlayableAdTool(ctx, h.gcsClient, h.esClient, h.config, h.pgClient, resolvePlayableProjectID(nil, call.Args), call.Args)
+	case "save_upload_to_assets":
+		var srcFile *FileRef
+		if conv := h.conversations.Get(conversationID); conv != nil {
+			srcFile = latestUploadedFile(conv)
+		}
+		return execSaveUploadToAssetsTool(ctx, h.gcsClient, h.esClient, h.pgClient, h.config, resolvePlayableProjectID(nil, call.Args), srcFile, call.Args)
 	case "tag_media":
 		return execTagMediaTool(ctx, h.bqClient, h.esClient, h.events, agent.ID, call.Args)
 	case "get_tag_results":

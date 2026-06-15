@@ -731,6 +731,10 @@ var generateImageToolDef = ToolDef{
 				"type":        "string",
 				"description": "Relative output path in project (e.g. output/pipeline_123/assets/tomato.png)",
 			},
+			"transparent": map[string]any{
+				"type":        "boolean",
+				"description": "Set true for sprites/icons/game pieces: removes the flat chroma-key background, crops to content, and adds a white outline. Leave false/unset for full-bleed backgrounds. Requires the prompt to render the subject on a solid magenta (#ff00ff) background.",
+			},
 		},
 		"required": []string{"prompt", "output_path"},
 	},
@@ -775,6 +779,25 @@ var publishPlayableAdToolDef = ToolDef{
 			},
 		},
 		"required": []string{"pipeline_id"},
+	},
+}
+
+var saveUploadToAssetsToolDef = ToolDef{
+	Name:        "save_upload_to_assets",
+	Description: "Save the image or file the user most recently uploaded in this chat into the current project's asset library, so it can be used as part of a playable ad. Optionally place it at a specific relative path and tag it.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"relative_path": map[string]any{
+				"type":        "string",
+				"description": "Destination path within the project, e.g. \"assets/hero.png\". Defaults to assets/<original filename>.",
+			},
+			"tags": map[string]any{
+				"type":        "array",
+				"items":       map[string]any{"type": "string"},
+				"description": "Optional tags to attach to the asset, e.g. [\"playable_asset\",\"background\"].",
+			},
+		},
 	},
 }
 
@@ -827,6 +850,14 @@ func buildAgentTools(agent *Employee, task *Task) []ToolDef {
 	}
 	if hasTag(agent.Tags, "playable_publisher") {
 		tools = append(tools, publishPlayableAdToolDef)
+	}
+
+	// Adding user chat uploads to a project's assets is available to management and the
+	// playable team regardless of task context, since it is driven from interactive chat.
+	if agent.Role == "CEO" || hasTag(agent.Tags, "manager") || hasTag(agent.Tags, "founder") ||
+		hasTag(agent.Tags, "playable_planner") || hasTag(agent.Tags, "playable_designer") ||
+		hasTag(agent.Tags, "playable_developer") {
+		tools = append(tools, saveUploadToAssetsToolDef)
 	}
 
 	return tools

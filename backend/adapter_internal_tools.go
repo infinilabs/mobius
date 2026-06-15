@@ -895,15 +895,32 @@ func (a *InternalLLMAdapter) execUnassignSkill(ctx context.Context, args map[str
 
 // ─── Playable Ads Tool Executors & Implementations ──────────────────────────
 
-func (a *InternalLLMAdapter) execPlayableLoadReferenceGame(ctx context.Context, args map[string]any) map[string]any {
+// resolvePlayableProjectID resolves the active project for a playable tool call.
+// The autonomous run path supplies a *Task; the interactive chat path injects
+// _project_id into the tool args (see chat.go). Both routers call this helper so
+// they share one resolution rule.
+func resolvePlayableProjectID(task *Task, args map[string]any) string {
+	if task != nil && task.ProjectID != nil && *task.ProjectID != "" {
+		return *task.ProjectID
+	}
+	if pid, ok := args["_project_id"].(string); ok && pid != "" {
+		return pid
+	}
+	if pid, ok := args["project_id"].(string); ok && pid != "" {
+		return pid
+	}
+	return ""
+}
+
+func execPlayableLoadReferenceGameTool(config *Config, args map[string]any) map[string]any {
 	gameType, _ := args["game_type"].(string)
 	if gameType == "" {
 		return map[string]any{"error": "game_type is required"}
 	}
 
 	baseDir := "templates"
-	if len(a.config.Projects.TemplateDirs) > 0 {
-		baseDir = a.config.Projects.TemplateDirs[0]
+	if len(config.Projects.TemplateDirs) > 0 {
+		baseDir = config.Projects.TemplateDirs[0]
 	}
 
 	content, err := loadReferenceGameImpl(baseDir, gameType)
@@ -913,7 +930,7 @@ func (a *InternalLLMAdapter) execPlayableLoadReferenceGame(ctx context.Context, 
 	return map[string]any{"html_template": content}
 }
 
-func (a *InternalLLMAdapter) execPlayableGetTrackingSDK(ctx context.Context) map[string]any {
+func execPlayableGetTrackingSDKTool() map[string]any {
 	sdkPath := filepath.Join("static", "tracking", "sdk.js")
 	content, err := getTrackingSDKImpl(sdkPath)
 	if err != nil {
@@ -925,22 +942,21 @@ func (a *InternalLLMAdapter) execPlayableGetTrackingSDK(ctx context.Context) map
 	return map[string]any{"tracking_sdk": content}
 }
 
-func (a *InternalLLMAdapter) execPlayableGetWebAudioSFX(ctx context.Context) map[string]any {
+func execPlayableGetWebAudioSFXTool() map[string]any {
 	return map[string]any{"web_audio_sfx_helpers": getWebAudioSFXImpl()}
 }
 
-func (a *InternalLLMAdapter) execPlayableWriteHTML(ctx context.Context, args map[string]any, task *Task) map[string]any {
+func execPlayableWriteHTMLTool(ctx context.Context, config *Config, pg *PGClient, projectID string, args map[string]any) map[string]any {
 	htmlContent, _ := args["html_content"].(string)
 	pipelineID, _ := args["pipeline_id"].(string)
 	if htmlContent == "" || pipelineID == "" {
 		return map[string]any{"error": "html_content and pipeline_id are required"}
 	}
-	if task == nil || task.ProjectID == nil {
+	if projectID == "" {
 		return map[string]any{"error": "project context required"}
 	}
 
-	projectID := *task.ProjectID
-	projectDir := filepath.Join(a.config.Projects.ProjectsDir, projectID)
+	projectDir := playableProjectDir(ctx, pg, config, projectID)
 
 	valScript := filepath.Join("static", "validation", "playwright_validation.js")
 	if _, err := os.Stat(valScript); os.IsNotExist(err) {
@@ -960,7 +976,143 @@ func (a *InternalLLMAdapter) execPlayableWriteHTML(ctx context.Context, args map
 	}
 }
 
-func (a *InternalLLMAdapter) execGenerateImage(ctx context.Context, args map[string]any, task *Task) map[string]any {
+// execSaveUploadToAssetsTool copies a file the user uploaded in chat into the project's
+// asset library and indexes it, so an uploaded image can become part of a playable ad.
+// srcFile is the most recent chat upload, resolved by the caller from the conversation;
+// it is nil in autonomous (non-chat) runs, where there is no upload to save.
+func execSaveUploadToAssetsTool(ctx context.Context, gcs *GCSClient, es *ESClient, pg *PGClient, config *Config, projectID string, srcFile *FileRef, args map[string]any) map[string]any {
+	if es == nil || pg == nil {
+		return map[string]any{"error": "required services not available"}
+	}
+	if projectID == "" {
+		return map[string]any{"error": "project context required"}
+	}
+	if srcFile == nil {
+		return map[string]any{"error": "no uploaded file found in this conversation to add to assets"}
+	}
+
+	project, err := pg.GetProject(ctx, projectID)
+	if err != nil {
+		return map[string]any{"error": "project not found: " + err.Error()}
+	}
+
+	relativePath, _ := args["relative_path"].(string)
+	if relativePath == "" {
+		name := filepath.Base(srcFile.Name)
+		if name == "" || name == "." || name == "/" {
+			name = srcFile.ID
+		}
+		relativePath = filepath.Join("assets", name)
+	}
+
+	root := project.RootDir(config)
+	fullPath, err := resolveWithinRoot(root, relativePath)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		return map[string]any{"error": "failed to create asset dir: " + err.Error()}
+	}
+
+	// Fetch the uploaded bytes into the project from GCS or the local uploads dir.
+	if srcFile.GCSURI != "" && gcs != nil {
+		if err := gcs.DownloadURI(ctx, srcFile.GCSURI, fullPath); err != nil {
+			return map[string]any{"error": "failed to fetch uploaded file from storage: " + err.Error()}
+		}
+	} else {
+		localSrc := filepath.Join(uploadsDir, srcFile.ID+filepath.Ext(srcFile.Name))
+		data, rerr := os.ReadFile(localSrc)
+		if rerr != nil {
+			return map[string]any{"error": "uploaded file is no longer available: " + rerr.Error()}
+		}
+		if werr := os.WriteFile(fullPath, data, 0644); werr != nil {
+			return map[string]any{"error": "failed to write asset: " + werr.Error()}
+		}
+	}
+
+	buf, err := os.ReadFile(fullPath)
+	if err != nil {
+		buf = []byte{}
+	}
+
+	mimeType := srcFile.MIMEType
+	if mimeType == "" {
+		mimeType = resolveMimeType(srcFile.Name, "")
+	}
+	ct := classifyContentType(mimeType)
+	var content string
+	var truncated bool
+	if isTextIndexable(ct) && len(buf) > 0 {
+		maxIdx := config.Projects.ContentMaxIndex
+		if len(buf) > maxIdx {
+			content = string(buf[:maxIdx])
+			truncated = true
+		} else {
+			content = string(buf)
+		}
+	}
+
+	var tags []string
+	if v, ok := args["tags"].([]any); ok {
+		for _, t := range v {
+			if s, ok := t.(string); ok {
+				tags = append(tags, s)
+			}
+		}
+	}
+	if len(tags) == 0 {
+		tags = []string{"uploaded"}
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	asset := &ProjectAsset{
+		ID:               generateID(),
+		ProjectID:        projectID,
+		Filename:         filepath.Base(relativePath),
+		RelativePath:     relativePath,
+		MIMEType:         mimeType,
+		SizeBytes:        int64(len(buf)),
+		Content:          content,
+		ContentTruncated: truncated,
+		ContentType:      ct,
+		GCSStatus:        "pending",
+		Checksum:         calculateSHA256(buf),
+		Tags:             tags,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+
+	if err := es.IndexProjectAsset(ctx, asset); err != nil {
+		return map[string]any{"error": "failed to index asset: " + err.Error()}
+	}
+	if gcs != nil {
+		go uploadAssetToGCS(config, gcs, es, project, asset.ID, fullPath, relativePath)
+	}
+
+	slog.Info("chat upload saved to project assets", "project", project.Name, "path", relativePath, "asset_id", asset.ID)
+	return map[string]any{
+		"status":        "success",
+		"asset_id":      asset.ID,
+		"relative_path": relativePath,
+		"content_type":  ct,
+		"tags":          tags,
+	}
+}
+
+// playableProjectDir resolves the on-disk working directory for a playable project.
+// It uses the project's canonical RootDir (keyed by Name) so generated and published
+// files land where ReindexProjectAssets and GCS sync expect them. Falls back to
+// ProjectsDir/<projectID> only when the project cannot be resolved (e.g. no PG client).
+func playableProjectDir(ctx context.Context, pg *PGClient, config *Config, projectID string) string {
+	if pg != nil {
+		if project, err := pg.GetProject(ctx, projectID); err == nil {
+			return project.RootDir(config)
+		}
+	}
+	return filepath.Join(config.Projects.ProjectsDir, projectID)
+}
+
+func execGenerateImageTool(ctx context.Context, config *Config, providers *ProviderRegistry, gcs *GCSClient, es *ESClient, pg *PGClient, projectID string, args map[string]any) map[string]any {
 	prompt, _ := args["prompt"].(string)
 	size, _ := args["size"].(string)
 	outPath, _ := args["output_path"].(string)
@@ -968,28 +1120,92 @@ func (a *InternalLLMAdapter) execGenerateImage(ctx context.Context, args map[str
 	if prompt == "" || outPath == "" {
 		return map[string]any{"error": "prompt and output_path are required"}
 	}
-	if task == nil || task.ProjectID == nil {
+	if projectID == "" {
 		return map[string]any{"error": "project context required"}
 	}
 	if size == "" {
 		size = "512x512"
 	}
 
-	projectID := *task.ProjectID
-	projectDir := filepath.Join(a.config.Projects.ProjectsDir, projectID)
+	// Resolve the canonical project so generated files land under RootDir (reindexable +
+	// GCS-synced). Fall back to ProjectsDir/<id> only when the project can't be resolved.
+	var project *Project
+	projectDir := filepath.Join(config.Projects.ProjectsDir, projectID)
+	if pg != nil {
+		if p, perr := pg.GetProject(ctx, projectID); perr == nil {
+			project = p
+			projectDir = p.RootDir(config)
+		}
+	}
 	absOutPath := filepath.Join(projectDir, outPath)
 
 	os.MkdirAll(filepath.Dir(absOutPath), 0755)
 
-	err := a.generateImageClientCall(ctx, prompt, size, absOutPath)
+	err := generateImageAsset(ctx, config, providers, prompt, size, absOutPath)
 	if err != nil {
 		return map[string]any{"error": "image generation failed: " + err.Error()}
+	}
+
+	transparent, _ := args["transparent"].(bool)
+	if transparent {
+		if perr := postProcessSprite(absOutPath); perr != nil {
+			slog.Warn("sprite post-processing failed; keeping raw image", "path", absOutPath, "error", perr)
+		}
+	}
+
+	// Register the generated image in the asset library (best-effort) so it appears in the
+	// project AssetsTab and Creatives immediately. The file is also under RootDir, so a
+	// reindex would recover it even if indexing here fails.
+	if es != nil {
+		registerGeneratedImageAsset(ctx, gcs, es, config, project, projectID, outPath, absOutPath, transparent)
 	}
 
 	return map[string]any{"status": "success", "output_path": outPath}
 }
 
-func (a *InternalLLMAdapter) execGenerateAudio(ctx context.Context, args map[string]any, task *Task) map[string]any {
+// registerGeneratedImageAsset indexes a freshly generated image as a ProjectAsset and
+// kicks off async GCS sync, mirroring UploadProjectAsset.
+func registerGeneratedImageAsset(ctx context.Context, gcs *GCSClient, es *ESClient, config *Config, project *Project, projectID, relPath, absPath string, transparent bool) {
+	relativePath := filepath.Clean(relPath)
+	buf, rerr := os.ReadFile(absPath)
+	if rerr != nil {
+		slog.Warn("generated image unreadable for asset registration", "path", absPath, "error", rerr)
+		return
+	}
+
+	mimeType := resolveMimeType(relativePath, "")
+	tags := []string{"ai_generated"}
+	if transparent {
+		tags = append(tags, "playable_asset")
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	asset := &ProjectAsset{
+		ID:           generateID(),
+		ProjectID:    projectID,
+		Filename:     filepath.Base(relativePath),
+		RelativePath: relativePath,
+		MIMEType:     mimeType,
+		SizeBytes:    int64(len(buf)),
+		ContentType:  classifyContentType(mimeType),
+		GCSStatus:    "pending",
+		Checksum:     calculateSHA256(buf),
+		Tags:         tags,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+
+	if err := es.IndexProjectAsset(ctx, asset); err != nil {
+		slog.Warn("failed to index generated image asset", "path", relativePath, "error", err)
+		return
+	}
+	if gcs != nil && project != nil {
+		go uploadAssetToGCS(config, gcs, es, project, asset.ID, absPath, relativePath)
+	}
+	slog.Info("generated image registered as asset", "project_id", projectID, "path", relativePath, "asset_id", asset.ID)
+}
+
+func execGenerateAudioTool(ctx context.Context, config *Config, pg *PGClient, projectID string, args map[string]any) map[string]any {
 	prompt, _ := args["prompt"].(string)
 	duration, _ := args["duration_sec"].(float64)
 	outPath, _ := args["output_path"].(string)
@@ -997,20 +1213,19 @@ func (a *InternalLLMAdapter) execGenerateAudio(ctx context.Context, args map[str
 	if prompt == "" || outPath == "" {
 		return map[string]any{"error": "prompt and output_path are required"}
 	}
-	if task == nil || task.ProjectID == nil {
+	if projectID == "" {
 		return map[string]any{"error": "project context required"}
 	}
 	if duration <= 0 {
 		duration = 5
 	}
 
-	projectID := *task.ProjectID
-	projectDir := filepath.Join(a.config.Projects.ProjectsDir, projectID)
+	projectDir := playableProjectDir(ctx, pg, config, projectID)
 	absOutPath := filepath.Join(projectDir, outPath)
 
 	os.MkdirAll(filepath.Dir(absOutPath), 0755)
 
-	err := a.generateAudioClientCall(ctx, prompt, int(duration), absOutPath)
+	err := generateAudioAsset(ctx, prompt, int(duration), absOutPath)
 	if err != nil {
 		return map[string]any{"error": "audio generation failed: " + err.Error()}
 	}
@@ -1018,27 +1233,26 @@ func (a *InternalLLMAdapter) execGenerateAudio(ctx context.Context, args map[str
 	return map[string]any{"status": "success", "output_path": outPath}
 }
 
-func (a *InternalLLMAdapter) execPublishPlayableAd(ctx context.Context, args map[string]any, task *Task) map[string]any {
+func execPublishPlayableAdTool(ctx context.Context, gcs *GCSClient, es *ESClient, config *Config, pg *PGClient, projectID string, args map[string]any) map[string]any {
 	pipelineID, _ := args["pipeline_id"].(string)
 	if pipelineID == "" {
 		return map[string]any{"error": "pipeline_id is required"}
 	}
-	if task == nil || task.ProjectID == nil {
+	if projectID == "" {
 		return map[string]any{"error": "project context required"}
 	}
 
 	publishToGCS, _ := args["publish_to_gcs"].(bool)
 
-	projectID := *task.ProjectID
-	projectDir := filepath.Join(a.config.Projects.ProjectsDir, projectID)
+	projectDir := playableProjectDir(ctx, pg, config, projectID)
 
-	url, gcsURI, err := publishPlayableAdImpl(ctx, a.gcsClient, a.config, projectDir, pipelineID, publishToGCS)
+	url, gcsURI, err := publishPlayableAdImpl(ctx, gcs, config, projectDir, pipelineID, publishToGCS)
 	if err != nil {
 		return map[string]any{"error": "publish failed: " + err.Error()}
 	}
 
 	// Register the asset in Elasticsearch (creatives library)
-	if a.esClient != nil {
+	if es != nil {
 		outDir := filepath.Join(projectDir, "output", pipelineID)
 		inlinePath := filepath.Join(outDir, "preview_inline.html")
 
@@ -1050,7 +1264,7 @@ func (a *InternalLLMAdapter) execPublishPlayableAd(ctx context.Context, args map
 			sizeBytes = int64(len(data))
 			checksum = calculateSHA256(data)
 
-			maxIdx := a.config.Projects.ContentMaxIndex
+			maxIdx := config.Projects.ContentMaxIndex
 			if maxIdx <= 0 {
 				maxIdx = 100000
 			}
@@ -1088,7 +1302,7 @@ func (a *InternalLLMAdapter) execPublishPlayableAd(ctx context.Context, args map
 			UpdatedAt:    now,
 		}
 
-		if err := a.esClient.IndexProjectAsset(ctx, asset); err != nil {
+		if err := es.IndexProjectAsset(ctx, asset); err != nil {
 			slog.Warn("Failed to index playable asset in ES", "error", err)
 		} else {
 			slog.Info("Playable registered in project creatives library", "project", projectID, "path", relativePath)
@@ -1107,26 +1321,26 @@ func (a *InternalLLMAdapter) execPublishPlayableAd(ctx context.Context, args map
 	}
 }
 
-func (a *InternalLLMAdapter) generateImageClientCall(ctx context.Context, prompt, size, absOutPath string) error {
-	settings := a.config.GetSettings()
+func generateImageAsset(ctx context.Context, config *Config, providers *ProviderRegistry, prompt, size, absOutPath string) error {
+	settings := config.GetSettings()
 	if settings.GoogleCloud.APIKey == "" && os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") == "" {
 		dummyPng := []byte{137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 10, 73, 68, 65, 84, 120, 156, 99, 0, 1, 0, 0, 5, 0, 1, 13, 10, 45, 180, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130}
 		slog.Warn("No Google Cloud credentials, writing dummy PNG for local test")
 		return os.WriteFile(absOutPath, dummyPng, 0644)
 	}
 
-	if a.providers == nil {
+	if providers == nil {
 		dummyPng := []byte{137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 10, 73, 68, 65, 84, 120, 156, 99, 0, 1, 0, 0, 5, 0, 1, 13, 10, 45, 180, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130}
 		slog.Warn("No provider registry available, writing dummy PNG for local test")
 		return os.WriteFile(absOutPath, dummyPng, 0644)
 	}
 
-	gp, ok := a.providers.Get("gemini").(*GeminiProvider)
+	gp, ok := providers.Get("gemini").(*GeminiProvider)
 	if !ok || gp == nil {
 		return fmt.Errorf("gemini provider not found or misconfigured")
 	}
 
-	modelID, _ := a.config.GoogleCloud.VertexAI.DefaultModel("image")
+	modelID, _ := config.GoogleCloud.VertexAI.DefaultModel("image")
 	if modelID == "" {
 		modelID = "imagen-3.0-generate-002"
 	}
@@ -1138,14 +1352,14 @@ func (a *InternalLLMAdapter) generateImageClientCall(ctx context.Context, prompt
 
 	aspectRatio := mapSizeToAspectRatio(size)
 
-	config := &genai.GenerateImagesConfig{
+	imgConfig := &genai.GenerateImagesConfig{
 		NumberOfImages: 1,
 		OutputMIMEType: "image/png",
 		AspectRatio:    aspectRatio,
 	}
 
 	slog.Info("Generating image using Imagen 3", "prompt", prompt, "model", modelID, "aspect_ratio", aspectRatio)
-	response, err := client.Models.GenerateImages(ctx, modelID, prompt, config)
+	response, err := client.Models.GenerateImages(ctx, modelID, prompt, imgConfig)
 	if err != nil {
 		return fmt.Errorf("imagen generation failed: %w", err)
 	}
@@ -1166,7 +1380,7 @@ func (a *InternalLLMAdapter) generateImageClientCall(ctx context.Context, prompt
 	return os.WriteFile(absOutPath, imgBytes, 0644)
 }
 
-func (a *InternalLLMAdapter) generateAudioClientCall(ctx context.Context, prompt string, duration int, absOutPath string) error {
+func generateAudioAsset(ctx context.Context, prompt string, duration int, absOutPath string) error {
 	slog.Info("Generating procedural ambient WAV", "prompt", prompt, "duration", duration, "path", absOutPath)
 	if err := os.MkdirAll(filepath.Dir(absOutPath), 0755); err != nil {
 		return fmt.Errorf("failed to create directory for audio: %w", err)

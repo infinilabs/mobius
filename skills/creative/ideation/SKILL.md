@@ -3,7 +3,7 @@ name: ideation
 description: "Generate project ideas via creative constraints."
 version: 1.0.0
 category: creative
-tags: [brainstorming, creative, hermes, ideation, inspiration, projects]
+tags: [brainstorming, creative, hermes-optional, ideation, inspiration, projects]
 ---
 
 # Creative Ideation

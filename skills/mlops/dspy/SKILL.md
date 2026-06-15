@@ -3,7 +3,7 @@ name: dspy
 description: "DSPy: declarative LM programs, auto-optimize prompts, RAG."
 version: 1.0.0
 category: mlops
-tags: [agents, automatic optimization, declarative programming, dspy, hermes, lm programming, mlops, modular ai, prompt engineering, prompt optimization, rag, stanford nlp]
+tags: [agents, automatic optimization, declarative programming, dspy, hermes-optional, lm programming, mlops, modular ai, prompt engineering, prompt optimization, rag, stanford nlp]
 ---
 
 # DSPy: Declarative Language Model Programming

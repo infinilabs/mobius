@@ -149,24 +149,23 @@ func TestPlayableWriteHTML(t *testing.T) {
 
 func TestPlayableMediaGenerationMock(t *testing.T) {
 	cfg := &Config{}
-	adapter := &InternalLLMAdapter{config: cfg}
 
 	tmpDir, _ := os.MkdirTemp("", "mobius-test-media-")
 	defer os.RemoveAll(tmpDir)
 
 	imgPath := filepath.Join(tmpDir, "sprite.png")
-	err := adapter.generateImageClientCall(context.Background(), "a cute cat", "512x512", imgPath)
+	err := generateImageAsset(context.Background(), cfg, nil, "a cute cat", "512x512", imgPath)
 	if err != nil {
-		t.Fatalf("generateImageClientCall failed: %v", err)
+		t.Fatalf("generateImageAsset failed: %v", err)
 	}
 	if _, err := os.Stat(imgPath); os.IsNotExist(err) {
 		t.Errorf("Expected image file to be created at %s", imgPath)
 	}
 
 	audioPath := filepath.Join(tmpDir, "laser.wav")
-	err = adapter.generateAudioClientCall(context.Background(), "laser beep", 3, audioPath)
+	err = generateAudioAsset(context.Background(), "laser beep", 3, audioPath)
 	if err != nil {
-		t.Fatalf("generateAudioClientCall failed: %v", err)
+		t.Fatalf("generateAudioAsset failed: %v", err)
 	}
 	if _, err := os.Stat(audioPath); os.IsNotExist(err) {
 		t.Errorf("Expected audio file to be created at %s", audioPath)

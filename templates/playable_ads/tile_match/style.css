@@ -1,0 +1,701 @@
+:root {
+  --safe-top: env(safe-area-inset-top);
+  --safe-right: env(safe-area-inset-right);
+  --safe-bottom: env(safe-area-inset-bottom);
+  --safe-left: env(safe-area-inset-left);
+  --cream: #fff9df;
+  --jade: #0e6c57;
+  --jade-dark: #063f36;
+  --gold: #ffd74a;
+  --orange: #ff9f18;
+  --red: #e74135;
+  --shadow: rgba(1, 26, 23, .54);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  touch-action: none;
+  -ms-touch-action: none;
+}
+
+body {
+  color: var(--cream);
+  background: #073d35;
+  font-family: Arial, Helvetica, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  display: grid;
+  place-items: center;
+}
+
+button {
+  border: 0;
+  font: inherit;
+}
+
+/* Playable ad letterbox: keep the shell a portrait 9:16 phone frame at any
+   viewport so desktop / DevTools emulation does not stretch the layout. */
+.playable {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  width: min(100vw, calc(100dvh * 9 / 16));
+  height: 100dvh;
+  min-height: 560px;
+  overflow: hidden;
+  padding: calc(12px + var(--safe-top)) calc(12px + var(--safe-right)) calc(12px + var(--safe-bottom)) calc(12px + var(--safe-left));
+  background: url("assets/playable/bg-table.png") center / cover no-repeat;
+}
+
+.playable.shake {
+  animation: screenShake .3s ease;
+}
+
+.fx-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.hud {
+  position: relative;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: 31% 40% 29%;
+  align-items: center;
+  gap: 0;
+  width: min(100%, 610px);
+  aspect-ratio: 1200 / 161;
+  margin: 0 auto;
+  padding: 0 4.3%;
+  background: url("assets/playable/hud-top.png") center / 100% 100% no-repeat;
+}
+
+.level-pill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 100%;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, .34);
+}
+
+.level-pill span {
+  color: #fff;
+  font-size: clamp(13px, 3.9vw, 26px);
+  font-weight: 900;
+  letter-spacing: 0;
+  opacity: .98;
+}
+
+.level-pill strong {
+  color: var(--gold);
+  font-size: clamp(20px, 5.8vw, 38px);
+  line-height: 1;
+  text-shadow: 0 2px 0 rgba(82, 43, 0, .55);
+}
+
+.timer {
+  grid-column: 2 / 4;
+  display: grid;
+  grid-template-columns: 58% 42%;
+  align-items: center;
+  min-width: 0;
+  height: 100%;
+  padding: 0 5% 0 2%;
+}
+
+.timer-top {
+  display: contents;
+  align-items: center;
+  margin-bottom: 0;
+  color: #fff;
+  font-size: clamp(18px, 5.4vw, 42px);
+  font-weight: 900;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, .35);
+}
+
+.timer-top strong {
+  color: var(--gold);
+  text-align: center;
+}
+
+.timer-top span {
+  text-align: center;
+}
+
+.timer-track {
+  display: none;
+  height: 16px;
+  overflow: hidden;
+  border: 2px solid #062b26;
+  border-radius: 999px;
+  background: #dff5cb;
+  box-shadow: inset 0 2px 0 rgba(0, 0, 0, .16);
+}
+
+.timer-fill {
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: repeating-linear-gradient(90deg, var(--red) 0 34px, #ff8e1b 34px 68px, #17cc3a 68px 124px);
+  box-shadow: 0 0 16px rgba(255, 226, 62, .8);
+  transition: width .36s cubic-bezier(.15, .85, .25, 1);
+}
+
+.stage {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  min-height: 0;
+  padding: 6px 0 8px;
+  perspective: 900px;
+}
+
+.table-glow {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(88vw, 500px);
+  aspect-ratio: 1.1;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 224, 96, .26), rgba(58, 205, 142, .1) 42%, rgba(0, 0, 0, 0) 70%);
+  transform: translate(-50%, -47%) rotateX(62deg);
+  animation: glowPulse 2.6s ease-in-out infinite;
+}
+
+.table-treasure {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  left: 50%;
+  width: min(67vw, 330px);
+  aspect-ratio: 696 / 365;
+  background: url("assets/playable/treasure-table.png") center / contain no-repeat;
+  filter: drop-shadow(0 13px 14px rgba(21, 14, 3, .32));
+  opacity: .98;
+  pointer-events: none;
+  transform: translate(-50%, -8%);
+}
+
+.board {
+  position: relative;
+  z-index: 2;
+  width: min(94vw, 470px);
+  height: min(61vh, 560px);
+  max-height: 610px;
+  transform: rotateX(4deg);
+  transform-style: preserve-3d;
+}
+
+.tile {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: var(--tile-w);
+  height: var(--tile-h);
+  min-width: 52px;
+  min-height: 68px;
+  border-radius: 14px;
+  border: 0;
+  padding: 0;
+  background: url("assets/playable/tile-base.png") center / 100% 100% no-repeat;
+  cursor: pointer;
+  transform: translate3d(var(--x), var(--y), var(--z)) rotate(var(--r)) scale(var(--s));
+  transform-style: preserve-3d;
+  transition: filter .15s ease, transform .18s ease;
+  animation: dealTile .56s cubic-bezier(.18, 1.15, .25, 1) both;
+}
+
+.tile-face {
+  position: absolute;
+  inset: 7% 8% 22%;
+  border-radius: inherit;
+}
+
+.tile-face {
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  padding: 8% 8% 10%;
+}
+
+.tile-icon {
+  display: grid;
+  place-items: center;
+  width: 94%;
+  max-width: 74px;
+  aspect-ratio: 1;
+  background: var(--icon) center / contain no-repeat;
+  filter: drop-shadow(0 4px 3px rgba(79, 53, 18, .22));
+}
+
+.tile.selected {
+  filter: brightness(1.12) saturate(1.2);
+  transform: translate3d(var(--x), calc(var(--y) - 13px), calc(var(--z) + 50px)) rotate(var(--r)) scale(calc(var(--s) * 1.06));
+}
+
+.tile.selected::after {
+  content: "";
+  position: absolute;
+  inset: 10%;
+  border-radius: 14px;
+  box-shadow: 0 0 26px rgba(255, 218, 62, .95);
+}
+
+.tile.disabled {
+  pointer-events: none;
+}
+
+.tile.matched {
+  pointer-events: none;
+  z-index: 500 !important;
+  animation: collectTile .56s cubic-bezier(.16, .82, .2, 1) forwards;
+}
+
+.tile.cleared {
+  display: none;
+}
+
+.tile.wrong {
+  animation: wrongTile .32s ease both;
+}
+
+.rack-wrap {
+  position: relative;
+  z-index: 3;
+  width: min(94vw, 560px);
+  aspect-ratio: 1200 / 224;
+  margin: 0 auto;
+  padding: 0;
+  background: url("assets/playable/tray-7.png") center / 100% 100% no-repeat;
+}
+
+.main-cta-wrap {
+  position: relative;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  margin: 8px auto 0;
+}
+
+.main-cta {
+  position: relative;
+  width: min(70vw, 390px);
+  min-height: clamp(54px, 8.5vh, 82px);
+  border: 3px solid #fff1a5;
+  border-radius: 20px;
+  color: #6e2c00;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .55), rgba(255, 255, 255, 0) 28%),
+    linear-gradient(180deg, #fff27a 0%, #ffd34d 45%, #f5a52b 100%);
+  box-shadow:
+    inset 0 0 0 3px rgba(150, 75, 0, .28),
+    inset 0 -7px 0 rgba(151, 73, 0, .2),
+    0 9px 0 #8c4d14,
+    0 15px 18px rgba(0, 0, 0, .3);
+  font-size: clamp(28px, 7vw, 50px);
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: 0;
+  text-shadow: 0 2px 0 rgba(255, 245, 159, .8);
+  cursor: pointer;
+  animation: ctaPulse 1.04s ease-in-out infinite;
+}
+
+.main-cta::before,
+.main-cta::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 28px;
+  height: 28px;
+  border: 3px solid #a45d12;
+  border-radius: 50%;
+  background: linear-gradient(#fff07b, #d7881f);
+  transform: translateY(-50%);
+}
+
+.main-cta::before {
+  left: -15px;
+}
+
+.main-cta::after {
+  right: -15px;
+}
+
+.main-cta:active {
+  transform: translateY(5px);
+  box-shadow:
+    inset 0 0 0 3px rgba(150, 75, 0, .28),
+    inset 0 -4px 0 rgba(151, 73, 0, .16),
+    0 4px 0 #8c4d14,
+    0 9px 12px rgba(0, 0, 0, .25);
+}
+
+.rack {
+  position: absolute;
+  inset: 14% 5.2% 17%;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2.2%;
+}
+
+.slot {
+  position: relative;
+  height: 100%;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.slot.filled {
+  box-shadow: none;
+  animation: slotDrop .18s cubic-bezier(.2, .9, .3, 1.2) both;
+}
+
+.slot-tile {
+  position: absolute;
+  inset: 0;
+  background: url("assets/playable/tile-mini.png") center / contain no-repeat;
+}
+
+.slot-symbol {
+  position: absolute;
+  inset: 11% 12% 24%;
+  background: var(--slot-icon) center / contain no-repeat;
+  filter: drop-shadow(0 3px 2px rgba(0, 0, 0, .14));
+}
+
+.hint-hand {
+  position: absolute;
+  z-index: 9;
+  width: 62px;
+  height: 62px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+.hint-hand::before {
+  content: "";
+  position: absolute;
+  left: 20px;
+  top: 2px;
+  width: 25px;
+  height: 48px;
+  border: 3px solid #8b5b2a;
+  border-radius: 18px 18px 13px 13px;
+  background: #fff1d5;
+  box-shadow: 4px 5px 0 rgba(0, 0, 0, .2);
+  transform: rotate(-25deg);
+}
+
+.hint-hand::after {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 36px;
+  width: 42px;
+  height: 26px;
+  border: 3px solid #8b5b2a;
+  border-radius: 20px;
+  background: #fff1d5;
+}
+
+.hint-hand.show {
+  opacity: 1;
+  animation: handTap 1.12s ease-in-out infinite;
+}
+
+.win-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  padding: 28px;
+  background: rgba(1, 29, 26, .76);
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(1.05);
+  transition: opacity .36s ease, transform .36s ease;
+}
+
+.win-overlay.show {
+  opacity: 1;
+  pointer-events: auto;
+  transform: scale(1);
+}
+
+.win-overlay::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(86vw, 420px);
+  aspect-ratio: 760 / 1120;
+  background: url("assets/playable/cta-panel.png") center / contain no-repeat;
+  filter: drop-shadow(0 18px 18px rgba(0, 0, 0, .34));
+  transform: translate(-50%, -50%);
+}
+
+.treasure {
+  display: none;
+}
+
+.coin-pile {
+  position: absolute;
+  left: 29px;
+  top: 18px;
+  width: 118px;
+  height: 44px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 20% 55%, #fff4a4 0 8px, #ffc222 9px 17px, transparent 18px),
+    radial-gradient(circle at 49% 40%, #fff4a4 0 8px, #ffc222 9px 18px, transparent 19px),
+    radial-gradient(circle at 76% 56%, #fff4a4 0 8px, #ffc222 9px 18px, transparent 19px);
+  opacity: 0;
+}
+
+.win-overlay.show .coin-pile {
+  animation: coinsRise .7s .22s ease forwards;
+}
+
+.treasure-lid,
+.treasure-box {
+  position: absolute;
+  left: 8px;
+  width: 162px;
+  border: 6px solid #6b390f;
+  background: linear-gradient(90deg, #0ba269 0 26%, #ffcf3a 26% 37%, #0ba269 37% 63%, #ffcf3a 63% 74%, #0ba269 74% 100%);
+  box-shadow: inset 0 4px 0 rgba(255, 255, 255, .28);
+}
+
+.treasure-lid {
+  top: 24px;
+  height: 50px;
+  border-radius: 19px 19px 8px 8px;
+  transform-origin: 15% 100%;
+}
+
+.win-overlay.show .treasure-lid {
+  animation: lidOpen .82s .18s ease forwards;
+}
+
+.treasure-box {
+  bottom: 10px;
+  height: 78px;
+  border-radius: 8px 8px 20px 20px;
+}
+
+.treasure-lock {
+  position: absolute;
+  left: 50%;
+  bottom: 43px;
+  width: 35px;
+  height: 38px;
+  border: 5px solid #6b390f;
+  border-radius: 9px;
+  background: linear-gradient(#fff27a, #f6a815);
+  transform: translateX(-50%);
+}
+
+.win-overlay h1 {
+  position: relative;
+  z-index: 1;
+  margin: min(18vh, 180px) 0 0;
+  color: #fff;
+  font-size: clamp(28px, 8.5vw, 44px);
+  line-height: .9;
+  text-align: center;
+  text-shadow: 0 5px 0 rgba(95, 49, 0, .82), 0 0 30px rgba(255, 226, 76, .66);
+}
+
+.win-overlay p {
+  position: relative;
+  z-index: 1;
+  margin: 8px 0 92px;
+  color: rgba(255, 255, 255, .88);
+  font-size: 17px;
+  font-weight: 900;
+  text-align: center;
+}
+
+.cta {
+  position: relative;
+  z-index: 1;
+  width: min(64vw, 300px);
+  min-height: 76px;
+  border: 0;
+  border-radius: 22px;
+  color: transparent;
+  background: transparent;
+  box-shadow: none;
+  font-size: 27px;
+  font-weight: 900;
+  text-transform: uppercase;
+  animation: ctaPulse 1.04s ease-in-out infinite;
+}
+
+.cta:active {
+  transform: translateY(5px);
+  box-shadow: none;
+}
+
+@keyframes dealTile {
+  from {
+    opacity: 0;
+    transform: translate3d(44vw, -24vh, 120px) rotate(28deg) scale(.45);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(var(--x), var(--y), var(--z)) rotate(var(--r)) scale(var(--s));
+  }
+}
+
+@keyframes collectTile {
+  0% {
+    opacity: 1;
+    transform: translate3d(var(--x), calc(var(--y) - 13px), calc(var(--z) + 50px)) rotate(var(--r)) scale(calc(var(--s) * 1.06));
+  }
+  46% {
+    opacity: 1;
+    transform: translate3d(var(--mid-x), var(--mid-y), 310px) rotate(2deg) scale(.96);
+  }
+  100% {
+    opacity: .98;
+    transform: translate3d(var(--fly-x), var(--fly-y), 280px) rotate(0deg) scale(var(--fly-scale));
+  }
+}
+
+@keyframes slotDrop {
+  from {
+    opacity: .35;
+    transform: translateY(-8px) scale(.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes wrongTile {
+  0%, 100% {
+    transform: translate3d(var(--x), var(--y), var(--z)) rotate(var(--r)) scale(var(--s));
+  }
+  22% {
+    transform: translate3d(calc(var(--x) - 9px), var(--y), var(--z)) rotate(calc(var(--r) - 4deg)) scale(var(--s));
+  }
+  54% {
+    transform: translate3d(calc(var(--x) + 8px), var(--y), var(--z)) rotate(calc(var(--r) + 4deg)) scale(var(--s));
+  }
+}
+
+@keyframes glowPulse {
+  50% {
+    opacity: .62;
+    transform: translate(-50%, -47%) rotateX(62deg) scale(1.08);
+  }
+}
+
+@keyframes screenShake {
+  20% {
+    transform: translateX(-4px);
+  }
+  42% {
+    transform: translateX(4px);
+  }
+  66% {
+    transform: translateX(-2px);
+  }
+}
+
+@keyframes handTap {
+  0%, 100% {
+    transform: translate(-50%, -50%) scale(1);
+  }
+  55% {
+    transform: translate(-50%, -50%) scale(.86);
+  }
+}
+
+@keyframes treasureHop {
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes lidOpen {
+  to {
+    transform: rotate(-22deg) translateY(-12px);
+  }
+}
+
+@keyframes coinsRise {
+  to {
+    opacity: 1;
+    transform: translateY(-26px);
+  }
+}
+
+@keyframes ctaPulse {
+  50% {
+    transform: scale(1.045);
+    filter: brightness(1.05);
+  }
+}
+
+@media (min-width: 720px) {
+  .board {
+    width: 470px;
+  }
+}
+
+@media (max-height: 650px) {
+  .playable {
+    min-height: 500px;
+    padding-top: calc(8px + var(--safe-top));
+  }
+
+  .hud {
+    grid-template-columns: 60px minmax(0, 1fr) 46px;
+  }
+
+  .level-pill {
+    height: 46px;
+  }
+
+  .sound-button {
+    width: 46px;
+    height: 46px;
+  }
+
+  .stage {
+    padding-top: 8px;
+  }
+
+  .board {
+    height: min(58vh, 430px);
+  }
+
+  .rack-wrap {
+    padding-bottom: 9px;
+  }
+}

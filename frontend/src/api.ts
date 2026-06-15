@@ -357,6 +357,24 @@ export async function reindexProjectAssets(projectId: string): Promise<{ indexed
   return data;
 }
 
+// assetContentUrl returns the URL that streams an asset's raw bytes, for use directly in
+// <img src> / <iframe src> previews.
+export function assetContentUrl(projectId: string, assetId: string): string {
+  return `/api/projects/${projectId}/assets/${assetId}/content`;
+}
+
+// listCreatives fetches the global creatives library across all projects, optionally
+// filtered by content type or tag (e.g. "playable").
+export async function listCreatives(query?: string, type?: string, tag?: string): Promise<ProjectAsset[]> {
+  const params = new URLSearchParams();
+  if (query) params.set('q', query);
+  if (type) params.set('type', type);
+  if (tag) params.set('tag', tag);
+  const qs = params.toString();
+  const { data } = await axios.get(`/api/creatives${qs ? `?${qs}` : ''}`);
+  return data;
+}
+
 // Project Memory
 export async function getProjectMemory(projectId: string): Promise<{ content: string }> {
   const { data } = await axios.get(`/api/projects/${projectId}/memory`);

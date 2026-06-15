@@ -3,7 +3,7 @@ name: baoyu-comic
 description: "Knowledge comics (知识漫画): educational, biography, tutorial."
 version: 1.56.1
 category: creative
-tags: [comic, creative, hermes, image-generation, knowledge-comic]
+tags: [comic, creative, hermes-optional, image-generation, knowledge-comic]
 ---
 
 # Knowledge Comic Creator
