@@ -52,7 +52,7 @@ google_cloud:
     # dataset, never `dataset` above. All optional — these are the code defaults.
     creatives_dataset: "mobius_creatives"      # dedicated business dataset for tags
     connection: "us.mobius_conn"               # BQ cloud-resource connection (see `make bq-connection`)
-    tagging_model_endpoint: "gemini-2.5-flash" # multimodal model
+    tagging_model_endpoint: "gemini-3.5-flash" # multimodal model
     tagging_model_name: "tagging_gemini"       # remote model name created in creatives_dataset
   gcs:
     project_id: ""  # leave empty to use top-level project_id
