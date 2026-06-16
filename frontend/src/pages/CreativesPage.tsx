@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Search, ImageOff, Gamepad2, X, Film } from 'lucide-react';
 import { listCreatives, assetContentUrl } from '../api';
+import RefreshButton from '../components/RefreshButton';
 import type { ProjectAsset } from '../types';
 
 type FilterKey = 'All' | 'Playable' | 'Images' | 'Videos';
@@ -43,8 +44,9 @@ export default function CreativesPage() {
 
   return (
     <div className="p-8 max-w-[1400px] mx-auto">
-      <header className="mb-6">
+      <header className="mb-6 flex items-center justify-between">
         <h2 className="text-2xl font-bold tracking-tight text-white">Creatives</h2>
+        <RefreshButton onClick={refresh} loading={loading} />
       </header>
 
       {/* Toolbar */}

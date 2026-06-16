@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { LayoutDashboard, Kanban, Activity, ArrowRight } from 'lucide-react';
 import { listTasks, listEmployees, listEvents } from '../api';
+import RefreshButton from '../components/RefreshButton';
 import type { Task, Employee, Event } from '../types';
 import { eventIcon, activityVerb, activityTimeAgo as timeAgo } from '../activity';
 
@@ -49,12 +50,15 @@ export default function DashboardPage({ onOpenTask }: {
   return (
     <div className="h-full flex flex-col p-6">
       {/* Header */}
-      <div className="flex items-center gap-2.5 mb-6 shrink-0">
-        <LayoutDashboard size={20} className="text-cyan-400" />
-        <div>
-          <h1 className="text-xl font-bold text-white">Dashboard</h1>
-          <p className="text-xs text-zinc-500 mt-0.5">Recent tasks and team activity</p>
+      <div className="flex items-center justify-between mb-6 shrink-0">
+        <div className="flex items-center gap-2.5">
+          <LayoutDashboard size={20} className="text-cyan-400" />
+          <div>
+            <h1 className="text-xl font-bold text-white">Dashboard</h1>
+            <p className="text-xs text-zinc-500 mt-0.5">Recent tasks and team activity</p>
+          </div>
         </div>
+        <RefreshButton onClick={refresh} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 flex-1 min-h-0">

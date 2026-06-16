@@ -168,6 +168,14 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 
 		if hasTag(agent.Tags, "manager") || agent.Role == "CEO" {
 			systemPrompt += managerDirectives()
+			systemPrompt += "\n\n## SYSTEM DIRECTIVE: Execute, don't just narrate\n" +
+				"When the user asks you to build, create, produce, or start work on something concrete " +
+				"(a playable ad, a campaign, a deliverable, etc.), you MUST actually call the delegate_task " +
+				"tool to create real tasks for the right team members — call list_team first to find them. " +
+				"Describing a plan in prose WITHOUT calling delegate_task creates NO tasks and NO work. " +
+				"If you want approval before committing, call suggest_tasks to propose, then call delegate_task " +
+				"once the user agrees. NEVER say work is underway or tasks are created unless you have actually " +
+				"called the tools — narration is not execution."
 		}
 
 		systemPrompt += "\n\n## Project Management\n" +

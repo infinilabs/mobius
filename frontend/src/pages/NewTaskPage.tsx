@@ -36,6 +36,7 @@ export default function NewTaskPage({ conversationId, onConversationCreated, ini
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [thinking, setThinking] = useState(false);
+  const [toolEvents, setToolEvents] = useState<{ name: string; status: string }[]>([]);
   const [attachedFiles, setAttachedFiles] = useState<FileRef[]>([]);
   const [uploading, setUploading] = useState(false);
   const [agents, setAgents] = useState<Employee[]>([]);
@@ -117,6 +118,7 @@ export default function NewTaskPage({ conversationId, onConversationCreated, ini
     setAttachedFiles([]);
     setStreaming(true);
     setThinking(true);
+    setToolEvents([]);
     streamingRef.current = true;
 
     const filesToSend = files.length > 0 ? [...files] : undefined;
@@ -162,6 +164,10 @@ export default function NewTaskPage({ conversationId, onConversationCreated, ini
       chatTarget?.kind === 'agent' ? chatTarget.agent.id : undefined,
       chatTarget?.kind === 'model' ? chatTarget.model.model_id : undefined,
       initialProjectId,
+      (name) => {
+        setThinking(false);
+        setToolEvents(prev => [...prev, { name, status: 'executed' }]);
+      },
     );
   }, [input, conversationId, attachedFiles, onConversationCreated, thinking, chatTarget, initialProjectId]);
 
@@ -319,6 +325,7 @@ export default function NewTaskPage({ conversationId, onConversationCreated, ini
               onRegenerate={msg.role === 'model' && !streaming ? () => handleRegenerate(i) : undefined}
             />
           ))}
+          {toolEvents.length > 0 && <ToolActivity events={toolEvents} />}
           {thinking && <ThinkingIndicator />}
           <div ref={messagesEndRef} />
         </div>
@@ -348,6 +355,39 @@ export default function NewTaskPage({ conversationId, onConversationCreated, ini
           />
         </div>
       </div>
+    </div>
+  );
+}
+
+const TOOL_LABELS: Record<string, string> = {
+  delegate_task: 'Created a task for the team',
+  suggest_tasks: 'Proposed tasks',
+  create_project: 'Created a project',
+  update_project: 'Updated the project',
+  hire_employee: 'Hired a specialist',
+  generate_image: 'Generated an image',
+  generate_audio: 'Generated audio',
+  playable_write_html: 'Wrote the playable HTML',
+  publish_playable_ad: 'Published the playable ad',
+  save_upload_to_assets: 'Saved upload to assets',
+  write_project_file: 'Wrote a project file',
+};
+
+function toolLabel(name: string): string {
+  return TOOL_LABELS[name] || name.replace(/_/g, ' ');
+}
+
+function ToolActivity({ events }: { events: { name: string; status: string }[] }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      {events.map((e, i) => (
+        <div key={i} className="flex items-center gap-2 text-xs text-zinc-400 pl-1">
+          <span className="shrink-0 p-1 rounded-md border border-cyan-500/20" style={{ background: '#0e749020' }}>
+            <Check size={11} className="text-cyan-400" />
+          </span>
+          <span>{toolLabel(e.name)}</span>
+        </div>
+      ))}
     </div>
   );
 }

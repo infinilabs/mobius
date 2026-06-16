@@ -245,14 +245,16 @@ function App() {
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[600px] pointer-events-none" style={{ background: 'radial-gradient(ellipse at center top, rgba(56,189,248,0.06) 0%, transparent 60%)' }} />
 
         <div className="relative z-10 flex-1 overflow-hidden">
-          {activePage === 'new-task' && (
+          {/* New Task stays mounted so an in-flight chat (thinking/streaming/tool
+              activity) survives navigating to other tabs and back. */}
+          <div className="h-full" style={{ display: activePage === 'new-task' ? undefined : 'none' }}>
             <NewTaskPage
               conversationId={activeConversationId}
               onConversationCreated={handleConversationCreated}
               initialAgentId={chatAgentId}
               initialProjectId={chatProjectId}
             />
-          )}
+          </div>
           {activePage === 'dashboard' && <div className="overflow-y-auto h-full"><DashboardPage onOpenTask={openTask} /></div>}
           {activePage === 'cockpit' && <div className="overflow-y-auto h-full"><CockpitPage /></div>}
           {activePage === 'tasks' && <div className="overflow-y-auto h-full"><TasksPage openTask={navTask} /></div>}

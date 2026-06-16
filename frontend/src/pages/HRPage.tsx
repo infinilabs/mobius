@@ -5,6 +5,7 @@ import {
   ChevronUp,
 } from 'lucide-react';
 import { listEmployees, createEmployee, updateEmployee, deleteEmployee, setEmployeeManager, listModels, listEmployeeSkills, resetEmployeeSkills, listEmployeeMemories, addEmployeeMemory, deleteEmployeeMemory } from '../api';
+import RefreshButton from '../components/RefreshButton';
 import type { Employee, EmployeeModel, EmployeeMemory, VertexModel, Skill } from '../types';
 
 const ROLE_COLORS: Record<string, string> = {
@@ -118,6 +119,7 @@ export default function HRPage() {
           <p className="text-xs text-zinc-600 mt-1">Manage AI agents, roles, and reporting structure</p>
         </div>
         <div className="flex items-center gap-3">
+          <RefreshButton onClick={refresh} loading={loading} />
           {allTags.length > 0 && (
             <div className="flex items-center gap-1.5">
               <Filter size={13} className="text-zinc-600" />

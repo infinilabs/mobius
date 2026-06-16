@@ -7,6 +7,7 @@ import {
 } from '../api';
 import type { Task, TaskComment, Employee, Project, SearchResult, Event } from '../types';
 import SearchSelect from '../components/SearchSelect';
+import RefreshButton from '../components/RefreshButton';
 import { activityVerb, eventIcon, activityTimeAgo } from '../activity';
 
 const STATUS_COLUMNS: { key: Task['status']; label: string; color: string }[] = [
@@ -46,7 +47,7 @@ export default function TasksPage({ openTask }: { openTask?: { id: string; seq: 
   const [tasks, setTasks] = useState<Task[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
-  const [, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
@@ -65,6 +66,13 @@ export default function TasksPage({ openTask }: { openTask?: { id: string; seq: 
     refresh();
     listEmployees().then(setEmployees).catch(() => {});
     listProjects().then(setProjects).catch(() => {});
+  }, [refresh]);
+
+  // Poll so tasks created elsewhere (chat delegation, autonomous runner) appear
+  // without a manual reload. The Refresh button covers the on-demand case.
+  useEffect(() => {
+    const id = setInterval(refresh, 15000);
+    return () => clearInterval(id);
   }, [refresh]);
 
   // Open a task's detail when navigated in from the Dashboard. The seq nonce
@@ -107,13 +115,16 @@ export default function TasksPage({ openTask }: { openTask?: { id: string; seq: 
           <h1 className="text-xl font-bold text-white">Tasks</h1>
           <p className="text-xs text-zinc-500 mt-0.5">{visibleTasks.length} of {tasks.length}</p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white cursor-pointer transition-all hover:opacity-90"
-          style={{ background: 'linear-gradient(135deg, #0e7490, #164e63)' }}
-        >
-          <Plus size={16} /> Create Task
-        </button>
+        <div className="flex items-center gap-2">
+          <RefreshButton onClick={refresh} loading={loading} />
+          <button
+            onClick={() => setShowCreate(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white cursor-pointer transition-all hover:opacity-90"
+            style={{ background: 'linear-gradient(135deg, #0e7490, #164e63)' }}
+          >
+            <Plus size={16} /> Create Task
+          </button>
+        </div>
       </div>
 
       {/* Filters */}

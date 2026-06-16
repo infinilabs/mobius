@@ -760,6 +760,12 @@ func (h *APIHandler) execDelegateTask(ctx context.Context, args map[string]any, 
 		Assignee: &EmployeeBrief{ID: assignee.ID, Name: assignee.Name, Title: assignee.Title, Role: assignee.Role},
 	}
 
+	// Link the task to the project when delegated from within a project chat
+	// (_project_id is injected into tool args by the chat handler).
+	if pid, ok := args["_project_id"].(string); ok && pid != "" {
+		t.ProjectID = &pid
+	}
+
 	if err := h.pgClient.CreateTask(ctx, t, nil); err != nil {
 		return map[string]any{"error": "failed to create task: " + err.Error()}
 	}

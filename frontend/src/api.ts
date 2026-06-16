@@ -401,6 +401,7 @@ export async function sendChatMessage(
   agentId?: string,
   modelId?: string,
   projectId?: string,
+  onToolEvent?: (name: string, status: string) => void,
 ): Promise<void> {
   log.info('chat', 'sending message', { conversationId, length: message.length, files: files?.length ?? 0, agentId, modelId, projectId });
 
@@ -466,6 +467,10 @@ export async function sendChatMessage(
           log.error('chat', 'stream error from server', { error: parsed.error });
           onError(parsed.error);
           return;
+        }
+        if (parsed.tool_call) {
+          onToolEvent?.(parsed.tool_call, parsed.status || '');
+          continue;
         }
         if (parsed.text) {
           chunkCount++;

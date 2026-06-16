@@ -51,7 +51,7 @@ func (pg *PGClient) ListTasks(ctx context.Context, status, assigneeID, projectID
 		       t.failure_count, t.created_at, t.updated_at, t.completed_at,
 		       t.assignee_id, a.name, a.title, a.role,
 		       t.creator_id, c.name, c.title, c.role,
-		       t.is_scheduled, t.cron_expr, t.next_run_at, t.repeat_times, t.parent_task_id,
+		       t.is_scheduled, COALESCE(t.cron_expr, '') AS cron_expr, t.next_run_at, t.repeat_times, t.parent_task_id,
 		       t.project_id, p.name
 		FROM tasks t
 		LEFT JOIN employees a ON a.id = t.assignee_id
@@ -167,7 +167,7 @@ func (pg *PGClient) GetTask(ctx context.Context, id string) (*Task, error) {
 		       t.failure_count, t.created_at, t.updated_at, t.completed_at,
 		       t.assignee_id, a.name, a.title, a.role,
 		       t.creator_id, c.name, c.title, c.role,
-		       t.is_scheduled, t.cron_expr, t.next_run_at, t.repeat_times, t.parent_task_id,
+		       t.is_scheduled, COALESCE(t.cron_expr, '') AS cron_expr, t.next_run_at, t.repeat_times, t.parent_task_id,
 		       t.project_id, p.name
 		FROM tasks t
 		LEFT JOIN employees a ON a.id = t.assignee_id
