@@ -68,6 +68,7 @@ func (d *TaskDispatcher) Start(ctx context.Context) {
 		select {
 		case <-fallbackTicker.C:
 			d.sweepAndDispatch(ctx)
+			d.sweepReviewTasks(ctx)
 		case <-reclaimTicker.C:
 			d.reclaimStaleTasks(ctx)
 		case <-scheduleTicker.C:
@@ -344,6 +345,154 @@ func (d *TaskDispatcher) claimReadyTasks(ctx context.Context) ([]Task, error) {
 	return tasks, nil
 }
 
+// sweepReviewTasks drives the autonomous quality gate: a task sitting in
+// needs_review goes nowhere on its own, so its dependents stay blocked forever.
+// Here the dispatcher hands each needs_review task to its creator (a manager/CEO,
+// who holds verify_deliverable/review_task) to APPROVE (→ done, promoting
+// dependents) or REJECT (→ ready with feedback).
+func (d *TaskDispatcher) sweepReviewTasks(ctx context.Context) {
+	reviews, err := d.claimReviewTasks(ctx)
+	if err != nil {
+		slog.Error("dispatcher: failed to claim review tasks", "error", err)
+		return
+	}
+	for _, task := range reviews {
+		select {
+		case d.sem <- struct{}{}:
+			d.wg.Add(1)
+			go func(t Task) {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("PANIC recovered during review execution",
+							"task_id", t.ID, "panic", r, "stack", string(debug.Stack()))
+					}
+					<-d.sem
+					d.wg.Done()
+				}()
+				d.executeReviewTask(ctx, t)
+			}(task)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// claimReviewTasks selects needs_review tasks that have a creator and aren't
+// already being reviewed. The task's status stays needs_review; we debounce
+// re-dispatch by pushing retry_after past the run cap, so a single review run is
+// in flight at a time and a crashed reviewer is retried after the window. The
+// reviewer's review_task call is what finally moves the task off needs_review.
+func (d *TaskDispatcher) claimReviewTasks(ctx context.Context) ([]Task, error) {
+	tx, err := d.pgClient.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	rows, err := tx.Query(ctx, `
+		SELECT id FROM tasks
+		WHERE status = 'needs_review'
+		  AND creator_id IS NOT NULL
+		  AND (retry_after IS NULL OR retry_after <= NOW())
+		FOR UPDATE SKIP LOCKED
+		LIMIT $1
+	`, d.maxConcurrency)
+	if err != nil {
+		return nil, fmt.Errorf("query review tasks: %w", err)
+	}
+	defer rows.Close()
+
+	var taskIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			taskIDs = append(taskIDs, id)
+		}
+	}
+	rows.Close()
+
+	if len(taskIDs) == 0 {
+		return nil, nil
+	}
+
+	debounce := time.Now().Add(2 * d.staleTimeout)
+	if _, err := tx.Exec(ctx,
+		"UPDATE tasks SET retry_after = $1 WHERE id = ANY($2)", debounce, taskIDs); err != nil {
+		return nil, fmt.Errorf("debounce review tasks: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	var tasks []Task
+	for _, id := range taskIDs {
+		if t, err := d.pgClient.GetTask(ctx, id); err == nil {
+			tasks = append(tasks, *t)
+		}
+	}
+	return tasks, nil
+}
+
+// executeReviewTask runs the task's creator as a reviewer over a needs_review
+// task. It reuses the normal agent machinery (heartbeat context + monitorRun) but
+// never increments failure_count: the deliverable already succeeded, so a flaky
+// reviewer must not block it — if the reviewer doesn't act, retry_after re-arms
+// the next sweep. The terminal transition is owned by the review_task tool.
+func (d *TaskDispatcher) executeReviewTask(parentCtx context.Context, t Task) {
+	if t.Creator == nil {
+		return
+	}
+	creator, err := d.pgClient.GetEmployee(parentCtx, t.Creator.ID)
+	if err != nil {
+		slog.Warn("review: failed to load creator", "task_id", t.ID, "error", err)
+		return
+	}
+	// Only managers/CEO carry review_task/verify_deliverable. If a non-manager
+	// created the task, leave it for a human; auto-approving would defeat the gate.
+	if !(hasTag(creator.Tags, "manager") || creator.Role == "CEO") {
+		slog.Warn("review: creator cannot review (not a manager); leaving needs_review",
+			"task_id", t.ID, "creator", creator.Name)
+		return
+	}
+
+	adapterType := AdapterType(creator.AdapterType)
+	if adapterType == "" {
+		adapterType = AdapterInternal
+	}
+	adapter, ok := d.adapters.Get(adapterType)
+	if !ok {
+		slog.Warn("review: unknown adapter type", "task_id", t.ID, "type", adapterType)
+		return
+	}
+
+	hb := d.buildHeartbeatContext(parentCtx, creator, &t)
+	hb.SystemPrompt += "\n\n## SYSTEM DIRECTIVE: Review this deliverable NOW\n" +
+		"Task \"" + t.Title + "\" is awaiting YOUR review (status: needs_review). " +
+		"Call verify_deliverable to inspect the produced work and run any tests, then call " +
+		"review_task with action=\"APPROVE\" if it is correct, or action=\"REJECT\" with specific, " +
+		"actionable feedback if it is not. You MUST call review_task before ending your turn — " +
+		"describing your assessment without calling the tool leaves the task stuck and is not acceptable."
+
+	slog.Info("agent review started", "task_id", t.ID, "reviewer", creator.Name,
+		"adapter", adapterType, "model", hb.ModelID)
+
+	startedAt := time.Now()
+	rowID := d.openRun(t.ID, creator.ID, string(adapterType), startedAt)
+
+	runCtx, cancel := context.WithTimeout(parentCtx, 2*d.staleTimeout)
+	defer cancel()
+
+	runID, err := adapter.Start(runCtx, hb)
+	if err != nil {
+		d.finishRun(rowID, RunFailed, "", "review start failed: "+err.Error(), nil)
+		slog.Error("review run start failed", "task_id", t.ID, "error", err)
+		return
+	}
+
+	d.monitorRun(runCtx, adapter, runID, &t, creator, rowID, startedAt, true)
+}
+
 func (d *TaskDispatcher) executeAgentTask(parentCtx context.Context, t Task) {
 	if t.Assignee == nil {
 		d.failTask(parentCtx, t.ID, "task has no assignee")
@@ -398,7 +547,7 @@ func (d *TaskDispatcher) executeAgentTask(parentCtx context.Context, t Task) {
 		return
 	}
 
-	d.monitorRun(runCtx, adapter, runID, &t, assignee, rowID, startedAt)
+	d.monitorRun(runCtx, adapter, runID, &t, assignee, rowID, startedAt, false)
 }
 
 func (d *TaskDispatcher) buildHeartbeatContext(ctx context.Context, assignee *Employee, t *Task) HeartbeatContext {
@@ -511,7 +660,7 @@ func (d *TaskDispatcher) buildHeartbeatContext(ctx context.Context, assignee *Em
 // touchTask still fires every tick so the crash-reclaimer (gated on updated_at)
 // stays away while this monitor is alive; the monitor itself owns stall/budget
 // kills so a still-running goroutine is never re-queued underneath it.
-func (d *TaskDispatcher) monitorRun(ctx context.Context, adapter Adapter, runID string, t *Task, assignee *Employee, rowID string, startedAt time.Time) {
+func (d *TaskDispatcher) monitorRun(ctx context.Context, adapter Adapter, runID string, t *Task, assignee *Employee, rowID string, startedAt time.Time, isReview bool) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -544,7 +693,9 @@ func (d *TaskDispatcher) monitorRun(ctx context.Context, adapter Adapter, runID 
 						"agent_id", assignee.ID, "used_tokens", used, "budget_tokens", budgetTokens)
 					adapter.Stop(ctx, runID)
 					d.finishRun(rowID, RunCancelled, obs.Output, "budget exceeded mid-run", obs.TokenUsage)
-					d.failTask(ctx, t.ID, "agent paused: monthly budget exceeded mid-run")
+					if !isReview {
+						d.failTask(ctx, t.ID, "agent paused: monthly budget exceeded mid-run")
+					}
 					return
 				}
 			}
@@ -563,7 +714,9 @@ func (d *TaskDispatcher) monitorRun(ctx context.Context, adapter Adapter, runID 
 					"run_id", runID, "stalled_for", time.Since(lastProgress).String())
 				adapter.Stop(ctx, runID)
 				d.finishRun(rowID, RunFailed, obs.Output, "stalled: no progress for "+d.staleTimeout.String(), obs.TokenUsage)
-				d.failTask(ctx, t.ID, "agent stalled: no progress for "+d.staleTimeout.String())
+				if !isReview {
+					d.failTask(ctx, t.ID, "agent stalled: no progress for "+d.staleTimeout.String())
+				}
 				return
 			}
 
@@ -571,7 +724,7 @@ func (d *TaskDispatcher) monitorRun(ctx context.Context, adapter Adapter, runID 
 			case RunCompleted:
 				d.finishRun(rowID, RunCompleted, obs.Output, obs.ErrorMessage, obs.TokenUsage)
 				updated, gerr := d.pgClient.GetTask(ctx, t.ID)
-				if gerr == nil && updated.Status == "in_progress" {
+				if !isReview && gerr == nil && updated.Status == "in_progress" {
 					d.failTask(ctx, t.ID, "agent finished without calling submit_task_result")
 				}
 				return

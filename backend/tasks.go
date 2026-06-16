@@ -556,9 +556,16 @@ func (pg *PGClient) UpdateTaskStatus(ctx context.Context, id, newStatus, actorID
 	sets := "status = $1, updated_at = NOW()"
 	args := []any{newStatus, id}
 
-	if newStatus == "done" {
+	switch {
+	case newStatus == "done":
 		sets = "status = $1, updated_at = NOW(), completed_at = NOW()"
-	} else if newStatus == "ready" && currentStatus == "needs_review" {
+	case currentStatus == "blocked":
+		// Unblocking (manual or automatic) is a fresh start: clear the failure
+		// counter and retry backoff so the task isn't re-blocked on its next
+		// single failure. Without this, a task unblocked at failure_count=3
+		// re-blocks the moment it fails once more.
+		sets = "status = $1, updated_at = NOW(), failure_count = 0, retry_after = NULL"
+	case newStatus == "ready" && currentStatus == "needs_review":
 		sets = "status = $1, updated_at = NOW(), result = ''"
 	}
 
