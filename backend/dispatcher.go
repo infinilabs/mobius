@@ -524,6 +524,12 @@ func (d *TaskDispatcher) executeAgentTask(parentCtx context.Context, t Task) {
 	}
 
 	hb := d.buildHeartbeatContext(parentCtx, assignee, &t)
+	hb.SystemPrompt += "\n\n## SYSTEM DIRECTIVE: Finish by submitting your result\n" +
+		"Your task is NOT complete until you call submit_task_result with the deliverable. " +
+		"Do the work, then call submit_task_result — ending your turn by only describing what you did " +
+		"leaves the task unfinished and it will be sent back. If you delegated sub-tasks to teammates, " +
+		"you must STILL call submit_task_result summarizing what you delegated and why, so your own task " +
+		"can be reviewed and closed."
 
 	slog.Info("agent task started", "task_id", t.ID, "assignee", assignee.Name,
 		"adapter", adapterType, "model", hb.ModelID)
@@ -725,7 +731,7 @@ func (d *TaskDispatcher) monitorRun(ctx context.Context, adapter Adapter, runID 
 				d.finishRun(rowID, RunCompleted, obs.Output, obs.ErrorMessage, obs.TokenUsage)
 				updated, gerr := d.pgClient.GetTask(ctx, t.ID)
 				if !isReview && gerr == nil && updated.Status == "in_progress" {
-					d.failTask(ctx, t.ID, "agent finished without calling submit_task_result")
+					d.salvageOrFail(ctx, t.ID, obs.Output)
 				}
 				return
 			case RunFailed:
@@ -1050,6 +1056,37 @@ func (d *TaskDispatcher) processTemplate(ctx context.Context,
 func (d *TaskDispatcher) touchTask(ctx context.Context, taskID string) {
 	d.pgClient.pool.Exec(ctx,
 		"UPDATE tasks SET updated_at = NOW() WHERE id = $1 AND status = 'in_progress'", taskID)
+}
+
+// salvageOrFail handles a run that completed while its task was still in_progress
+// — the agent never called submit_task_result. Discarding the work and failing the
+// task is what stalled the whole pipeline; instead we capture the run output as the
+// result and route it to review (the review gate catches low-quality output). Only
+// when there is genuinely nothing to salvage do we fall back to failing the task.
+func (d *TaskDispatcher) salvageOrFail(ctx context.Context, taskID, output string) {
+	res := truncateStr(output, 100000)
+	if res == "" {
+		slog.Warn("salvage: nothing to salvage (empty run output)",
+			"task_id", taskID, "raw_output_len", len(output))
+		d.failTask(ctx, taskID, "agent finished without calling submit_task_result and produced no output")
+		return
+	}
+	if err := d.pgClient.UpdateTask(ctx, taskID, nil, nil, nil, nil, &res); err != nil {
+		slog.Error("salvage: UpdateTask(result) failed",
+			"task_id", taskID, "error", err, "result_len", len(res))
+		d.failTask(ctx, taskID, "salvage failed (UpdateTask): "+err.Error())
+		return
+	}
+	if err := d.pgClient.UpdateTaskStatus(ctx, taskID, "needs_review", ""); err != nil {
+		slog.Error("salvage: UpdateTaskStatus(needs_review) failed",
+			"task_id", taskID, "error", err, "result_len", len(res))
+		d.failTask(ctx, taskID, "salvage failed (UpdateTaskStatus): "+err.Error())
+		return
+	}
+	d.pgClient.AddTaskComment(ctx, taskID, "",
+		"System: Agent ended without calling submit_task_result; its run output was auto-submitted for review.")
+	slog.Warn("auto-submitted run output for review (missing submit_task_result)", "task_id", taskID)
+	d.pgClient.reindexTask(ctx, taskID)
 }
 
 func (d *TaskDispatcher) failTask(ctx context.Context, taskID, reason string) {
