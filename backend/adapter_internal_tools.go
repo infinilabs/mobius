@@ -172,8 +172,13 @@ func (a *InternalLLMAdapter) execSubmit(ctx context.Context, args map[string]any
 	taskID, _ := args["task_id"].(string)
 	result, _ := args["result"].(string)
 
-	if taskID == "" || result == "" {
-		return map[string]any{"error": "task_id and result are required"}
+	// The run is bound to exactly one task. Default to it so the agent never has
+	// to discover its own opaque task ID (which it cannot see) just to submit.
+	if taskID == "" {
+		taskID = currentTask.ID
+	}
+	if result == "" {
+		return map[string]any{"error": "result is required"}
 	}
 	if taskID != currentTask.ID {
 		return map[string]any{"error": "can only submit your own task"}
@@ -326,7 +331,7 @@ func (a *InternalLLMAdapter) execWriteProjectFile(ctx context.Context, args map[
 		}
 		asset := &ProjectAsset{
 			ID: generateID(), ProjectID: *task.ProjectID,
-			Filename: filepath.Base(path), RelativePath: path,
+			Filename: filepath.Base(path), RelativePath: path, AbsolutePath: fullPath,
 			MIMEType: mimeType, SizeBytes: int64(len(content)),
 			Content: indexContent, ContentTruncated: truncated,
 			ContentType: ct, GCSStatus: "pending",

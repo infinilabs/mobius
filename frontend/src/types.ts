@@ -226,6 +226,7 @@ export interface ProjectAsset {
   project_id: string;
   filename: string;
   relative_path: string;
+  absolute_path?: string;
   mime_type: string;
   size_bytes: number;
   content?: string;

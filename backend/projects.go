@@ -62,6 +62,7 @@ type ProjectAsset struct {
 	ProjectID        string         `json:"project_id"`
 	Filename         string         `json:"filename"`
 	RelativePath     string         `json:"relative_path"`
+	AbsolutePath     string         `json:"absolute_path,omitempty"`
 	MIMEType         string         `json:"mime_type"`
 	SizeBytes        int64          `json:"size_bytes"`
 	Content          string         `json:"content,omitempty"`
@@ -942,6 +943,7 @@ func (h *APIHandler) UploadProjectAsset(w http.ResponseWriter, r *http.Request) 
 		ProjectID:        projectID,
 		Filename:         filepath.Base(relativePath),
 		RelativePath:     relativePath,
+		AbsolutePath:     fullPath,
 		MIMEType:         mimeType,
 		SizeBytes:        header.Size,
 		Content:          content,
@@ -1196,6 +1198,12 @@ func (h *APIHandler) ReindexProjectAssets(w http.ResponseWriter, r *http.Request
 	}
 
 	rootDir := project.RootDir(h.config)
+
+	// Rebuild from disk (the source of truth): drop stale/duplicate docs first so
+	// the index exactly mirrors the project folder on every sync.
+	if err := h.esClient.DeleteProjectAssets(r.Context(), projectID); err != nil {
+		slog.Warn("reindex: failed to clear existing assets", "project", project.Name, "error", err)
+	}
 	var indexed int
 
 	filepath.Walk(rootDir, func(path string, info os.FileInfo, werr error) error {
@@ -1222,11 +1230,6 @@ func (h *APIHandler) ReindexProjectAssets(w http.ResponseWriter, r *http.Request
 		}
 
 		newChecksum := calculateSHA256(data)
-		if existing, eerr := h.esClient.GetProjectAssetByPath(r.Context(), projectID, rel); eerr == nil && existing != nil {
-			if existing.Checksum == newChecksum {
-				return nil
-			}
-		}
 
 		mimeType := resolveMimeType(info.Name(), "")
 		ct := classifyContentType(mimeType)
@@ -1248,6 +1251,7 @@ func (h *APIHandler) ReindexProjectAssets(w http.ResponseWriter, r *http.Request
 			ProjectID:        projectID,
 			Filename:         info.Name(),
 			RelativePath:     rel,
+			AbsolutePath:     path,
 			MIMEType:         mimeType,
 			SizeBytes:        info.Size(),
 			Content:          content,

@@ -67,7 +67,7 @@ func (g *GeminiProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 		}
 	}
 
-	const maxToolRounds = 10
+	const maxToolRounds = 40
 	var fullText string
 	for i := 0; i < maxToolRounds; i++ {
 		var fcParts []*genai.Part
@@ -117,12 +117,8 @@ func (g *GeminiProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 			break
 		}
 
-		if i == maxToolRounds-1 {
-			slog.Warn("gemini: tool call loop limit reached", "model", req.Model, "rounds", maxToolRounds)
-			fullText += iterText
-			break
-		}
-
+		// Execute this round's tool calls (every round, including the last) so a
+		// final submit_task_result or file write lands before we stop.
 		contents = append(contents, &genai.Content{
 			Role:  "model",
 			Parts: fcParts,
@@ -149,6 +145,44 @@ func (g *GeminiProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 			Role:  "user",
 			Parts: responseParts,
 		})
+
+		// Out of tool-call budget: do ONE final tool-less generation so the agent
+		// produces a textual result (a summary of what it did) instead of leaving
+		// the run output empty — which would otherwise fail the task despite real
+		// work having been done.
+		if i == maxToolRounds-1 {
+			slog.Warn("gemini: tool call loop limit reached; forcing final summary",
+				"model", req.Model, "rounds", maxToolRounds)
+			contents = append(contents, &genai.Content{
+				Role: "user",
+				Parts: []*genai.Part{{Text: "You have reached your tool-call limit. Do not call any more tools. " +
+					"Write your final result now as plain text: what you produced, where the files/assets live, and anything still incomplete."}},
+			})
+			graceCfg := &genai.GenerateContentConfig{}
+			if config.SystemInstruction != nil {
+				graceCfg.SystemInstruction = config.SystemInstruction
+			}
+			for chunk, err := range client.Models.GenerateContentStream(ctx, req.Model, contents, graceCfg) {
+				if err != nil {
+					return fullText, fmt.Errorf("final-summary stream error: %w", err)
+				}
+				if t := chunk.Text(); t != "" {
+					fullText += t
+					if req.OnText != nil {
+						req.OnText(t)
+					}
+				}
+				if chunk.UsageMetadata != nil && req.OnUsage != nil {
+					req.OnUsage(TokenUsage{
+						PromptTokens:     chunk.UsageMetadata.PromptTokenCount,
+						CompletionTokens: chunk.UsageMetadata.CandidatesTokenCount,
+						TotalTokens:      chunk.UsageMetadata.TotalTokenCount,
+						CachedTokens:     chunk.UsageMetadata.CachedContentTokenCount,
+						ThoughtsTokens:   chunk.UsageMetadata.ThoughtsTokenCount,
+					})
+				}
+			}
+		}
 	}
 
 	return fullText, nil

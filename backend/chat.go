@@ -113,6 +113,15 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 	h.conversations.AddMessage(req.ConversationID, userMsg)
 	conv = h.conversations.Get(req.ConversationID)
 
+	// Resolve the project for this turn. An explicit request project wins, but
+	// if the conversation was already bound to a project (e.g. an agent created
+	// one earlier in this chat), reuse it. This keeps a single conversation's
+	// work in ONE project instead of fragmenting it across many.
+	effectiveProjectID := req.ProjectID
+	if effectiveProjectID == "" && conv.ProjectID != nil {
+		effectiveProjectID = *conv.ProjectID
+	}
+
 	if h.esClient != nil {
 		if err := h.esClient.IndexMessage(r.Context(), req.ConversationID, &userMsg, len(conv.Messages)); err != nil {
 			slog.Error("ES index user message failed", "error", err)
@@ -181,10 +190,11 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 		systemPrompt += "\n\n## Project Management\n" +
 			"You can create projects with the create_project tool. You will be the project owner.\n" +
 			"- When the user explicitly asks to create a project, do it. Only 'name' is required — ask for it if not provided. Description and other details can be added later.\n" +
-			"- When a task is complex (multi-step, multi-file, or will produce artifacts that need tracking), suggest creating a project for it. Always confirm with the user before creating."
+			"- When a task is complex (multi-step, multi-file, or will produce artifacts that need tracking), suggest creating a project for it. Always confirm with the user before creating.\n" +
+			"- ONE project per effort: create a single project for the whole request, then delegate ALL related tasks into it. Never create a separate project per task or per turn — if this conversation already has a project, reuse it."
 
-		if req.ProjectID != "" && h.pgClient != nil {
-			project, perr := h.pgClient.GetProject(r.Context(), req.ProjectID)
+		if effectiveProjectID != "" && h.pgClient != nil {
+			project, perr := h.pgClient.GetProject(r.Context(), effectiveProjectID)
 			if perr == nil {
 				mobiusMD := readProjectMemory(project, h.config)
 				if mobiusMD != "" {
@@ -265,8 +275,17 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 			if agent == nil {
 				return map[string]any{"error": "no agent context for tool execution"}
 			}
-			if req.ProjectID != "" && call.Args != nil {
-				call.Args["_project_id"] = req.ProjectID
+			// Inject the active project so tools (delegate_task, asset tools, etc.)
+			// attach to it. Re-read the conversation each call so a project created
+			// earlier in THIS turn is picked up by later tool calls in the same turn.
+			pid := effectiveProjectID
+			if pid == "" {
+				if c := h.conversations.Get(conv.ID); c != nil && c.ProjectID != nil {
+					pid = *c.ProjectID
+				}
+			}
+			if pid != "" && call.Args != nil {
+				call.Args["_project_id"] = pid
 			}
 			return h.executeToolCall(r.Context(), call, agent, conv.ID)
 		},
@@ -286,7 +305,7 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 				Provider:         providerName,
 				EmployeeID:       agentID,
 				EmployeeName:     agentName,
-				ProjectID:        req.ProjectID,
+				ProjectID:        effectiveProjectID,
 				ConversationID:   req.ConversationID,
 				PromptTokens:     int64(usage.PromptTokens),
 				CompletionTokens: int64(usage.CompletionTokens),
@@ -329,8 +348,8 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if req.ProjectID != "" {
-		h.conversations.SetProjectID(req.ConversationID, req.ProjectID)
+	if effectiveProjectID != "" {
+		h.conversations.SetProjectID(req.ConversationID, effectiveProjectID)
 	}
 	conv = h.conversations.Get(req.ConversationID)
 
@@ -353,8 +372,8 @@ func (h *APIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 			agentID = agent.ID
 		}
 		var projID *string
-		if req.ProjectID != "" {
-			projID = &req.ProjectID
+		if effectiveProjectID != "" {
+			projID = &effectiveProjectID
 		}
 		convID := req.ConversationID
 		h.events.Publish(newEvent("conversation_started",

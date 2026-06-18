@@ -259,7 +259,7 @@ function AssetsTab({ project }: { project: Project }) {
                   <FileText size={16} className="text-zinc-500 shrink-0" />
                 )}
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm text-zinc-200 truncate">{a.relative_path}</p>
+                  <p className="text-sm text-zinc-200 truncate" title={a.absolute_path || a.relative_path}>{a.relative_path}</p>
                   <div className="flex items-center gap-3 text-[10px] text-zinc-500 mt-0.5">
                     <span>{a.content_type}</span>
                     <span>{(a.size_bytes / 1024).toFixed(1)} KB</span>

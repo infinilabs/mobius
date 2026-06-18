@@ -159,7 +159,7 @@ func (h *APIHandler) execWriteProjectFile(ctx context.Context, args map[string]a
 		}
 		asset := &ProjectAsset{
 			ID: generateID(), ProjectID: projectID,
-			Filename: filepath.Base(path), RelativePath: path,
+			Filename: filepath.Base(path), RelativePath: path, AbsolutePath: fullPath,
 			MIMEType: "text/plain", SizeBytes: int64(len(content)),
 			Content: indexContent, ContentTruncated: truncated,
 			ContentType: ct, GCSStatus: "pending",
@@ -243,6 +243,22 @@ func (h *APIHandler) execCreateProject(ctx context.Context, args map[string]any,
 		return map[string]any{"error": "name is required"}
 	}
 	description, _ := args["description"].(string)
+
+	// One project per conversation. If this chat is already bound to a project,
+	// reuse it instead of fragmenting one effort across many projects.
+	if conversationID != "" {
+		if conv := h.conversations.Get(conversationID); conv != nil && conv.ProjectID != nil && *conv.ProjectID != "" {
+			if existing, gerr := h.pgClient.GetProject(ctx, *conv.ProjectID); gerr == nil {
+				slog.Info("create_project reused existing conversation project", "project_id", existing.ID, "requested_name", name)
+				return map[string]any{
+					"status":     "exists",
+					"project_id": existing.ID,
+					"name":       existing.Name,
+					"note":       "This conversation already has a project; reusing it. Put ALL tasks and assets for this effort here — do not create another project.",
+				}
+			}
+		}
+	}
 
 	p, err := h.pgClient.CreateProject(ctx, CreateProjectInput{
 		Name:        name,

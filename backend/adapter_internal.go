@@ -126,7 +126,10 @@ func (a *InternalLLMAdapter) executeInternalChat(ctx context.Context, hb Heartbe
 	var messages []LLMMessage
 	messages = append(messages, LLMMessage{Role: "user", Text: hb.SystemPrompt})
 	messages = append(messages, LLMMessage{Role: "model", Text: fmt.Sprintf("I'm %s, %s. Ready.", hb.AgentName, hb.AgentTitle)})
-	messages = append(messages, LLMMessage{Role: "user", Text: fmt.Sprintf("Please complete this task:\n\n%s", hb.TaskBody)})
+	messages = append(messages, LLMMessage{Role: "user", Text: fmt.Sprintf(
+		"Please complete this task.\n\nYour task_id is: %s\n\n%s\n\nWhen the work is done, call submit_task_result with this task_id and your result. "+
+			"You do not need to look up the task_id anywhere — it is given above.",
+		hb.TaskID, hb.TaskBody)})
 
 	if hb.TaskStatus == "needs_review" && hb.TaskResult != "" {
 		messages = append(messages, LLMMessage{
