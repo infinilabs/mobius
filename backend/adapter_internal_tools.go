@@ -478,7 +478,7 @@ func (a *InternalLLMAdapter) execListTasks(ctx context.Context, args map[string]
 	status, _ := args["status"].(string)
 	assigneeID, _ := args["assignee_id"].(string)
 	projectID, _ := args["project_id"].(string)
-	tasks, err := a.pgClient.ListTasks(ctx, status, assigneeID, projectID)
+	tasks, err := a.pgClient.ListTasks(ctx, status, assigneeID, projectID, "")
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}

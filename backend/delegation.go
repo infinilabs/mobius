@@ -296,7 +296,7 @@ func (h *APIHandler) execListTasksTool(ctx context.Context, args map[string]any)
 	assigneeID, _ := args["assignee_id"].(string)
 	projectID, _ := args["project_id"].(string)
 
-	tasks, err := h.pgClient.ListTasks(ctx, status, assigneeID, projectID)
+	tasks, err := h.pgClient.ListTasks(ctx, status, assigneeID, projectID, "")
 	if err != nil {
 		return map[string]any{"error": "failed to list tasks: " + err.Error()}
 	}

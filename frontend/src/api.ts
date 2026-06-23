@@ -245,11 +245,12 @@ export async function delegateTask(delegation: {
 }
 
 // Tasks
-export async function listTasks(filters?: { status?: string; assignee_id?: string; project_id?: string }): Promise<Task[]> {
+export async function listTasks(filters?: { status?: string; assignee_id?: string; project_id?: string; conversation_id?: string }): Promise<Task[]> {
   const params = new URLSearchParams();
   if (filters?.status) params.set('status', filters.status);
   if (filters?.assignee_id) params.set('assignee_id', filters.assignee_id);
   if (filters?.project_id) params.set('project_id', filters.project_id);
+  if (filters?.conversation_id) params.set('conversation_id', filters.conversation_id);
   const qs = params.toString();
   const { data } = await axios.get(`/api/tasks${qs ? `?${qs}` : ''}`);
   return data;

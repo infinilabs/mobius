@@ -466,7 +466,7 @@ func (s *MCPServer) handleRunCommand(ctx context.Context, raw json.RawMessage, c
 
 func (s *MCPServer) handleListTasks(ctx context.Context, raw json.RawMessage, _ MCPCaller) (any, error) {
 	args := parseArgs(raw)
-	tasks, err := s.pgClient.ListTasks(ctx, argStr(args, "status"), argStr(args, "assignee_id"), argStr(args, "project_id"))
+	tasks, err := s.pgClient.ListTasks(ctx, argStr(args, "status"), argStr(args, "assignee_id"), argStr(args, "project_id"), "")
 	if err != nil {
 		return nil, err
 	}

@@ -45,7 +45,7 @@ type TaskComment struct {
 
 // PG operations
 
-func (pg *PGClient) ListTasks(ctx context.Context, status, assigneeID, projectID string) ([]Task, error) {
+func (pg *PGClient) ListTasks(ctx context.Context, status, assigneeID, projectID, conversationID string) ([]Task, error) {
 	query := `
 		SELECT t.id, t.title, t.body, t.status, t.priority, t.result,
 		       t.failure_count, t.created_at, t.updated_at, t.completed_at,
@@ -78,6 +78,11 @@ func (pg *PGClient) ListTasks(ctx context.Context, status, assigneeID, projectID
 	} else if projectID != "" {
 		conditions = append(conditions, fmt.Sprintf("t.project_id = $%d", argN))
 		args = append(args, projectID)
+		argN++
+	}
+	if conversationID != "" {
+		conditions = append(conditions, fmt.Sprintf("t.conversation_id = $%d", argN))
+		args = append(args, conversationID)
 		argN++
 	}
 
@@ -722,8 +727,9 @@ func (h *APIHandler) ListTasks(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
 	assigneeID := r.URL.Query().Get("assignee_id")
 	projectID := r.URL.Query().Get("project_id")
+	conversationID := r.URL.Query().Get("conversation_id")
 
-	tasks, err := h.pgClient.ListTasks(r.Context(), status, assigneeID, projectID)
+	tasks, err := h.pgClient.ListTasks(r.Context(), status, assigneeID, projectID, conversationID)
 	if err != nil {
 		writeError(w, "failed to list tasks: "+err.Error(), http.StatusInternalServerError)
 		return

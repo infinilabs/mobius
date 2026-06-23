@@ -6,8 +6,8 @@ import {
   Copy, Pencil, Check, ThumbsUp, ThumbsDown, RefreshCw, Printer,
   Camera, Mic,
 } from 'lucide-react';
-import { createConversation, getConversation, sendChatMessage, uploadFile, truncateConversation, listEmployees, listModels, fetchSettings } from '../api';
-import type { ChatMessage, FileRef, Employee, VertexModel } from '../types';
+import { createConversation, getConversation, sendChatMessage, uploadFile, truncateConversation, listEmployees, listModels, fetchSettings, listTasks } from '../api';
+import type { ChatMessage, FileRef, Employee, VertexModel, Task } from '../types';
 
 export type ChatTarget =
   | { kind: 'agent'; agent: Employee }
@@ -33,6 +33,7 @@ interface Props {
 
 export default function NewTaskPage({ conversationId, onConversationCreated, initialAgentId, initialProjectId }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [linkedTasks, setLinkedTasks] = useState<Task[]>([]);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [thinking, setThinking] = useState(false);
@@ -91,6 +92,24 @@ export default function NewTaskPage({ conversationId, onConversationCreated, ini
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Reconstruct live task status on (re)open and keep it fresh while the chat is
+  // mounted, so switching views and coming back never loses "what is happening".
+  useEffect(() => {
+    if (!conversationId) {
+      setLinkedTasks([]);
+      return;
+    }
+    let cancelled = false;
+    const refresh = () => {
+      listTasks({ conversation_id: conversationId })
+        .then(t => { if (!cancelled) setLinkedTasks(t); })
+        .catch(() => {});
+    };
+    refresh();
+    const interval = setInterval(refresh, 6000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [conversationId]);
 
   const handleSend = useCallback(async (text?: string, overrideFiles?: FileRef[]) => {
     const msg = text || input.trim();
@@ -313,6 +332,9 @@ export default function NewTaskPage({ conversationId, onConversationCreated, ini
         </div>
       )}
 
+      {/* Live project/task status — survives view switches via polling */}
+      <TaskStatusStrip tasks={linkedTasks} />
+
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-8 pt-6 pb-4">
         <div className="max-w-[800px] mx-auto space-y-4">
@@ -375,6 +397,48 @@ const TOOL_LABELS: Record<string, string> = {
 
 function toolLabel(name: string): string {
   return TOOL_LABELS[name] || name.replace(/_/g, ' ');
+}
+
+const TASK_STATUS_META: Record<string, { label: string; color: string }> = {
+  todo: { label: 'To do', color: '#a1a1aa' },
+  ready: { label: 'Ready', color: '#60a5fa' },
+  in_progress: { label: 'In progress', color: '#38bdf8' },
+  needs_review: { label: 'Needs review', color: '#fbbf24' },
+  done: { label: 'Done', color: '#4ade80' },
+  blocked: { label: 'Blocked', color: '#fb7185' },
+  scheduled: { label: 'Scheduled', color: '#c084fc' },
+};
+
+const TERMINAL_STATUSES = new Set(['done', 'blocked']);
+
+function TaskStatusStrip({ tasks }: { tasks: Task[] }) {
+  if (tasks.length === 0) return null;
+  const active = tasks.filter(t => !TERMINAL_STATUSES.has(t.status)).length;
+  return (
+    <div className="shrink-0 px-8 pt-3">
+      <div className="max-w-[800px] mx-auto rounded-lg border border-zinc-800/40 px-3 py-2" style={{ background: '#0c0c0f' }}>
+        <div className="flex items-center gap-2 mb-2">
+          <Activity size={12} className="text-cyan-400" />
+          <span className="text-[11px] font-medium text-zinc-400">
+            Project activity · {tasks.length} task{tasks.length > 1 ? 's' : ''}{active > 0 ? ` · ${active} active` : ''}
+          </span>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {tasks.map(t => {
+            const meta = TASK_STATUS_META[t.status] || { label: t.status, color: '#a1a1aa' };
+            return (
+              <span key={t.id} className="flex items-center gap-1.5 text-[10px] px-2 py-1 rounded-md border border-zinc-800/50" style={{ background: '#09090b' }}>
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${t.status === 'in_progress' ? 'animate-pulse' : ''}`} style={{ background: meta.color }} />
+                <span className="text-zinc-300 max-w-[160px] truncate">{t.title}</span>
+                {t.assignee && <span className="text-zinc-600">· {t.assignee.name}</span>}
+                <span style={{ color: meta.color }}>{meta.label}</span>
+              </span>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function ToolActivity({ events }: { events: { name: string; status: string }[] }) {

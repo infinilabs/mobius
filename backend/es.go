@@ -1732,7 +1732,7 @@ func (es *ESClient) BackfillTasks(ctx context.Context, pg *PGClient) error {
 	if count > 0 {
 		return nil
 	}
-	tasks, err := pg.ListTasks(ctx, "", "", "")
+	tasks, err := pg.ListTasks(ctx, "", "", "", "")
 	if err != nil {
 		return fmt.Errorf("backfill tasks: list PG: %w", err)
 	}

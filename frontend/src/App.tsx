@@ -167,7 +167,7 @@ function App() {
           <div className={`${sidebarOpen ? 'mx-1' : 'mx-0.5'} border-t border-zinc-800/40 my-1.5`} />
 
           {OPS_ITEMS.map(item => (
-            <NavButton key={item.id} item={item} activePage={activePage} activeConversationId={activeConversationId} sidebarOpen={sidebarOpen} onNav={() => setActivePage(item.id)} />
+            <NavButton key={item.id} item={item} activePage={activePage} activeConversationId={activeConversationId} sidebarOpen={sidebarOpen} onNav={() => { if (item.id === 'tasks') setNavTask(undefined); setActivePage(item.id); }} />
           ))}
 
           <div className={`${sidebarOpen ? 'mx-1' : 'mx-0.5'} border-t border-zinc-800/40 my-1.5`} />
@@ -190,7 +190,7 @@ function App() {
                 <RecentItem
                   key={c.id}
                   conversation={c}
-                  isActive={activeConversationId === c.id}
+                  isActive={activePage === 'new-task' && activeConversationId === c.id}
                   onSelect={() => handleSelectConversation(c.id)}
                   onRename={(title) => handleRename(c.id, title)}
                   onDelete={() => handleDelete(c.id)}
@@ -207,7 +207,7 @@ function App() {
                 key={c.id}
                 onClick={() => handleSelectConversation(c.id)}
                 className={`p-2 rounded-lg cursor-pointer transition-all ${
-                  activeConversationId === c.id
+                  activePage === 'new-task' && activeConversationId === c.id
                     ? 'text-cyan-400 bg-zinc-800/50'
                     : 'text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800/30'
                 }`}

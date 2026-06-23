@@ -723,7 +723,7 @@ func (h *APIHandler) exportProjectToZip(ctx context.Context, project *Project, z
 
 	var tasks []Task
 	if h.pgClient != nil {
-		tasks, _ = h.pgClient.ListTasks(ctx, "", "", project.ID)
+		tasks, _ = h.pgClient.ListTasks(ctx, "", "", project.ID, "")
 	}
 	if len(tasks) > 0 {
 		tasksJSON, _ := json.MarshalIndent(tasks, "", "  ")
