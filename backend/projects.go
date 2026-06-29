@@ -7,8 +7,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +22,46 @@ import (
 	"sync"
 	"time"
 )
+
+// classifyAspect maps width/height to one of the supported aspect-ratio buckets
+// (9:16, 1:1, 4:5, 16:9) within a tolerance, else "other".
+func classifyAspect(w, h int) string {
+	if w <= 0 || h <= 0 {
+		return "other"
+	}
+	r := float64(w) / float64(h)
+	cands := []struct {
+		label string
+		val   float64
+	}{
+		{"1:1", 1.0}, {"9:16", 9.0 / 16.0}, {"16:9", 16.0 / 9.0}, {"4:5", 4.0 / 5.0},
+	}
+	best, bestDiff := "other", 0.06 // ~6% relative tolerance
+	for _, c := range cands {
+		if d := math.Abs(r-c.val) / c.val; d < bestDiff {
+			best, bestDiff = c.label, d
+		}
+	}
+	return best
+}
+
+// computeAspectRatio decodes an image's dimensions to derive its aspect ratio.
+// Non-image content (and undecodable images) return "other".
+func computeAspectRatio(localPath, contentType string) string {
+	if contentType != "image" {
+		return "other"
+	}
+	f, err := os.Open(localPath)
+	if err != nil {
+		return "other"
+	}
+	defer f.Close()
+	cfg, _, err := image.DecodeConfig(f)
+	if err != nil {
+		return "other"
+	}
+	return classifyAspect(cfg.Width, cfg.Height)
+}
 
 func calculateSHA256(data []byte) string {
 	if len(data) == 0 {
@@ -73,6 +118,12 @@ type ProjectAsset struct {
 	GCSStatus        string         `json:"gcs_status"`
 	Checksum         string         `json:"checksum_sha256,omitempty"`
 	Tags             []string       `json:"tags"`
+	Title            string         `json:"title,omitempty"`
+	Description      string         `json:"description,omitempty"`
+	Status           string         `json:"status,omitempty"`
+	Origin           string         `json:"origin,omitempty"`
+	AspectRatio      string         `json:"aspect_ratio,omitempty"`
+	PublishedAt      string         `json:"published_at,omitempty"`
 	CreatedByID      string         `json:"created_by_id,omitempty"`
 	CreatedBy        *EmployeeBrief `json:"created_by,omitempty"`
 	TaskID           string         `json:"task_id,omitempty"`
@@ -226,10 +277,11 @@ func (pg *PGClient) ListProjects(ctx context.Context, status string) ([]Project,
 		       (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS task_count
 		FROM projects p
 		LEFT JOIN employees e ON e.id = p.owner_id
+		WHERE p.name <> '__creatives__'
 	`
 	var args []any
 	if status != "" {
-		query += " WHERE p.status = $1"
+		query += " AND p.status = $1"
 		args = append(args, status)
 	}
 	query += " ORDER BY p.updated_at DESC"
@@ -855,16 +907,38 @@ func (h *APIHandler) ListCreatives(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Elasticsearch not available", http.StatusServiceUnavailable)
 		return
 	}
-	query := r.URL.Query().Get("q")
-	contentType := r.URL.Query().Get("type")
-	tag := r.URL.Query().Get("tag")
+	q := r.URL.Query()
+	filters := CreativeFilters{
+		Query:       q.Get("q"),
+		ContentType: q.Get("type"),
+		Tag:         q.Get("tag"),
+		Origin:      q.Get("origin"),
+		AspectRatio: q.Get("aspect_ratio"),
+		Status:      q.Get("status"),
+		DateFrom:    q.Get("date_from"),
+		DateTo:      q.Get("date_to"),
+	}
 
-	assets, err := h.esClient.SearchCreatives(r.Context(), query, contentType, tag, 200)
+	assets, err := h.esClient.SearchCreatives(r.Context(), filters, 200)
 	if err != nil {
 		writeError(w, "failed to search creatives: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, assets)
+}
+
+// ListCreativeTags returns the distinct tags across creatives for the quick-filter chips.
+func (h *APIHandler) ListCreativeTags(w http.ResponseWriter, r *http.Request) {
+	if h.esClient == nil {
+		writeError(w, "Elasticsearch not available", http.StatusServiceUnavailable)
+		return
+	}
+	tags, err := h.esClient.SearchCreativeTags(r.Context(), 100)
+	if err != nil {
+		writeError(w, "failed to list creative tags: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, tags)
 }
 
 func (h *APIHandler) UploadProjectAsset(w http.ResponseWriter, r *http.Request) {
@@ -952,6 +1026,10 @@ func (h *APIHandler) UploadProjectAsset(w http.ResponseWriter, r *http.Request) 
 		GCSStatus:        "pending",
 		Checksum:         calculateSHA256(buf),
 		Tags:             []string{},
+		Title:            filepath.Base(relativePath),
+		Status:           "draft",
+		Origin:           "local",
+		AspectRatio:      computeAspectRatio(fullPath, ct),
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
@@ -970,6 +1048,137 @@ func (h *APIHandler) UploadProjectAsset(w http.ResponseWriter, r *http.Request) 
 	}
 
 	slog.Info("project asset uploaded", "project", project.Name, "path", relativePath)
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, asset)
+}
+
+// creativesLibraryName is the reserved project that holds creatives uploaded
+// directly from a local computer (the "Add → Local Computer" flow). It is hidden
+// from ListProjects and exists only so every creative still has a valid
+// project_id for storage.
+const creativesLibraryName = "__creatives__"
+
+// getOrCreateCreativesProject returns the reserved creatives-library project,
+// creating it on first use. It bypasses CreateProject (whose name validation
+// rejects the sentinel name) and inserts the row directly.
+func (h *APIHandler) getOrCreateCreativesProject(ctx context.Context) (*Project, error) {
+	if p, err := h.pgClient.GetProjectByName(ctx, creativesLibraryName); err == nil {
+		return p, nil
+	}
+	var id string
+	if err := h.pgClient.pool.QueryRow(ctx, `
+		INSERT INTO projects (name, description, owner_id, status, source_path, tags)
+		VALUES ($1, $2, NULL, 'active', NULL, '{}')
+		RETURNING id
+	`, creativesLibraryName, "Reserved library for directly-uploaded creatives").Scan(&id); err != nil {
+		return nil, fmt.Errorf("create creatives library: %w", err)
+	}
+	p, err := h.pgClient.GetProject(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	os.MkdirAll(p.RootDir(h.config), 0755)
+	return p, nil
+}
+
+// UploadCreative handles a direct creative upload from a local computer. The file
+// is stored under the reserved creatives library, persisted to GCS, tagged
+// "creative", and indexed — combining UploadProjectAsset + AddAssetToCreatives.
+func (h *APIHandler) UploadCreative(w http.ResponseWriter, r *http.Request) {
+	if h.pgClient == nil || h.esClient == nil {
+		writeError(w, "required services not available", http.StatusServiceUnavailable)
+		return
+	}
+	if h.gcsClient == nil {
+		writeError(w, "GCS not available; cannot publish creative", http.StatusServiceUnavailable)
+		return
+	}
+
+	project, err := h.getOrCreateCreativesProject(r.Context())
+	if err != nil {
+		writeError(w, "failed to prepare creatives library: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	maxBytes := h.config.MaxUploadBytes()
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+(10<<20))
+	if err := r.ParseMultipartForm(maxBytes + (1 << 20)); err != nil {
+		writeError(w, "file too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, "file is required", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	relativePath := filepath.Base(header.Filename)
+	fullPath, err := resolveWithinRoot(project.RootDir(h.config), relativePath)
+	if err != nil {
+		writeError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	os.MkdirAll(filepath.Dir(fullPath), 0755)
+
+	dst, err := os.Create(fullPath)
+	if err != nil {
+		writeError(w, "failed to create file: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if _, err := io.Copy(dst, file); err != nil {
+		dst.Close()
+		writeError(w, "failed to save file content: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	dst.Close()
+
+	buf, _ := os.ReadFile(fullPath)
+	mimeType := resolveMimeType(header.Filename, header.Header.Get("Content-Type"))
+	ct := classifyContentType(mimeType)
+
+	now := time.Now().Format(time.RFC3339)
+	asset := &ProjectAsset{
+		ID:           generateID(),
+		ProjectID:    project.ID,
+		Filename:     relativePath,
+		RelativePath: relativePath,
+		AbsolutePath: fullPath,
+		MIMEType:     mimeType,
+		SizeBytes:    header.Size,
+		ContentType:  ct,
+		Checksum:     calculateSHA256(buf),
+		Tags:         []string{"creative"},
+		Title:        relativePath,
+		Status:       "draft",
+		Origin:       "local",
+		AspectRatio:  computeAspectRatio(fullPath, ct),
+		PublishedAt:  now,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+
+	f, ferr := os.Open(fullPath)
+	if ferr != nil {
+		writeError(w, "asset file not found after write", http.StatusInternalServerError)
+		return
+	}
+	gcsURI, uerr := h.gcsClient.Upload(r.Context(), "creatives", asset.ID, filepath.Ext(asset.Filename), f, asset.MIMEType)
+	f.Close()
+	if uerr != nil {
+		writeError(w, "failed to persist creative to GCS: "+uerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	asset.GCSURI = gcsURI
+	asset.GCSStatus = "synced"
+
+	if err := h.esClient.IndexProjectAsset(r.Context(), asset); err != nil {
+		writeError(w, "failed to index creative: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("creative uploaded", "asset_id", asset.ID, "gcs", asset.GCSURI)
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, asset)
 }
@@ -1080,6 +1289,11 @@ func (h *APIHandler) GetProjectAssetContent(w http.ResponseWriter, r *http.Reque
 
 	f, err := os.Open(fullPath)
 	if err != nil {
+		// Local file gone (e.g. archived project) — fall back to the durable GCS
+		// copy for published creatives. Serve local-first for speed, GCS for durability.
+		if h.serveAssetFromGCS(w, r, asset) {
+			return
+		}
 		writeError(w, "asset file not found", http.StatusNotFound)
 		return
 	}
@@ -1095,6 +1309,167 @@ func (h *APIHandler) GetProjectAssetContent(w http.ResponseWriter, r *http.Reque
 		w.Header().Set("Content-Type", asset.MIMEType)
 	}
 	http.ServeContent(w, r, asset.Filename, info.ModTime(), f)
+}
+
+// serveAssetFromGCS streams a creative's durable GCS copy by downloading it to a
+// temp file (GCS readers aren't seekable, http.ServeContent needs a ReadSeeker).
+// Returns false if no GCS copy exists or the fetch fails.
+func (h *APIHandler) serveAssetFromGCS(w http.ResponseWriter, r *http.Request, asset *ProjectAsset) bool {
+	if asset.GCSURI == "" || h.gcsClient == nil {
+		return false
+	}
+	tmp, err := os.CreateTemp("", "creative-*"+filepath.Ext(asset.Filename))
+	if err != nil {
+		return false
+	}
+	tmpPath := tmp.Name()
+	tmp.Close()
+	defer os.Remove(tmpPath)
+
+	if err := h.gcsClient.DownloadURI(r.Context(), asset.GCSURI, tmpPath); err != nil {
+		slog.Warn("creative GCS fallback download failed", "asset_id", asset.ID, "uri", asset.GCSURI, "error", err)
+		return false
+	}
+	f, err := os.Open(tmpPath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	if asset.MIMEType != "" {
+		w.Header().Set("Content-Type", asset.MIMEType)
+	}
+	http.ServeContent(w, r, asset.Filename, info.ModTime(), f)
+	return true
+}
+
+// AddAssetToCreatives promotes a project asset into the global Creatives library:
+// persists the bytes to GCS under a unique hash id (the asset ID) so the creative
+// is durable independent of local files, tags it "creative", sets status=draft +
+// published_at, and reindexes. Idempotent.
+func (h *APIHandler) AddAssetToCreatives(w http.ResponseWriter, r *http.Request) {
+	if h.esClient == nil || h.pgClient == nil {
+		writeError(w, "required services not available", http.StatusServiceUnavailable)
+		return
+	}
+	projectID := r.PathValue("id")
+	assetID := r.PathValue("assetId")
+
+	project, err := h.pgClient.GetProject(r.Context(), projectID)
+	if err != nil {
+		writeError(w, "project not found", http.StatusNotFound)
+		return
+	}
+	asset, err := h.esClient.GetProjectAsset(r.Context(), assetID)
+	if err != nil || asset.ProjectID != projectID {
+		writeError(w, "asset not found", http.StatusNotFound)
+		return
+	}
+
+	// Persist to GCS synchronously under a unique hash-id object name (asset.ID)
+	// so the creative survives local project cleanup.
+	if asset.GCSStatus != "synced" {
+		if h.gcsClient == nil {
+			writeError(w, "GCS not available; cannot publish creative", http.StatusServiceUnavailable)
+			return
+		}
+		fullPath, perr := resolveWithinRoot(project.RootDir(h.config), asset.RelativePath)
+		if perr != nil {
+			writeError(w, perr.Error(), http.StatusBadRequest)
+			return
+		}
+		f, ferr := os.Open(fullPath)
+		if ferr != nil {
+			writeError(w, "asset file not found", http.StatusNotFound)
+			return
+		}
+		gcsURI, uerr := h.gcsClient.Upload(r.Context(), "creatives", asset.ID, filepath.Ext(asset.Filename), f, asset.MIMEType)
+		f.Close()
+		if uerr != nil {
+			writeError(w, "failed to persist creative to GCS: "+uerr.Error(), http.StatusInternalServerError)
+			return
+		}
+		asset.GCSURI = gcsURI
+		asset.GCSStatus = "synced"
+	}
+
+	hasCreative := false
+	for _, t := range asset.Tags {
+		if t == "creative" {
+			hasCreative = true
+			break
+		}
+	}
+	if !hasCreative {
+		asset.Tags = append(asset.Tags, "creative")
+	}
+	if asset.Status == "" {
+		asset.Status = "draft"
+	}
+	if asset.Title == "" {
+		asset.Title = asset.Filename
+	}
+	if asset.PublishedAt == "" {
+		asset.PublishedAt = time.Now().Format(time.RFC3339)
+	}
+	asset.UpdatedAt = time.Now().Format(time.RFC3339)
+
+	if err := h.esClient.IndexProjectAsset(r.Context(), asset); err != nil {
+		writeError(w, "failed to index creative: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	slog.Info("asset added to creatives", "asset_id", assetID, "gcs", asset.GCSURI)
+	writeJSON(w, asset)
+}
+
+// UpdateCreativeMeta updates asset/creative metadata (title, description, status,
+// tags) without touching file content. Distinct from UpdateProjectAsset (content PUT).
+func (h *APIHandler) UpdateCreativeMeta(w http.ResponseWriter, r *http.Request) {
+	if h.esClient == nil {
+		writeError(w, "Elasticsearch not available", http.StatusServiceUnavailable)
+		return
+	}
+	projectID := r.PathValue("id")
+	assetID := r.PathValue("assetId")
+
+	asset, err := h.esClient.GetProjectAsset(r.Context(), assetID)
+	if err != nil || asset.ProjectID != projectID {
+		writeError(w, "asset not found", http.StatusNotFound)
+		return
+	}
+
+	var body struct {
+		Title       *string   `json:"title"`
+		Description *string   `json:"description"`
+		Status      *string   `json:"status"`
+		Tags        *[]string `json:"tags"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if body.Title != nil {
+		asset.Title = *body.Title
+	}
+	if body.Description != nil {
+		asset.Description = *body.Description
+	}
+	if body.Status != nil {
+		asset.Status = *body.Status
+	}
+	if body.Tags != nil {
+		asset.Tags = *body.Tags
+	}
+	asset.UpdatedAt = time.Now().Format(time.RFC3339)
+
+	if err := h.esClient.IndexProjectAsset(r.Context(), asset); err != nil {
+		writeError(w, "failed to update creative: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, asset)
 }
 
 func (h *APIHandler) UpdateProjectAsset(w http.ResponseWriter, r *http.Request) {

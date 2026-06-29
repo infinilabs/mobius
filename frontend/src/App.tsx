@@ -70,6 +70,18 @@ function App() {
     setActivePage('tasks');
   }, []);
 
+  // Chat status-strip → Tasks, pre-filtered to the chat's project. The seq nonce
+  // re-applies the filter even on a repeat navigation.
+  const [projectFilter, setProjectFilter] = useState<{ id: string; seq: number } | undefined>();
+  const projFilterSeq = useRef(0);
+
+  const openProjectTasks = useCallback((projectId: string) => {
+    projFilterSeq.current += 1;
+    setProjectFilter({ id: projectId, seq: projFilterSeq.current });
+    setNavTask(undefined);
+    setActivePage('tasks');
+  }, []);
+
   const refreshConversations = useCallback(() => {
     listConversations().then(setConversations).catch(() => {});
   }, []);
@@ -167,7 +179,7 @@ function App() {
           <div className={`${sidebarOpen ? 'mx-1' : 'mx-0.5'} border-t border-zinc-800/40 my-1.5`} />
 
           {OPS_ITEMS.map(item => (
-            <NavButton key={item.id} item={item} activePage={activePage} activeConversationId={activeConversationId} sidebarOpen={sidebarOpen} onNav={() => { if (item.id === 'tasks') setNavTask(undefined); setActivePage(item.id); }} />
+            <NavButton key={item.id} item={item} activePage={activePage} activeConversationId={activeConversationId} sidebarOpen={sidebarOpen} onNav={() => { if (item.id === 'tasks') { setNavTask(undefined); setProjectFilter(undefined); } setActivePage(item.id); }} />
           ))}
 
           <div className={`${sidebarOpen ? 'mx-1' : 'mx-0.5'} border-t border-zinc-800/40 my-1.5`} />
@@ -253,11 +265,13 @@ function App() {
               onConversationCreated={handleConversationCreated}
               initialAgentId={chatAgentId}
               initialProjectId={chatProjectId}
+              onOpenProjectTasks={openProjectTasks}
+              onOpenTask={openTask}
             />
           </div>
           {activePage === 'dashboard' && <div className="overflow-y-auto h-full"><DashboardPage onOpenTask={openTask} /></div>}
           {activePage === 'cockpit' && <div className="overflow-y-auto h-full"><CockpitPage /></div>}
-          {activePage === 'tasks' && <div className="overflow-y-auto h-full"><TasksPage openTask={navTask} /></div>}
+          {activePage === 'tasks' && <div className="overflow-y-auto h-full"><TasksPage openTask={navTask} projectFilter={projectFilter} /></div>}
           {activePage === 'projects' && <div className="overflow-y-auto h-full"><ProjectsPage onNavigateToChat={(convId, agentId, projectId) => {
             setActiveConversationId(convId);
             setChatAgentId(agentId);

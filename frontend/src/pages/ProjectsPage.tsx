@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   Plus, Search, FolderKanban, FileText, Database, Settings,
   Trash2, Upload, RefreshCw, X, Archive, Folder, ChevronUp, MessageSquare,
-  Eye, Gamepad2,
+  Eye, Gamepad2, Film,
 } from 'lucide-react';
 import {
   listProjects, createProject, getProject, updateProject, deleteProject,
@@ -11,6 +11,7 @@ import {
   listConversations, assetContentUrl,
 } from '../api';
 import type { Project, ProjectAsset, Employee } from '../types';
+import { AssetPreviewModal, isPreviewable, isImageAsset, isPlayableAsset, isVideoAsset } from '../components/AssetPreview';
 
 type Tab = 'assets' | 'memory' | 'settings';
 
@@ -246,7 +247,7 @@ function AssetsTab({ project }: { project: Project }) {
       ) : (
         <div className="grid gap-2">
           {assets.map(a => {
-            const previewable = isImageAsset(a) || isPlayableAsset(a);
+            const previewable = isPreviewable(a);
             return (
               <div key={a.id} className="flex items-center gap-3 px-4 py-3 rounded-lg border border-zinc-800/40 bg-zinc-900/30 hover:border-zinc-700/60 transition-colors">
                 {isImageAsset(a) ? (
@@ -255,6 +256,8 @@ function AssetsTab({ project }: { project: Project }) {
                   </button>
                 ) : isPlayableAsset(a) ? (
                   <Gamepad2 size={16} className="text-cyan-400 shrink-0" />
+                ) : isVideoAsset(a) ? (
+                  <Film size={16} className="text-zinc-400 shrink-0" />
                 ) : (
                   <FileText size={16} className="text-zinc-500 shrink-0" />
                 )}
@@ -286,35 +289,7 @@ function AssetsTab({ project }: { project: Project }) {
         </div>
       )}
 
-      {preview && <AssetPreviewModal projectId={project.id} asset={preview} onClose={() => setPreview(null)} />}
-    </div>
-  );
-}
-
-function isImageAsset(a: ProjectAsset): boolean {
-  return a.content_type === 'image' || a.mime_type?.startsWith('image/');
-}
-
-function isPlayableAsset(a: ProjectAsset): boolean {
-  return a.tags?.includes('playable') || a.mime_type === 'text/html';
-}
-
-function AssetPreviewModal({ projectId, asset, onClose }: { projectId: string; asset: ProjectAsset; onClose: () => void }) {
-  const url = assetContentUrl(projectId, asset.id);
-  const playable = isPlayableAsset(asset);
-  return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-6" onClick={onClose}>
-      <div className="relative max-w-[90vw] max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs text-zinc-300 font-mono truncate">{asset.relative_path}</span>
-          <button onClick={onClose} className="p-1 rounded text-zinc-400 hover:text-white cursor-pointer"><X size={18} /></button>
-        </div>
-        {playable ? (
-          <iframe src={url} title={asset.filename} className="bg-white rounded-lg border border-zinc-700" style={{ width: '420px', height: '720px', maxHeight: '80vh' }} />
-        ) : (
-          <img src={url} alt={asset.filename} className="rounded-lg object-contain" style={{ maxWidth: '90vw', maxHeight: '80vh' }} />
-        )}
-      </div>
+      {preview && <AssetPreviewModal asset={preview} onClose={() => setPreview(null)} editable allowAddToCreatives onSaved={refresh} />}
     </div>
   );
 }

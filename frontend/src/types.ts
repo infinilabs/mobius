@@ -236,6 +236,12 @@ export interface ProjectAsset {
   gcs_uri?: string;
   gcs_status: 'pending' | 'synced' | 'failed';
   tags: string[];
+  title?: string;
+  description?: string;
+  status?: 'draft' | 'ready';
+  origin?: 'local' | 'ai_generated';
+  aspect_ratio?: string;
+  published_at?: string;
   created_by?: EmployeeBrief | null;
   task_id?: string;
   created_at: string;

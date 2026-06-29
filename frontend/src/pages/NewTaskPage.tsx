@@ -4,10 +4,10 @@ import {
   Send, Sparkles, BarChart3, ImagePlus, Activity,
   Rocket, Target, Zap, Paperclip, X, Bot, User, Loader2,
   Copy, Pencil, Check, ThumbsUp, ThumbsDown, RefreshCw, Printer,
-  Camera, Mic,
+  Camera, Mic, ChevronRight, Ban, Play, ExternalLink,
 } from 'lucide-react';
-import { createConversation, getConversation, sendChatMessage, uploadFile, truncateConversation, listEmployees, listModels, fetchSettings, listTasks } from '../api';
-import type { ChatMessage, FileRef, Employee, VertexModel, Task } from '../types';
+import { createConversation, getConversation, sendChatMessage, uploadFile, truncateConversation, listEmployees, listModels, fetchSettings, listTasks, listTaskComments, updateTaskStatus } from '../api';
+import type { ChatMessage, FileRef, Employee, VertexModel, Task, TaskComment } from '../types';
 
 export type ChatTarget =
   | { kind: 'agent'; agent: Employee }
@@ -29,11 +29,15 @@ interface Props {
   onConversationCreated: (id: string) => void;
   initialAgentId?: string;
   initialProjectId?: string;
+  onOpenProjectTasks?: (projectId: string) => void;
+  onOpenTask?: (taskId: string) => void;
 }
 
-export default function NewTaskPage({ conversationId, onConversationCreated, initialAgentId, initialProjectId }: Props) {
+export default function NewTaskPage({ conversationId, onConversationCreated, initialAgentId, initialProjectId, onOpenProjectTasks, onOpenTask }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [linkedTasks, setLinkedTasks] = useState<Task[]>([]);
+  const [blockedReasons, setBlockedReasons] = useState<Record<string, string>>({});
+  const [projectId, setProjectId] = useState<string | undefined>(initialProjectId);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [thinking, setThinking] = useState(false);
@@ -48,6 +52,8 @@ export default function NewTaskPage({ conversationId, onConversationCreated, ini
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const streamingRef = useRef(false);
+  const prevTaskStatusRef = useRef<Record<string, string>>({});
+  const taskBaselineRef = useRef(false);
 
   useEffect(() => {
     listEmployees().then(emps => {
@@ -82,34 +88,93 @@ export default function NewTaskPage({ conversationId, onConversationCreated, ini
     if (streamingRef.current) return;
     if (conversationId) {
       getConversation(conversationId)
-        .then(c => setMessages(c.messages || []))
+        .then(c => {
+          setMessages(c.messages || []);
+          setProjectId(c.project_id || initialProjectId || undefined);
+        })
         .catch(() => setMessages([]));
     } else {
       setMessages([]);
+      setProjectId(initialProjectId);
     }
-  }, [conversationId]);
+  }, [conversationId, initialProjectId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Reconstruct live task status on (re)open and keep it fresh while the chat is
-  // mounted, so switching views and coming back never loses "what is happening".
+  // Reconstruct live project/task status on (re)open and keep it fresh while the
+  // chat is mounted, so switching views and coming back never loses "what is
+  // happening". Scope by project when known (matches the Tasks filter and fixes
+  // the count); fall back to the conversation link for project-less chats.
   useEffect(() => {
-    if (!conversationId) {
-      setLinkedTasks([]);
-      return;
-    }
+    const filter = projectId
+      ? { project_id: projectId }
+      : conversationId
+      ? { conversation_id: conversationId }
+      : null;
+    // Reset the transition baseline whenever the scope changes so we don't
+    // replay stale notices after a view switch.
+    prevTaskStatusRef.current = {};
+    taskBaselineRef.current = false;
+    if (!filter) { setLinkedTasks([]); return; }
     let cancelled = false;
+    const announce = (tasks: Task[]) => {
+      const prev = prevTaskStatusRef.current;
+      const firstRun = !taskBaselineRef.current;
+      const notices: string[] = [];
+      for (const t of tasks) {
+        const before = prev[t.id];
+        if (before && before !== t.status && TASK_NOTICE[t.status]) {
+          notices.push(TASK_NOTICE[t.status](t));
+        }
+      }
+      prevTaskStatusRef.current = Object.fromEntries(tasks.map(t => [t.id, t.status]));
+      taskBaselineRef.current = true;
+      // First poll just establishes the baseline — never announce on open.
+      if (!firstRun && notices.length > 0) {
+        setMessages(m => [
+          ...m,
+          ...notices.map(content => ({ role: 'model' as const, content, timestamp: Date.now() })),
+        ]);
+      }
+    };
     const refresh = () => {
-      listTasks({ conversation_id: conversationId })
-        .then(t => { if (!cancelled) setLinkedTasks(t); })
+      listTasks(filter)
+        .then(tasks => { if (!cancelled) { setLinkedTasks(tasks); announce(tasks); } })
         .catch(() => {});
     };
     refresh();
     const interval = setInterval(refresh, 6000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, [conversationId]);
+  }, [projectId, conversationId]);
+
+  // Fetch the latest failure reason for blocked tasks so the chat callout can
+  // explain *why* a task is stuck. Keyed on the blocked-id set, so it only
+  // refetches when something actually enters or leaves the blocked state.
+  const blockedKey = linkedTasks.filter(t => t.status === 'blocked').map(t => t.id).sort().join(',');
+  useEffect(() => {
+    if (!blockedKey) { setBlockedReasons({}); return; }
+    const ids = blockedKey.split(',');
+    let cancelled = false;
+    Promise.all(ids.map(id =>
+      listTaskComments(id)
+        .then(cs => [id, latestSystemError(cs)] as const)
+        .catch(() => [id, ''] as const)
+    )).then(pairs => { if (!cancelled) setBlockedReasons(Object.fromEntries(pairs)); });
+    return () => { cancelled = true; };
+  }, [blockedKey]);
+
+  const handleUnblock = useCallback(async (taskId: string) => {
+    // Optimistic flip to 'ready'; the next poll reconciles with the server.
+    setLinkedTasks(prev => prev.map(t => (t.id === taskId ? { ...t, status: 'ready' } : t)));
+    try {
+      await updateTaskStatus(taskId, 'ready');
+    } catch {
+      // Revert on failure — the task is still blocked server-side.
+      setLinkedTasks(prev => prev.map(t => (t.id === taskId ? { ...t, status: 'blocked' } : t)));
+    }
+  }, []);
 
   const handleSend = useCallback(async (text?: string, overrideFiles?: FileRef[]) => {
     const msg = text || input.trim();
@@ -280,6 +345,7 @@ export default function NewTaskPage({ conversationId, onConversationCreated, ini
           previewUrls={previewUrls}
           onAddFile={addFileWithPreview}
           onAutoSend={(ref) => handleSend('', [ref])}
+          locked={messages.length > 0}
         />
 
         <div className="flex items-center gap-3 w-full my-6">
@@ -333,7 +399,16 @@ export default function NewTaskPage({ conversationId, onConversationCreated, ini
       )}
 
       {/* Live project/task status — survives view switches via polling */}
-      <TaskStatusStrip tasks={linkedTasks} />
+      <TaskStatusStrip
+        tasks={linkedTasks}
+        onOpen={projectId && onOpenProjectTasks ? () => onOpenProjectTasks(projectId) : undefined}
+      />
+      <BlockedTasksCallout
+        tasks={linkedTasks}
+        reasons={blockedReasons}
+        onOpen={onOpenTask}
+        onUnblock={handleUnblock}
+      />
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-8 pt-6 pb-4">
@@ -374,6 +449,7 @@ export default function NewTaskPage({ conversationId, onConversationCreated, ini
             previewUrls={previewUrls}
             onAddFile={addFileWithPreview}
             onAutoSend={(ref) => handleSend('', [ref])}
+            locked={messages.length > 0}
           />
         </div>
       </div>
@@ -411,28 +487,112 @@ const TASK_STATUS_META: Record<string, { label: string; color: string }> = {
 
 const TERMINAL_STATUSES = new Set(['done', 'blocked']);
 
-function TaskStatusStrip({ tasks }: { tasks: Task[] }) {
+// Display order for the status-count strip (most actionable first).
+const STATUS_DISPLAY_ORDER = ['in_progress', 'needs_review', 'ready', 'scheduled', 'todo', 'blocked', 'done'];
+
+// Live notices injected into the chat when a tracked task changes state, so the
+// agent appears to narrate progress ("Elong: ✅ ... completed").
+const TASK_NOTICE: Record<string, (t: Task) => string> = {
+  in_progress: t => `🚀 ${t.assignee?.name ?? 'The team'} started working on "${t.title}".`,
+  needs_review: t => `📝 "${t.title}" is ready for your review.`,
+  done: t => `✅ ${t.assignee?.name ?? 'The team'} completed "${t.title}".`,
+  blocked: t => `⛔ "${t.title}" is blocked and needs your attention.`,
+};
+
+function TaskStatusStrip({ tasks, onOpen }: { tasks: Task[]; onOpen?: () => void }) {
   if (tasks.length === 0) return null;
+  const counts: Record<string, number> = {};
+  for (const t of tasks) counts[t.status] = (counts[t.status] || 0) + 1;
   const active = tasks.filter(t => !TERMINAL_STATUSES.has(t.status)).length;
+  const stages = STATUS_DISPLAY_ORDER.filter(s => counts[s] > 0);
+
   return (
     <div className="shrink-0 px-8 pt-3">
-      <div className="max-w-[800px] mx-auto rounded-lg border border-zinc-800/40 px-3 py-2" style={{ background: '#0c0c0f' }}>
-        <div className="flex items-center gap-2 mb-2">
-          <Activity size={12} className="text-cyan-400" />
-          <span className="text-[11px] font-medium text-zinc-400">
-            Project activity · {tasks.length} task{tasks.length > 1 ? 's' : ''}{active > 0 ? ` · ${active} active` : ''}
+      <button
+        onClick={onOpen}
+        disabled={!onOpen}
+        className={`group w-full max-w-[800px] mx-auto block rounded-lg border border-zinc-800/40 px-3 py-2 text-left transition-colors ${onOpen ? 'cursor-pointer hover:border-cyan-700/40' : 'cursor-default'}`}
+        style={{ background: '#0c0c0f' }}
+        title={onOpen ? 'View these in Tasks' : undefined}
+      >
+        <div className="flex items-center gap-3">
+          <span className="flex items-center gap-1.5 shrink-0">
+            <Activity size={12} className="text-cyan-400" />
+            <span className="text-[11px] font-medium text-zinc-400">
+              {tasks.length} {tasks.length === 1 ? 'activity' : 'activities'}{active > 0 ? ` · ${active} active` : ''}
+            </span>
+          </span>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
+            {stages.map(s => {
+              const meta = TASK_STATUS_META[s] || { label: s, color: '#a1a1aa' };
+              return (
+                <span key={s} className="flex items-center gap-1.5 text-[11px]">
+                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${s === 'in_progress' ? 'animate-pulse' : ''}`} style={{ background: meta.color }} />
+                  <span className="text-zinc-500">{meta.label}</span>
+                  <span className="font-semibold" style={{ color: meta.color }}>{counts[s]}</span>
+                </span>
+              );
+            })}
+          </div>
+          {onOpen && (
+            <ChevronRight size={13} className="text-zinc-600 group-hover:text-cyan-400 transition-colors ml-auto shrink-0" />
+          )}
+        </div>
+      </button>
+    </div>
+  );
+}
+
+function latestSystemError(comments: TaskComment[]): string {
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const c = comments[i].content;
+    if (c.startsWith('System Error:')) return c.replace('System Error:', '').trim();
+  }
+  return '';
+}
+
+function BlockedTasksCallout({ tasks, reasons, onOpen, onUnblock }: {
+  tasks: Task[];
+  reasons: Record<string, string>;
+  onOpen?: (taskId: string) => void;
+  onUnblock: (taskId: string) => void;
+}) {
+  const blocked = tasks.filter(t => t.status === 'blocked');
+  if (blocked.length === 0) return null;
+  return (
+    <div className="shrink-0 px-8 pt-2">
+      <div className="w-full max-w-[800px] mx-auto rounded-lg border border-red-900/40 px-3 py-2" style={{ background: '#190f10' }}>
+        <div className="flex items-center gap-1.5 mb-2">
+          <Ban size={12} className="text-red-400 shrink-0" />
+          <span className="text-[11px] font-medium text-red-300">
+            {blocked.length} blocked — needs your attention
           </span>
         </div>
-        <div className="flex flex-wrap gap-1.5">
-          {tasks.map(t => {
-            const meta = TASK_STATUS_META[t.status] || { label: t.status, color: '#a1a1aa' };
+        <div className="space-y-1.5">
+          {blocked.map(t => {
+            const reason = reasons[t.id]
+              || (t.failure_count > 0 ? `Failed ${t.failure_count}× — max retries exceeded` : 'Blocked — awaiting unblock');
             return (
-              <span key={t.id} className="flex items-center gap-1.5 text-[10px] px-2 py-1 rounded-md border border-zinc-800/50" style={{ background: '#09090b' }}>
-                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${t.status === 'in_progress' ? 'animate-pulse' : ''}`} style={{ background: meta.color }} />
-                <span className="text-zinc-300 max-w-[160px] truncate">{t.title}</span>
-                {t.assignee && <span className="text-zinc-600">· {t.assignee.name}</span>}
-                <span style={{ color: meta.color }}>{meta.label}</span>
-              </span>
+              <div key={t.id} className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] text-zinc-200 truncate">{t.title}</p>
+                  <p className="text-[10px] text-red-400/80 truncate" title={reason}>{reason}</p>
+                </div>
+                {onOpen && (
+                  <button
+                    onClick={() => onOpen(t.id)}
+                    className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-md border border-zinc-700/50 text-zinc-300 hover:border-zinc-600 cursor-pointer shrink-0"
+                  >
+                    <ExternalLink size={10} /> Open
+                  </button>
+                )}
+                <button
+                  onClick={() => onUnblock(t.id)}
+                  className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-md border border-cyan-700/50 text-cyan-300 hover:bg-cyan-900/20 cursor-pointer shrink-0"
+                >
+                  <Play size={10} /> Unblock
+                </button>
+              </div>
             );
           })}
         </div>
@@ -691,7 +851,7 @@ function getPlaceholder(target: ChatTarget | null, fallback?: string): string {
   return `Chat with ${target.model.name || target.model.model_id}...`;
 }
 
-function ChatInput({ input, setInput, onSend, streaming, attachedFiles, setAttachedFiles, uploading, onFileUpload, fileInputRef, placeholder, agents, registeredModels, chatTarget, onSelectTarget, previewUrls, onAddFile, onAutoSend }: {
+function ChatInput({ input, setInput, onSend, streaming, attachedFiles, setAttachedFiles, uploading, onFileUpload, fileInputRef, placeholder, agents, registeredModels, chatTarget, onSelectTarget, previewUrls, onAddFile, onAutoSend, locked }: {
   input: string;
   setInput: (v: string) => void;
   onSend: () => void;
@@ -709,6 +869,7 @@ function ChatInput({ input, setInput, onSend, streaming, attachedFiles, setAttac
   previewUrls: Record<string, string>;
   onAddFile: (file: File) => Promise<FileRef | null>;
   onAutoSend: (ref: FileRef) => void;
+  locked?: boolean;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
@@ -817,7 +978,9 @@ function ChatInput({ input, setInput, onSend, streaming, attachedFiles, setAttac
             <div className="relative" ref={menuRef}>
               <button
                 ref={triggerRef}
+                disabled={locked}
                 onClick={() => {
+                  if (locked) return;
                   if (!menuOpen && triggerRef.current) {
                     const rect = triggerRef.current.getBoundingClientRect();
                     const spaceAbove = rect.top;
@@ -830,8 +993,9 @@ function ChatInput({ input, setInput, onSend, streaming, attachedFiles, setAttac
                   }
                   setMenuOpen(!menuOpen);
                 }}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border border-zinc-800/50 hover:border-zinc-700/60 transition-colors cursor-pointer"
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border border-zinc-800/50 transition-colors ${locked ? 'opacity-60 cursor-not-allowed' : 'hover:border-zinc-700/60 cursor-pointer'}`}
                 style={{ background: '#09090b' }}
+                title={locked ? `Talking to ${display.label} — start a New Task to switch` : undefined}
               >
                 <div className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0"
                   style={{ background: `${display.color}25`, color: display.color, border: `1.5px solid ${display.color}40` }}>

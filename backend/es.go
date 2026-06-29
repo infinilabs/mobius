@@ -640,10 +640,19 @@ func (es *ESClient) IndexProjectAsset(ctx context.Context, asset *ProjectAsset) 
 		"gcs_status":        asset.GCSStatus,
 		"checksum_sha256":   asset.Checksum,
 		"tags":              asset.Tags,
+		"title":             asset.Title,
+		"description":       asset.Description,
+		"status":            asset.Status,
+		"origin":            asset.Origin,
+		"aspect_ratio":      asset.AspectRatio,
 		"created_by_id":     asset.CreatedByID,
 		"task_id":           asset.TaskID,
 		"created_at":        asset.CreatedAt,
 		"updated_at":        asset.UpdatedAt,
+	}
+	// published_at is a date field; omit when empty so ES doesn't reject "".
+	if asset.PublishedAt != "" {
+		doc["published_at"] = asset.PublishedAt
 	}
 
 	body, _ := json.Marshal(doc)
@@ -777,45 +786,67 @@ func (es *ESClient) SearchAssetsByTask(ctx context.Context, taskID string) ([]Pr
 }
 
 // SearchCreatives returns visual creative assets across ALL projects for the Creatives
-// library UI. Optional tag (e.g. "playable") and contentType narrow results. When neither
-// is given, results are restricted to visual creatives (image/video) or playable ads so
-// the library does not surface arbitrary text/code assets.
-func (es *ESClient) SearchCreatives(ctx context.Context, query, contentType, tag string, size int) ([]ProjectAsset, error) {
-	filter := []any{}
-	if contentType != "" {
-		filter = append(filter, map[string]any{"term": map[string]any{"content_type": contentType}})
+// library UI. Creatives are curated-only: an asset must carry the "creative" tag to
+// appear here (added explicitly via "Add to Creatives"). Additional facets narrow
+// results: content type, tag, origin, aspect ratio, status, and published-date range.
+type CreativeFilters struct {
+	Query       string
+	ContentType string
+	Tag         string
+	Origin      string
+	AspectRatio string
+	Status      string
+	DateFrom    string
+	DateTo      string
+}
+
+func (es *ESClient) SearchCreatives(ctx context.Context, f CreativeFilters, size int) ([]ProjectAsset, error) {
+	// Curated-only: every creative carries the "creative" tag.
+	filter := []any{
+		map[string]any{"term": map[string]any{"tags": "creative"}},
 	}
-	if tag != "" {
-		filter = append(filter, map[string]any{"term": map[string]any{"tags": tag}})
+	if f.ContentType != "" {
+		filter = append(filter, map[string]any{"term": map[string]any{"content_type": f.ContentType}})
+	}
+	if f.Tag != "" {
+		filter = append(filter, map[string]any{"term": map[string]any{"tags": f.Tag}})
+	}
+	if f.Origin != "" {
+		filter = append(filter, map[string]any{"term": map[string]any{"origin": f.Origin}})
+	}
+	if f.AspectRatio != "" {
+		filter = append(filter, map[string]any{"term": map[string]any{"aspect_ratio": f.AspectRatio}})
+	}
+	if f.Status != "" {
+		filter = append(filter, map[string]any{"term": map[string]any{"status": f.Status}})
+	}
+	if f.DateFrom != "" || f.DateTo != "" {
+		rng := map[string]any{}
+		if f.DateFrom != "" {
+			rng["gte"] = f.DateFrom
+		}
+		if f.DateTo != "" {
+			rng["lte"] = f.DateTo
+		}
+		filter = append(filter, map[string]any{"range": map[string]any{"published_at": rng}})
 	}
 
-	boolQuery := map[string]any{}
-	if query != "" {
+	boolQuery := map[string]any{"filter": filter}
+	if f.Query != "" {
 		boolQuery["must"] = []any{
 			map[string]any{
 				"multi_match": map[string]any{
-					"query":  query,
-					"fields": []string{"content", "content_summary", "filename"},
+					"query":  f.Query,
+					"fields": []string{"content", "content_summary", "filename", "title", "description", "tags"},
 					"type":   "best_fields",
 				},
 			},
 		}
 	}
-	if len(filter) > 0 {
-		boolQuery["filter"] = filter
-	}
-	// Default creative whitelist when no explicit tag/type is requested.
-	if contentType == "" && tag == "" {
-		boolQuery["should"] = []any{
-			map[string]any{"terms": map[string]any{"content_type": []string{"image", "video"}}},
-			map[string]any{"term": map[string]any{"tags": "playable"}},
-		}
-		boolQuery["minimum_should_match"] = 1
-	}
 
 	body := map[string]any{
 		"query": map[string]any{"bool": boolQuery},
-		"sort":  []any{map[string]any{"updated_at": "desc"}},
+		"sort":  []any{map[string]any{"published_at": map[string]any{"order": "desc", "missing": "_last"}}},
 		"size":  size,
 	}
 
@@ -853,6 +884,51 @@ func (es *ESClient) SearchCreatives(ctx context.Context, query, contentType, tag
 		assets = append(assets, a)
 	}
 	return assets, nil
+}
+
+// SearchCreativeTags returns the distinct tags used across creatives (excluding the
+// "creative" marker tag) for the quick-filter chip row.
+func (es *ESClient) SearchCreativeTags(ctx context.Context, size int) ([]string, error) {
+	body := map[string]any{
+		"size":  0,
+		"query": map[string]any{"term": map[string]any{"tags": "creative"}},
+		"aggs": map[string]any{
+			"tags": map[string]any{"terms": map[string]any{"field": "tags", "size": size}},
+		},
+	}
+	buf, _ := json.Marshal(body)
+	res, err := es.client.Search(
+		es.client.Search.WithContext(ctx),
+		es.client.Search.WithIndex(IdxProjectAssets),
+		es.client.Search.WithBody(bytes.NewReader(buf)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ES creative tags failed: %w", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return nil, fmt.Errorf("ES creative tags error: %s", res.String())
+	}
+	var result struct {
+		Aggregations struct {
+			Tags struct {
+				Buckets []struct {
+					Key string `json:"key"`
+				} `json:"buckets"`
+			} `json:"tags"`
+		} `json:"aggregations"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("ES decode creative tags failed: %w", err)
+	}
+	tags := make([]string, 0, len(result.Aggregations.Tags.Buckets))
+	for _, b := range result.Aggregations.Tags.Buckets {
+		if b.Key == "creative" || b.Key == "" {
+			continue
+		}
+		tags = append(tags, b.Key)
+	}
+	return tags, nil
 }
 
 func (es *ESClient) GetProjectAsset(ctx context.Context, id string) (*ProjectAsset, error) {

@@ -43,7 +43,7 @@ function timeAgo(ts: string) {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
-export default function TasksPage({ openTask }: { openTask?: { id: string; seq: number } }) {
+export default function TasksPage({ openTask, projectFilter }: { openTask?: { id: string; seq: number }; projectFilter?: { id: string; seq: number } }) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -89,6 +89,14 @@ export default function TasksPage({ openTask }: { openTask?: { id: string; seq: 
     const proj = projects.find(p => p.id === pid);
     if (proj) setSelProjects([{ id: proj.id, label: proj.name }]);
   }, [projects]);
+
+  // Pre-select the project when navigated in from a project-scoped chat strip.
+  // Keyed on the seq nonce so a repeat click re-applies the filter.
+  useEffect(() => {
+    if (!projectFilter || projects.length === 0) return;
+    const proj = projects.find(p => p.id === projectFilter.id);
+    if (proj) setSelProjects([{ id: proj.id, label: proj.name }]);
+  }, [projectFilter, projects]);
 
   const projIds = new Set(selProjects.map(p => p.id));
   const empIds = new Set(selEmployees.map(e => e.id));

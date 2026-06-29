@@ -1196,6 +1196,10 @@ func registerGeneratedImageAsset(ctx context.Context, gcs *GCSClient, es *ESClie
 		GCSStatus:    "pending",
 		Checksum:     calculateSHA256(buf),
 		Tags:         tags,
+		Title:        filepath.Base(relativePath),
+		Status:       "draft",
+		Origin:       "ai_generated",
+		AspectRatio:  computeAspectRatio(absPath, classifyContentType(mimeType)),
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
