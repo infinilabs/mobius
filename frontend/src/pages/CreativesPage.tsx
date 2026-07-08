@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, type ReactNode } from 'react';
 import {
   Search, Filter, X, Gamepad2, Film, ImageOff, Sparkles,
   Download, Loader2, Plus, Check, Monitor, FolderOpen,
@@ -8,9 +8,10 @@ import {
   addAssetToCreatives, listProjects, listProjectAssets, assetContentUrl, type CreativeFilters,
 } from '../api';
 import RefreshButton from '../components/RefreshButton';
+import { AssetMediaPreview } from '../components/AssetPreview';
 import {
-  AssetMediaPreview, isImageAsset, isVideoAsset, isPlayableAsset, isCreativeEligible,
-} from '../components/AssetPreview';
+  isImageAsset, isVideoAsset, isPlayableAsset, isCreativeEligible,
+} from '../components/assetGuards';
 import type { ProjectAsset, Project } from '../types';
 
 const ASSET_SOURCES = [
@@ -213,6 +214,33 @@ function CreativeCard({ asset, onClick }: { asset: ProjectAsset; onClick: () => 
   );
 }
 
+function FilterSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="mb-3">
+      <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">{title}</p>
+      <div className="flex flex-wrap gap-1.5">{children}</div>
+    </div>
+  );
+}
+
+function FilterOpt({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button onClick={onClick} className="px-2.5 py-1 rounded-md text-[11px] cursor-pointer border"
+      style={{ background: active ? '#0e749015' : '#0a0a0d', borderColor: active ? '#0e749050' : '#27272a80', color: active ? '#22d3ee' : '#a1a1aa' }}>
+      {label}
+    </button>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between py-1.5 border-b border-zinc-800/40">
+      <span className="text-[11px] text-zinc-500">{label}</span>
+      <span className="text-[11px] text-zinc-300">{value}</span>
+    </div>
+  );
+}
+
 function FilterPopover({ filters, onChange, onClose }: {
   filters: CreativeFilters;
   onChange: (f: CreativeFilters) => void;
@@ -223,44 +251,31 @@ function FilterPopover({ filters, onChange, onClose }: {
   };
   const datePreset = (days: number) => onChange({ ...filters, date_from: daysAgoISO(days), date_to: undefined });
 
-  const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (
-    <div className="mb-3">
-      <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5">{title}</p>
-      <div className="flex flex-wrap gap-1.5">{children}</div>
-    </div>
-  );
-  const Opt = ({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) => (
-    <button onClick={onClick} className="px-2.5 py-1 rounded-md text-[11px] cursor-pointer border"
-      style={{ background: active ? '#0e749015' : '#0a0a0d', borderColor: active ? '#0e749050' : '#27272a80', color: active ? '#22d3ee' : '#a1a1aa' }}>
-      {label}
-    </button>
-  );
-
   return (
     <div className="absolute right-0 top-full mt-2 z-50 w-[280px] rounded-xl border border-zinc-800/60 shadow-2xl p-4" style={{ background: '#0c0c0f' }}>
       <div className="flex items-center justify-between mb-3">
         <span className="text-sm font-semibold text-zinc-200">Filter</span>
         <button onClick={() => { onChange({}); }} className="text-[11px] text-zinc-500 hover:text-zinc-300 cursor-pointer">Clear All</button>
       </div>
-      <Section title="Asset Source">
+      <FilterSection title="Asset Source">
         {ASSET_SOURCES.map(s => (
-          <Opt key={s.key} label={s.label} active={(filters.origin || '') === s.key} onClick={() => onChange({ ...filters, origin: s.key || undefined })} />
+          <FilterOpt key={s.key} label={s.label} active={(filters.origin || '') === s.key} onClick={() => onChange({ ...filters, origin: s.key || undefined })} />
         ))}
-      </Section>
-      <Section title="Type">
-        {TYPES.map(t => <Opt key={t.key} label={t.label} active={filters.type === t.key} onClick={() => set('type', t.key)} />)}
-      </Section>
-      <Section title="Aspect Ratio">
-        {ASPECT_RATIOS.map(r => <Opt key={r} label={r} active={filters.aspect_ratio === r} onClick={() => set('aspect_ratio', r)} />)}
-      </Section>
-      <Section title="Status">
-        {STATUSES.map(s => <Opt key={s} label={s === 'draft' ? 'Draft' : 'Ready'} active={filters.status === s} onClick={() => set('status', s)} />)}
-      </Section>
-      <Section title="Published Date">
-        <Opt label="Today" active={false} onClick={() => datePreset(1)} />
-        <Opt label="Last 7 Days" active={false} onClick={() => datePreset(7)} />
-        <Opt label="Last 30 Days" active={false} onClick={() => datePreset(30)} />
-      </Section>
+      </FilterSection>
+      <FilterSection title="Type">
+        {TYPES.map(t => <FilterOpt key={t.key} label={t.label} active={filters.type === t.key} onClick={() => set('type', t.key)} />)}
+      </FilterSection>
+      <FilterSection title="Aspect Ratio">
+        {ASPECT_RATIOS.map(r => <FilterOpt key={r} label={r} active={filters.aspect_ratio === r} onClick={() => set('aspect_ratio', r)} />)}
+      </FilterSection>
+      <FilterSection title="Status">
+        {STATUSES.map(s => <FilterOpt key={s} label={s === 'draft' ? 'Draft' : 'Ready'} active={filters.status === s} onClick={() => set('status', s)} />)}
+      </FilterSection>
+      <FilterSection title="Published Date">
+        <FilterOpt label="Today" active={false} onClick={() => datePreset(1)} />
+        <FilterOpt label="Last 7 Days" active={false} onClick={() => datePreset(7)} />
+        <FilterOpt label="Last 30 Days" active={false} onClick={() => datePreset(30)} />
+      </FilterSection>
       <div className="flex items-center gap-2">
         <input type="date" onChange={e => onChange({ ...filters, date_from: e.target.value ? new Date(e.target.value).toISOString() : undefined })}
           className="flex-1 px-2 py-1 rounded-md text-[11px] bg-zinc-950 border border-zinc-800 text-zinc-300 outline-none" />
@@ -307,13 +322,6 @@ function CreativeDetail({ asset, onClose, onSaved }: {
     }
   };
 
-  const Row = ({ label, value }: { label: string; value: string }) => (
-    <div className="flex items-center justify-between py-1.5 border-b border-zinc-800/40">
-      <span className="text-[11px] text-zinc-500">{label}</span>
-      <span className="text-[11px] text-zinc-300">{value}</span>
-    </div>
-  );
-
   return (
     <div className="fixed inset-0 z-[70] flex justify-end bg-black/70" onClick={onClose}>
       <div className="w-full max-w-[480px] h-full overflow-y-auto flex flex-col" style={{ background: '#0c0c0f' }} onClick={e => e.stopPropagation()}>
@@ -349,10 +357,10 @@ function CreativeDetail({ asset, onClose, onSaved }: {
                 className="w-full pl-2.5 pr-16 py-1.5 rounded-md text-xs bg-zinc-950 border border-zinc-800 text-zinc-200 outline-none focus:border-cyan-700/50" />
               <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-zinc-600">{title.length}/50 {ext}</span>
             </div>
-            <Row label="Type" value={asset.content_type} />
-            <Row label="Ratio" value={asset.aspect_ratio || '—'} />
-            <Row label="Date" value={fmtDate(asset)} />
-            <Row label="Origin" value={asset.origin === 'ai_generated' ? 'AI Generated' : 'Local Upload'} />
+            <DetailRow label="Type" value={asset.content_type} />
+            <DetailRow label="Ratio" value={asset.aspect_ratio || '—'} />
+            <DetailRow label="Date" value={fmtDate(asset)} />
+            <DetailRow label="Origin" value={asset.origin === 'ai_generated' ? 'AI Generated' : 'Local Upload'} />
           </div>
 
           {/* Tags */}

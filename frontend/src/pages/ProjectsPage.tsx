@@ -11,7 +11,8 @@ import {
   listConversations, assetContentUrl,
 } from '../api';
 import type { Project, ProjectAsset, Employee } from '../types';
-import { AssetPreviewModal, isPreviewable, isImageAsset, isPlayableAsset, isVideoAsset } from '../components/AssetPreview';
+import { AssetPreviewModal } from '../components/AssetPreview';
+import { isPreviewable, isImageAsset, isPlayableAsset, isVideoAsset } from '../components/assetGuards';
 
 type Tab = 'assets' | 'memory' | 'settings';
 

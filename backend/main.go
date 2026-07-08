@@ -188,7 +188,11 @@ func main() {
 		{"addyosmani", "../addyosmani-skills", "engineering", []string{"skills"}, false},
 		{"vercel", "../vercel-skills", "frontend", []string{"skills"}, false},
 		{"trailofbits", "../trailofbits-skills", "security", []string{"plugins", ".codex/skills"}, false},
-		{"agency-agents", "../agency-agents", "", []string{"marketing", "design", "product", "engineering", "testing"}, true},
+		{"agency-agents", "../agency-agents", "", []string{
+			"academic", "design", "engineering", "finance", "game-development",
+			"gis", "marketing", "paid-media", "product", "project-management",
+			"sales", "security", "spatial-computing", "specialized", "support", "testing",
+		}, true},
 	}
 	for _, r := range defaultRepos {
 		if _, err := os.Stat(r.path); err == nil {

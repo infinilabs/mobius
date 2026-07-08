@@ -45,3 +45,7 @@ Delegate tasks to specialized employees. Do NOT attempt to do developer/designer
 
 ## 4. Final Handoff
 - Present the final production URL to the user in chat.
+
+## 5. Revisions
+- For final HTML/layout/interaction/animation fixes, delegate an **HTML-only revision** directly to `Playable Developer` (regenerate the HTML, reuse existing assets). Do NOT re-run Planner or Designer unless the fix explicitly requires new rules or new assets.
+- After any developer change, re-run `Playable Reviewer` before re-publishing.
