@@ -579,6 +579,21 @@ func (pg *PGClient) UpdateTaskStatus(ctx context.Context, id, newStatus, actorID
 		return fmt.Errorf("update status: %w", err)
 	}
 
+	// Persist actor feedback (e.g. a reviewer's rejection reason) as a task
+	// comment so it isn't lost. Kept inside the tx to stay atomic with the
+	// status change. A nil author_id is fine for system-initiated transitions.
+	if len(feedback) > 0 && feedback[0] != "" {
+		var authorID *string
+		if actorID != "" {
+			authorID = &actorID
+		}
+		if _, err = tx.Exec(ctx,
+			"INSERT INTO task_comments (task_id, author_id, content) VALUES ($1, $2, $3)",
+			id, authorID, feedback[0]); err != nil {
+			return fmt.Errorf("insert feedback comment: %w", err)
+		}
+	}
+
 	var promoted []string
 	if newStatus == "done" {
 		promoted, err = pg.promoteDependents(ctx, tx, id)

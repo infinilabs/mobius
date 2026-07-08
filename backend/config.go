@@ -306,6 +306,8 @@ func (c *Config) ApplySettings(s SettingsData) {
 	c.Postgres = s.Postgres
 	c.Elasticsearch = s.Elasticsearch
 	c.GoogleCloud = s.GoogleCloud
+	c.Sandbox = s.Sandbox
+	c.Upload.MaxFileSizeMB = s.Upload.MaxFileSizeMB
 }
 
 func LoadConfig(path string) (*Config, error) {
