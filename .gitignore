@@ -64,3 +64,6 @@ plan-claude.md
 
 # https://github.com/Graphify-Labs/graphify
 graphify-out/
+
+# Go test artifacts
+coverage.out
