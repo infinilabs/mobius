@@ -44,9 +44,16 @@ const labelArrayDirective = "\n\n---\nOUTPUT OVERRIDE: Return ONLY the labels th
 
 var identRe = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
+// identEscaper escapes the two characters that could terminate or de-fang a
+// back-quoted GoogleSQL identifier: the backtick itself and the backslash.
+var identEscaper = strings.NewReplacer(`\`, `\\`, "`", "\\`")
+
 // fq returns a fully-qualified, back-quoted `project.dataset.name` reference.
+// Components are backtick-escaped so a crafted identifier cannot close the
+// quote and inject SQL (defense in depth — callers validate names upstream).
 func (bq *BQClient) fq(dataset, name string) string {
-	return fmt.Sprintf("`%s.%s.%s`", bq.projectID, dataset, name)
+	return fmt.Sprintf("`%s.%s.%s`",
+		identEscaper.Replace(bq.projectID), identEscaper.Replace(dataset), identEscaper.Replace(name))
 }
 
 // RunQuery runs a read query and returns (columns, rows). Optional query
@@ -83,6 +90,41 @@ func (bq *BQClient) RunQuery(ctx context.Context, sql string, params ...bigquery
 		rows = append(rows, r)
 	}
 	return cols, rows, nil
+}
+
+// RunReadOnlyQuery enforces read-only structurally: it dry-runs sql first and
+// refuses to execute unless BigQuery itself reports the statement type as
+// SELECT. Unlike keyword matching, this cannot be bypassed with casing or
+// comment tricks. Used for user-supplied analytics SQL (query_tags, §11).
+func (bq *BQClient) RunReadOnlyQuery(ctx context.Context, sql string, params ...bigquery.QueryParameter) ([]string, [][]any, error) {
+	q := bq.client.Query(sql)
+	if len(params) > 0 {
+		q.Parameters = params
+	}
+	q.DryRun = true
+	job, err := q.Run(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("bq dry run: %w", err)
+	}
+	var stmtType string
+	if stats := job.LastStatus().Statistics; stats != nil {
+		if qs, ok := stats.Details.(*bigquery.QueryStatistics); ok {
+			stmtType = qs.StatementType
+		}
+	}
+	if err := requireSelectStatement(stmtType); err != nil {
+		return nil, nil, err
+	}
+	return bq.RunQuery(ctx, sql, params...)
+}
+
+// requireSelectStatement is the read-only gate for RunReadOnlyQuery, split out
+// so it can be unit-tested without a live BigQuery client.
+func requireSelectStatement(stmtType string) error {
+	if stmtType != "SELECT" {
+		return fmt.Errorf("only SELECT queries are allowed (BigQuery reports statement type %q)", stmtType)
+	}
+	return nil
 }
 
 // RunStatement runs a DDL/DML statement to completion (bounded-synchronous, §5).
@@ -340,8 +382,11 @@ func execGetTagResultsTool(ctx context.Context, bq *BQClient, args map[string]an
 	}
 }
 
-// guardSelect enforces the read-only, dataset-scoped, row-capped contract for the
-// query_tags analytics tool (§11). It is NOT a generic SQL tool (§10).
+// guardSelect enforces the dataset-scoped, single-statement, row-capped contract
+// for the query_tags analytics tool (§11). It is NOT a generic SQL tool (§10).
+// Read-only is NOT enforced here by string matching — that is done structurally
+// by RunReadOnlyQuery via the dry-run statement type; the prefix check below is
+// only a cheap early error for obvious non-SELECT input.
 func guardSelect(sql, dataset string) (string, error) {
 	s := strings.TrimSpace(sql)
 	s = strings.TrimSuffix(strings.TrimSpace(s), ";")
@@ -357,11 +402,6 @@ func guardSelect(sql, dataset string) (string, error) {
 	low := strings.ToLower(s)
 	if !strings.HasPrefix(low, "select") && !strings.HasPrefix(low, "with") {
 		return "", fmt.Errorf("only SELECT queries are allowed")
-	}
-	for _, kw := range []string{"insert ", "update ", "delete ", "merge ", "drop ", "create ", "alter ", "truncate ", "grant ", "call ", "export "} {
-		if strings.Contains(" "+low+" ", " "+kw) {
-			return "", fmt.Errorf("statement type not allowed: %s", strings.TrimSpace(kw))
-		}
 	}
 	if !strings.Contains(low, strings.ToLower(dataset)) {
 		return "", fmt.Errorf("query must read from the %s dataset", dataset)
@@ -379,7 +419,7 @@ func execQueryTagsTool(ctx context.Context, bq *BQClient, args map[string]any) m
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
-	cols, rows, err := bq.RunQuery(ctx, safe)
+	cols, rows, err := bq.RunReadOnlyQuery(ctx, safe)
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}

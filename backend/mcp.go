@@ -251,6 +251,9 @@ func (s *MCPServer) HandleMessage(ctx context.Context, msg []byte, caller MCPCal
 		var panicked bool
 		if aerr := authorizeToolCall(ctx, s.pgClient, caller.AgentID, params.Name, parseArgs(params.Arguments), caller.TaskID); aerr != nil {
 			err = aerr
+		} else if rerr := rateLimitToolCall(caller.AgentID, params.Name); rerr != nil {
+			// Per-caller spend cap on paid operations (plan 3.4).
+			err = rerr
 		} else {
 			result, err, panicked = s.invokeTool(ctx, params.Name, handler, params.Arguments, caller)
 		}

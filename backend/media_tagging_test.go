@@ -63,6 +63,41 @@ func TestTaggingSQL_Shape(t *testing.T) {
 	}
 }
 
+func TestFQ(t *testing.T) {
+	bq := taggingTestClient()
+
+	// Normal identifiers keep the plain `project.dataset.name` form.
+	if got, want := bq.fq("mobius_creatives", "tags_x"), "`du-hast-mich.mobius_creatives.tags_x`"; got != want {
+		t.Errorf("fq = %q, want %q", got, want)
+	}
+
+	// A crafted name must not be able to close the backtick quote and inject SQL:
+	// every backtick (and backslash, so the escape itself can't be neutralized)
+	// inside a component must come out escaped.
+	got := bq.fq("mobius_creatives", "x` OPTIONS(uris=['gs://evil']) --")
+	if strings.Contains(got, "x` ") {
+		t.Errorf("fq must escape backticks in identifiers, got %q", got)
+	}
+	if !strings.Contains(got, "x\\`") {
+		t.Errorf("fq should backslash-escape inner backticks, got %q", got)
+	}
+	got = bq.fq("ds\\", "n")
+	if !strings.Contains(got, "ds\\\\") {
+		t.Errorf("fq should escape backslashes, got %q", got)
+	}
+}
+
+func TestRequireSelectStatement(t *testing.T) {
+	if err := requireSelectStatement("SELECT"); err != nil {
+		t.Errorf("SELECT must be allowed: %v", err)
+	}
+	for _, st := range []string{"INSERT", "DELETE", "MERGE", "CREATE_TABLE_AS_SELECT", "SCRIPT", ""} {
+		if err := requireSelectStatement(st); err == nil {
+			t.Errorf("statement type %q must be refused", st)
+		}
+	}
+}
+
 func TestGuardSelect(t *testing.T) {
 	ds := "mobius_creatives"
 	cases := []struct {

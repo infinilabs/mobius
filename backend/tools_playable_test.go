@@ -122,7 +122,7 @@ func TestPlayableWriteHTML(t *testing.T) {
 	}
 
 	// Test size detection (make it larger than 5MB)
-	hugeHTML := strings.Repeat("a", 5*1024*1024 + 10)
+	hugeHTML := strings.Repeat("a", 5*1024*1024+10)
 	reportSize, _ := writeHTMLImpl(tmpDir, pipelineID, hugeHTML, valScript)
 	if reportSize.Passed {
 		t.Error("Expected size check to fail")
@@ -273,5 +273,62 @@ func TestPlayablePreviewServer(t *testing.T) {
 	resp5, err := http.Get(ts.URL + "/playable-preview/missing_pipe/")
 	if resp5.StatusCode != http.StatusNotFound {
 		t.Errorf("Expected 404 for missing pipeline, got %v", resp5.StatusCode)
+	}
+}
+
+func TestPlayablePreviewPathConfinement(t *testing.T) {
+	// Plan 3.6: ../ (encoded), sibling-prefix, and glob/traversal tricks in the
+	// URL must not read outside the pipeline's output directory.
+	tmpDir, _ := os.MkdirTemp("", "mobius-test-projects-")
+	defer os.RemoveAll(tmpDir)
+
+	outDir := filepath.Join(tmpDir, "proj_1", "output", "pipe_abc")
+	os.MkdirAll(outDir, 0755)
+	os.WriteFile(filepath.Join(outDir, "preview_inline.html"), []byte("ok"), 0644)
+
+	// Files an attacker must NOT be able to read: one outside the projects tree
+	// entirely, and one in a sibling dir that shares the output dir's name as a
+	// prefix (defeats a bare strings.HasPrefix check).
+	os.WriteFile(filepath.Join(tmpDir, "secret.txt"), []byte("secret"), 0644)
+	sibling := filepath.Join(tmpDir, "proj_1", "output", "pipe_abcevil")
+	os.MkdirAll(sibling, 0755)
+	os.WriteFile(filepath.Join(sibling, "leak.txt"), []byte("leak"), 0644)
+
+	cfg := &Config{}
+	cfg.Projects.ProjectsDir = tmpDir
+	api := &APIHandler{config: cfg}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /playable-preview/{pipeline_id}", api.PlayablePreviewRedirect)
+	mux.HandleFunc("GET /playable-preview/{pipeline_id}/{path...}", api.PlayablePreviewHandler)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	attacks := []string{
+		"/playable-preview/pipe_abc/..%2f..%2f..%2fsecret.txt",    // encoded ../ escape
+		"/playable-preview/pipe_abc/..%2fpipe_abcevil%2fleak.txt", // sibling prefix escape
+		"/playable-preview/%2e%2e%2f%2e%2e/secret.txt",            // traversal in pipeline_id
+		"/playable-preview/pipe_%2A/preview_inline.html",          // glob metachar pipeline_id
+	}
+	for _, path := range attacks {
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s failed: %v", path, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			t.Errorf("%s must be refused, got 200 with body %q", path, body)
+		}
+	}
+
+	// The legitimate preview still serves.
+	resp, err := http.Get(ts.URL + "/playable-preview/pipe_abc/")
+	if err != nil {
+		t.Fatalf("GET preview failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("legitimate preview should serve, got %v", resp.StatusCode)
 	}
 }

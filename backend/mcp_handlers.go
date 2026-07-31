@@ -25,6 +25,9 @@ func (s *MCPServer) handleDelegateTask(ctx context.Context, raw json.RawMessage,
 	if assigneeID == "" || title == "" || goal == "" {
 		return nil, fmt.Errorf("assignee_id, title, and goal are required")
 	}
+	if err := validateDelegateArgs(title, goal, taskContext); err != nil {
+		return nil, err
+	}
 
 	creator, err := s.pgClient.GetEmployee(ctx, caller.AgentID)
 	if err != nil {
@@ -95,6 +98,9 @@ func (s *MCPServer) handleHireEmployee(ctx context.Context, raw json.RawMessage,
 	backstory := argStr(args, "backstory")
 	if name == "" || title == "" || backstory == "" {
 		return nil, fmt.Errorf("name, title, and backstory are required")
+	}
+	if err := validateHireArgs(name, title, backstory); err != nil {
+		return nil, err
 	}
 
 	if reason, ok := checkHireDuplicate(manager, title); !ok {

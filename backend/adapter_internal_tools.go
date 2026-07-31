@@ -49,6 +49,9 @@ func (a *InternalLLMAdapter) execDelegate(ctx context.Context, args map[string]a
 	if assigneeID == "" || title == "" || goal == "" {
 		return map[string]any{"error": "assignee_id, title, and goal are required"}
 	}
+	if err := validateDelegateArgs(title, goal, taskContext); err != nil {
+		return map[string]any{"error": err.Error()}
+	}
 
 	assignee, err := a.pgClient.GetEmployee(ctx, assigneeID)
 	if err != nil {
@@ -129,6 +132,9 @@ func (a *InternalLLMAdapter) execHire(ctx context.Context, args map[string]any, 
 
 	if name == "" || title == "" || backstory == "" {
 		return map[string]any{"error": "name, title, and backstory are required"}
+	}
+	if err := validateHireArgs(name, title, backstory); err != nil {
+		return map[string]any{"error": err.Error()}
 	}
 
 	fresh, err := a.pgClient.GetEmployee(ctx, manager.ID)
@@ -375,7 +381,8 @@ func (a *InternalLLMAdapter) execReadProjectFile(ctx context.Context, args map[s
 	if err != nil {
 		return map[string]any{"error": "read failed: " + err.Error()}
 	}
-	return map[string]any{"content": string(data), "path": path, "bytes": len(data)}
+	content, truncated := truncateForContext(string(data))
+	return map[string]any{"content": content, "path": path, "bytes": len(data), "truncated": truncated}
 }
 
 func (a *InternalLLMAdapter) execSearchProjectAssets(ctx context.Context, args map[string]any, task *Task) map[string]any {

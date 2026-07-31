@@ -4,19 +4,24 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
-	"strings"
+	"regexp"
 )
 
 func (api *APIHandler) PlayablePreviewRedirect(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
 }
 
+// pipelineIDRe confines pipeline_id to a plain identifier: it is interpolated
+// into a filepath.Glob pattern, so traversal (`..`, `/`) and glob metacharacters
+// (`*?[`) must never reach it (plan 3.6).
+var pipelineIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
 func (api *APIHandler) PlayablePreviewHandler(w http.ResponseWriter, r *http.Request) {
 	pipelineID := r.PathValue("pipeline_id")
 	subPath := r.PathValue("path")
 
-	if pipelineID == "" {
-		http.Error(w, "pipeline_id is required", http.StatusBadRequest)
+	if !pipelineIDRe.MatchString(pipelineID) {
+		http.Error(w, "invalid pipeline_id", http.StatusBadRequest)
 		return
 	}
 
@@ -39,20 +44,12 @@ func (api *APIHandler) PlayablePreviewHandler(w http.ResponseWriter, r *http.Req
 		subPath = "preview_inline.html"
 	}
 
-	targetFile := filepath.Join(outputDir, subPath)
-
-	absTarget, err := filepath.Abs(targetFile)
+	// Confine to the pipeline output dir with the same lexical + symlink
+	// resolution every agent file tool uses (plan 3.6). A bare prefix check is
+	// not enough: it passes sibling dirs sharing the name as a prefix and
+	// follows symlinks out of the tree.
+	absTarget, err := resolveWithinRoot(outputDir, subPath)
 	if err != nil {
-		http.Error(w, "invalid path", http.StatusBadRequest)
-		return
-	}
-	absOutput, err := filepath.Abs(outputDir)
-	if err != nil {
-		http.Error(w, "invalid path", http.StatusInternalServerError)
-		return
-	}
-
-	if !strings.HasPrefix(absTarget, absOutput) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}

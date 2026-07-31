@@ -281,6 +281,10 @@ func (a *InternalLLMAdapter) routeToolCall(ctx context.Context, call ToolCall, a
 	if err := authorizeToolCall(ctx, a.pgClient, agent.ID, call.Name, call.Args, task.ID); err != nil {
 		return map[string]any{"error": err.Error()}
 	}
+	// Per-caller spend cap on paid operations (plan 3.4), same table as chat/MCP.
+	if err := rateLimitToolCall(agent.ID, call.Name); err != nil {
+		return map[string]any{"error": err.Error()}
+	}
 	taskID := task.ID
 	switch call.Name {
 	case "delegate_task":

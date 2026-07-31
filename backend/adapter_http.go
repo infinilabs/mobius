@@ -7,8 +7,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -24,9 +28,63 @@ type httpRun struct {
 	mu     sync.Mutex
 }
 
+// requirePublicIP is the SSRF guard: webhook destinations must be public
+// addresses, never loopback, RFC1918/ULA, link-local (cloud metadata), or
+// unspecified/multicast.
+func requirePublicIP(ip net.IP) error {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return fmt.Errorf("webhook destination %s is not a public address", ip)
+	}
+	return nil
+}
+
+// ssrfGuardControl enforces requirePublicIP on the address actually dialed,
+// after DNS resolution — so a hostname that resolves (or rebinds) to a private
+// IP, and any redirect target, is blocked at connect time.
+func ssrfGuardControl(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("webhook dial %q: %w", address, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("webhook dial %q: not an IP address", address)
+	}
+	return requirePublicIP(ip)
+}
+
+// validateWebhookURL gives a fast, synchronous error for obviously bad URLs
+// (scheme, missing host, private-IP or localhost literals). The dial-time
+// Control hook remains the authoritative gate for resolved hostnames.
+func validateWebhookURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid WEBHOOK_URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("WEBHOOK_URL must be http(s), got %q", u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("WEBHOOK_URL has no host")
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return fmt.Errorf("webhook destination %s is not a public address", host)
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return requirePublicIP(ip)
+	}
+	return nil
+}
+
 func NewHTTPWebhookAdapter() *HTTPWebhookAdapter {
+	dialer := &net.Dialer{Timeout: 10 * time.Second, Control: ssrfGuardControl}
 	return &HTTPWebhookAdapter{
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: &http.Transport{DialContext: dialer.DialContext},
+		},
 	}
 }
 
@@ -36,6 +94,9 @@ func (a *HTTPWebhookAdapter) Start(ctx context.Context, hb HeartbeatContext) (st
 	webhookURL := hb.Env["WEBHOOK_URL"]
 	if webhookURL == "" {
 		return "", fmt.Errorf("WEBHOOK_URL not set in agent env")
+	}
+	if err := validateWebhookURL(webhookURL); err != nil {
+		return "", err
 	}
 
 	runID := generateID()

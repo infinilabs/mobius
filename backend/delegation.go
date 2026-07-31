@@ -39,6 +39,11 @@ func (h *APIHandler) executeToolCall(
 			return map[string]any{"error": err.Error()}
 		}
 	}
+	// Per-caller spend cap on paid operations (plan 3.4), same table as the
+	// internal adapter and MCP paths.
+	if err := rateLimitToolCall(agent.ID, call.Name); err != nil {
+		return map[string]any{"error": err.Error()}
+	}
 	switch call.Name {
 	case "delegate_task":
 		return h.execDelegateTask(ctx, call.Args, agent, conversationID)
@@ -200,7 +205,8 @@ func (h *APIHandler) execReadProjectFile(ctx context.Context, args map[string]an
 	if err != nil {
 		return map[string]any{"error": "read failed: " + err.Error()}
 	}
-	return map[string]any{"content": string(data), "path": path, "bytes": len(data)}
+	content, truncated := truncateForContext(string(data))
+	return map[string]any{"content": content, "path": path, "bytes": len(data), "truncated": truncated}
 }
 
 func (h *APIHandler) execSearchProjectAssets(ctx context.Context, args map[string]any) map[string]any {
@@ -763,6 +769,9 @@ func (h *APIHandler) execDelegateTask(ctx context.Context, args map[string]any, 
 	if assigneeID == "" || title == "" || goal == "" {
 		return map[string]any{"error": "assignee_id, title, and goal are required"}
 	}
+	if err := validateDelegateArgs(title, goal, taskContext); err != nil {
+		return map[string]any{"error": err.Error()}
+	}
 
 	assignee, err := h.pgClient.GetEmployee(ctx, assigneeID)
 	if err != nil {
@@ -832,6 +841,9 @@ func (h *APIHandler) execHireEmployee(ctx context.Context, args map[string]any, 
 
 	if name == "" || title == "" || backstory == "" {
 		return map[string]any{"error": "name, title, and backstory are required"}
+	}
+	if err := validateHireArgs(name, title, backstory); err != nil {
+		return map[string]any{"error": err.Error()}
 	}
 
 	fresh, err := h.pgClient.GetEmployee(ctx, manager.ID)
