@@ -52,7 +52,7 @@ google_cloud:
     # dataset, never `dataset` above. All optional — these are the code defaults.
     creatives_dataset: "mobius_creatives"      # dedicated business dataset for tags
     connection: "us.mobius_conn"               # BQ cloud-resource connection (see `make bq-connection`)
-    tagging_model_endpoint: "gemini-3.5-flash" # multimodal model
+    tagging_model_endpoint: "gemini-3.6-flash" # multimodal model
     tagging_model_name: "tagging_gemini"       # remote model name created in creatives_dataset
   gcs:
     project_id: ""  # leave empty to use top-level project_id
@@ -63,15 +63,15 @@ google_cloud:
   vertex_ai:
     project_id: ""  # leave empty to use top-level project_id
     models:
-      - id: "gemini-3.1-pro"
-        name: "Gemini 3.1 Pro"
-        model_id: "gemini-3.1-pro-preview"
+      - id: "gemini-3.6-flash"
+        name: "Gemini 3.6 Flash"
+        model_id: "gemini-3.6-flash"
         location: "global"
         type: "llm"
         default: true
       - id: "gemini-3.1-flash-image"
         name: "Gemini 3.1 Flash Image"
-        model_id: "gemini-3.1-flash-image-preview"
+        model_id: "gemini-3.1-flash-image"
         location: "global"
         type: "image"
         default: true
@@ -81,3 +81,8 @@ google_cloud:
         location: "global"
         type: "video"
         default: true
+      - id: "gemini-omni-flash"
+        name: "Gemini Omni Flash"
+        model_id: "gemini-omni-flash-preview"
+        location: "global"
+        type: "video"
