@@ -54,7 +54,7 @@ func (a *InternalLLMAdapter) execDelegate(ctx context.Context, args map[string]a
 	if err != nil {
 		return map[string]any{"error": "assignee not found: " + err.Error()}
 	}
-	if !canDelegate(creator, assignee) {
+	if !canDelegate(ctx, a.pgClient, creator, assignee) {
 		return map[string]any{"error": fmt.Sprintf("cannot delegate to %s: outside team hierarchy", assignee.Name)}
 	}
 	if exceedsDelegationDepth(currentTask.DelegationDepth) {
@@ -119,11 +119,9 @@ func (a *InternalLLMAdapter) execDelegate(ctx context.Context, args map[string]a
 	return map[string]any{"status": "created", "task_id": t.ID, "assignee": assignee.Name}
 }
 
+// Manager-only access is enforced by authorizeToolCall (authz.go) before this
+// executor runs.
 func (a *InternalLLMAdapter) execHire(ctx context.Context, args map[string]any, manager *Employee) map[string]any {
-	if !hasTag(manager.Tags, "manager") && manager.Role != "CEO" {
-		return map[string]any{"error": "only managers can hire"}
-	}
-
 	name, _ := args["name"].(string)
 	title, _ := args["title"].(string)
 	backstory, _ := args["backstory"].(string)
@@ -598,7 +596,7 @@ func (a *InternalLLMAdapter) execGetEmployee(ctx context.Context, args map[strin
 	}
 }
 
-func (a *InternalLLMAdapter) execUpdateEmployee(ctx context.Context, args map[string]any) map[string]any {
+func (a *InternalLLMAdapter) execUpdateEmployee(ctx context.Context, args map[string]any, actor *Employee) map[string]any {
 	empID, _ := args["employee_id"].(string)
 	if empID == "" {
 		return map[string]any{"error": "employee_id is required"}
@@ -619,6 +617,11 @@ func (a *InternalLLMAdapter) execUpdateEmployee(ctx context.Context, args map[st
 			if s, ok := t.(string); ok {
 				tags = append(tags, s)
 			}
+		}
+		// Tags gate tool access and delegation authority; only a CEO may change
+		// the privileged subset (plan 2.2).
+		if err := validateTagChange(actor, emp.Tags, tags); err != nil {
+			return map[string]any{"error": err.Error()}
 		}
 		emp.Tags = tags
 	}

@@ -19,11 +19,17 @@ func makeEmployee(role string, tags []string, managerID *string, reports []Emplo
 	}
 }
 
+// delegationStore returns the shared hierarchy fixture used by the canDelegate
+// tests (defined in authz_test.go): ceo → mgr-a → worker-a1 → worker-a1x,
+// ceo → mgr-b → worker-b1.
+func delegationStore() *fakeAuthzStore { return newHierarchyStore() }
+
 func TestCanDelegate_CEOToAnyone(t *testing.T) {
+	s := delegationStore()
 	ceo := makeEmployee("CEO", []string{"executive"}, nil, nil)
 	worker := makeEmployee("Custom", []string{}, strPtr("other-mgr"), nil)
 	worker.ID = "emp-002"
-	if !canDelegate(ceo, worker) {
+	if !canDelegate(context.Background(), s, ceo, worker) {
 		t.Error("CEO should be able to delegate to anyone")
 	}
 }
@@ -31,12 +37,13 @@ func TestCanDelegate_CEOToAnyone(t *testing.T) {
 // Self-delegation is a task loop that never converges: the same agent keeps
 // re-receiving its own work (plan 1.1). Refused for every role, CEO included.
 func TestCanDelegate_RefusesSelfDelegation(t *testing.T) {
+	s := delegationStore()
 	ceo := makeEmployee("CEO", []string{"executive"}, nil, nil)
-	if canDelegate(ceo, ceo) {
+	if canDelegate(context.Background(), s, ceo, ceo) {
 		t.Error("CEO should NOT delegate to themselves")
 	}
 	mgr := makeEmployee("PM", []string{"manager"}, nil, nil)
-	if canDelegate(mgr, mgr) {
+	if canDelegate(context.Background(), s, mgr, mgr) {
 		t.Error("manager should NOT delegate to themselves")
 	}
 }
@@ -57,36 +64,49 @@ func TestExceedsDelegationDepth(t *testing.T) {
 }
 
 func TestCanDelegate_ManagerToDirectReport(t *testing.T) {
-	mgr := makeEmployee("PM", []string{"manager"}, nil, nil)
-	mgr.ID = "mgr-001"
-	report := makeEmployee("Custom", []string{}, strPtr("mgr-001"), nil)
-	if !canDelegate(mgr, report) {
+	s := delegationStore()
+	if !canDelegate(context.Background(), s, s.employees["mgr-a"], s.employees["worker-a1"]) {
 		t.Error("manager should delegate to direct report")
 	}
 }
 
-func TestCanDelegate_ManagerToPeerManager(t *testing.T) {
-	mgr1 := makeEmployee("PM", []string{"manager"}, nil, nil)
-	mgr2 := makeEmployee("Engineer", []string{"manager"}, strPtr("ceo-001"), nil)
-	mgr2.ID = "emp-002"
-	if !canDelegate(mgr1, mgr2) {
-		t.Error("manager should delegate to peer manager")
+// A delegated task may land on a report who is themselves a manager; that
+// manager must be able to re-delegate deeper into their own subtree.
+func TestCanDelegate_ManagerToDescendant(t *testing.T) {
+	s := delegationStore()
+	if !canDelegate(context.Background(), s, s.employees["mgr-a"], s.employees["worker-a1x"]) {
+		t.Error("manager should delegate to a transitive descendant")
+	}
+}
+
+// Lateral manager→manager delegation across teams is refused (plan 2.4): a
+// compromised or confused manager agent must not be able to inject work into
+// unrelated teams just because the target also carries the manager tag.
+func TestCanDelegate_ManagerToPeerManagerRefused(t *testing.T) {
+	s := delegationStore()
+	if canDelegate(context.Background(), s, s.employees["mgr-a"], s.employees["mgr-b"]) {
+		t.Error("manager should NOT delegate to a peer manager outside their subtree")
+	}
+}
+
+// Delegating upward to the CEO is refused: the hierarchy only flows down.
+func TestCanDelegate_ManagerToCEORefused(t *testing.T) {
+	s := delegationStore()
+	if canDelegate(context.Background(), s, s.employees["mgr-a"], s.employees["ceo"]) {
+		t.Error("manager should NOT delegate to the CEO")
 	}
 }
 
 func TestCanDelegate_ManagerToOtherTeam(t *testing.T) {
-	mgr := makeEmployee("PM", []string{"manager"}, nil, nil)
-	mgr.ID = "mgr-001"
-	other := makeEmployee("Custom", []string{}, strPtr("mgr-other"), nil)
-	if canDelegate(mgr, other) {
-		t.Error("manager should NOT delegate to non-report non-manager")
+	s := delegationStore()
+	if canDelegate(context.Background(), s, s.employees["mgr-a"], s.employees["worker-b1"]) {
+		t.Error("manager should NOT delegate to another team's worker")
 	}
 }
 
 func TestCanDelegate_WorkerToAnyone(t *testing.T) {
-	worker := makeEmployee("Custom", []string{}, strPtr("mgr-001"), nil)
-	other := makeEmployee("Custom", []string{}, strPtr("mgr-001"), nil)
-	if canDelegate(worker, other) {
+	s := delegationStore()
+	if canDelegate(context.Background(), s, s.employees["worker-a1x"], s.employees["worker-b1"]) {
 		t.Error("non-manager should NOT delegate to anyone")
 	}
 }
@@ -402,7 +422,7 @@ func TestExecUpdateProjectTool_MissingID(t *testing.T) {
 func TestExecUpdateEmployeeTool_MissingID(t *testing.T) {
 	h := makeHandler()
 	h.pgClient = &PGClient{}
-	result := h.execUpdateEmployeeTool(context.Background(), map[string]any{})
+	result := h.execUpdateEmployeeTool(context.Background(), map[string]any{}, makeEmployee("CEO", nil, nil, nil))
 	if _, ok := result["error"]; !ok {
 		t.Error("should return error when employee_id missing")
 	}

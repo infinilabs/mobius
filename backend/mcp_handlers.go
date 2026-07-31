@@ -10,85 +10,9 @@ import (
 	"time"
 )
 
-// requireTaskAccess loads the task and verifies the caller may act on it: the
-// caller must be the assignee, the creator, or a manager of the assignee. This
-// is the object-level authorization gate for mutating task handlers — without it
-// any authenticated agent could mutate any task by id (IDOR/BOLA).
-func (s *MCPServer) requireTaskAccess(ctx context.Context, caller MCPCaller, taskID string) (*Task, error) {
-	if caller.AgentID == "" {
-		return nil, fmt.Errorf("unauthorized")
-	}
-	task, err := s.pgClient.GetTask(ctx, taskID)
-	if err != nil {
-		return nil, fmt.Errorf("task not found")
-	}
-	if task.Assignee != nil && task.Assignee.ID == caller.AgentID {
-		return task, nil
-	}
-	if task.Creator != nil && task.Creator.ID == caller.AgentID {
-		return task, nil
-	}
-	if task.Assignee != nil && s.callerManages(ctx, caller.AgentID, task.Assignee.ID) {
-		return task, nil
-	}
-	return nil, fmt.Errorf("forbidden: not authorized for this task")
-}
-
-// callerManages reports whether callerID is targetID's (transitive) manager, or
-// a CEO. It walks the ManagerID chain upward with a depth cap so a cyclic chain
-// cannot loop forever.
-func (s *MCPServer) callerManages(ctx context.Context, callerID, targetID string) bool {
-	caller, err := s.pgClient.GetEmployee(ctx, callerID)
-	if err != nil {
-		return false
-	}
-	if caller.Role == "CEO" {
-		return true
-	}
-	cur := targetID
-	for i := 0; i < 10 && cur != ""; i++ {
-		emp, err := s.pgClient.GetEmployee(ctx, cur)
-		if err != nil || emp.ManagerID == nil {
-			return false
-		}
-		if *emp.ManagerID == callerID {
-			return true
-		}
-		cur = *emp.ManagerID
-	}
-	return false
-}
-
-// requireEmployeeAccess allows an agent to modify only itself or someone it
-// manages.
-func (s *MCPServer) requireEmployeeAccess(ctx context.Context, caller MCPCaller, empID string) error {
-	if caller.AgentID == "" {
-		return fmt.Errorf("unauthorized")
-	}
-	if caller.AgentID == empID || s.callerManages(ctx, caller.AgentID, empID) {
-		return nil
-	}
-	return fmt.Errorf("forbidden: not authorized to modify this employee")
-}
-
-// requireProjectAccess allows only the project owner or a CEO to mutate a
-// project.
-func (s *MCPServer) requireProjectAccess(ctx context.Context, caller MCPCaller, projectID string) error {
-	if caller.AgentID == "" {
-		return fmt.Errorf("unauthorized")
-	}
-	project, err := s.pgClient.GetProject(ctx, projectID)
-	if err != nil {
-		return fmt.Errorf("project not found")
-	}
-	if project.Owner != nil && project.Owner.ID == caller.AgentID {
-		return nil
-	}
-	if emp, err := s.pgClient.GetEmployee(ctx, caller.AgentID); err == nil && emp.Role == "CEO" {
-		return nil
-	}
-	return fmt.Errorf("forbidden: not authorized for this project")
-}
+// Object-level authorization for MCP tool calls is enforced centrally by
+// authorizeToolCall (see authz.go), invoked from HandleMessage before a
+// handler runs — handlers here must NOT re-implement per-handler checks.
 
 func (s *MCPServer) handleDelegateTask(ctx context.Context, raw json.RawMessage, caller MCPCaller) (any, error) {
 	args := parseArgs(raw)
@@ -110,7 +34,7 @@ func (s *MCPServer) handleDelegateTask(ctx context.Context, raw json.RawMessage,
 	if err != nil {
 		return nil, fmt.Errorf("assignee not found")
 	}
-	if !canDelegate(creator, assignee) {
+	if !canDelegate(ctx, s.pgClient, creator, assignee) {
 		return nil, fmt.Errorf("cannot delegate to %s: outside team hierarchy", assignee.Name)
 	}
 
@@ -165,9 +89,6 @@ func (s *MCPServer) handleHireEmployee(ctx context.Context, raw json.RawMessage,
 	if err != nil {
 		return nil, fmt.Errorf("caller agent not found")
 	}
-	if !hasTag(manager.Tags, "manager") && manager.Role != "CEO" {
-		return nil, fmt.Errorf("only managers can hire")
-	}
 
 	name := argStr(args, "name")
 	title := argStr(args, "title")
@@ -208,9 +129,6 @@ func (s *MCPServer) handleSubmitResult(ctx context.Context, raw json.RawMessage,
 	if taskID == "" || result == "" {
 		return nil, fmt.Errorf("task_id and result are required")
 	}
-	if _, err := s.requireTaskAccess(ctx, caller, taskID); err != nil {
-		return nil, err
-	}
 	if err := s.pgClient.SubmitTaskResult(ctx, taskID, result); err != nil {
 		return nil, fmt.Errorf("failed to submit: %w", err)
 	}
@@ -224,9 +142,6 @@ func (s *MCPServer) handleReviewTask(ctx context.Context, raw json.RawMessage, c
 	feedback := argStr(args, "feedback")
 	if taskID == "" || action == "" {
 		return nil, fmt.Errorf("task_id and action are required")
-	}
-	if _, err := s.requireTaskAccess(ctx, caller, taskID); err != nil {
-		return nil, err
 	}
 	switch action {
 	case "APPROVE":
@@ -513,9 +428,6 @@ func (s *MCPServer) handleUpdateTask(ctx context.Context, raw json.RawMessage, c
 	if taskID == "" {
 		return nil, fmt.Errorf("task_id is required")
 	}
-	if _, err := s.requireTaskAccess(ctx, caller, taskID); err != nil {
-		return nil, err
-	}
 	var title, body, priority, assigneeID *string
 	if v := argStr(args, "title"); v != "" {
 		title = &v
@@ -543,9 +455,6 @@ func (s *MCPServer) handleUpdateTaskStatus(ctx context.Context, raw json.RawMess
 	if taskID == "" || status == "" {
 		return nil, fmt.Errorf("task_id and status are required")
 	}
-	if _, err := s.requireTaskAccess(ctx, caller, taskID); err != nil {
-		return nil, err
-	}
 	if err := s.pgClient.UpdateTaskStatus(ctx, taskID, status, caller.AgentID, feedback); err != nil {
 		return nil, err
 	}
@@ -558,9 +467,6 @@ func (s *MCPServer) handleAddTaskComment(ctx context.Context, raw json.RawMessag
 	content := argStr(args, "content")
 	if taskID == "" || content == "" {
 		return nil, fmt.Errorf("task_id and content are required")
-	}
-	if _, err := s.requireTaskAccess(ctx, caller, taskID); err != nil {
-		return nil, err
 	}
 	if _, err := s.pgClient.AddTaskComment(ctx, taskID, caller.AgentID, content); err != nil {
 		return nil, err
@@ -601,9 +507,6 @@ func (s *MCPServer) handleUpdateEmployee(ctx context.Context, raw json.RawMessag
 	empID := argStr(args, "employee_id")
 	if empID == "" {
 		return nil, fmt.Errorf("employee_id is required")
-	}
-	if err := s.requireEmployeeAccess(ctx, caller, empID); err != nil {
-		return nil, err
 	}
 	emp, err := s.pgClient.GetEmployee(ctx, empID)
 	if err != nil {
@@ -658,9 +561,6 @@ func (s *MCPServer) handleUpdateProject(ctx context.Context, raw json.RawMessage
 	projectID := argStr(args, "project_id")
 	if projectID == "" {
 		return nil, fmt.Errorf("project_id is required")
-	}
-	if err := s.requireProjectAccess(ctx, caller, projectID); err != nil {
-		return nil, err
 	}
 	var description, status *string
 	if v := argStr(args, "description"); v != "" {

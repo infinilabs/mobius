@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -958,9 +959,15 @@ func exceedsDelegationDepth(parentDepth int) bool {
 	return parentDepth+1 > maxDelegationDepth
 }
 
-func canDelegate(creator, assignee *Employee) bool {
-	// Delegating to yourself creates a task loop that never converges: the same
-	// agent keeps re-receiving its own work. Refused for everyone, CEO included.
+// canDelegate is the delegation policy (plan 2.4):
+//   - nobody may delegate to themselves — a task loop that never converges;
+//     refused for everyone, CEO included
+//   - the CEO may delegate to anyone
+//   - a manager may delegate only within their own subtree: direct reports and
+//     transitive descendants (walked via the ManagerID chain)
+//   - everything else is refused, in particular lateral manager→manager
+//     delegation across teams and delegating upward to the CEO
+func canDelegate(ctx context.Context, g employeeGetter, creator, assignee *Employee) bool {
 	if creator.ID == assignee.ID {
 		return false
 	}
@@ -973,10 +980,7 @@ func canDelegate(creator, assignee *Employee) bool {
 	if assignee.ManagerID != nil && *assignee.ManagerID == creator.ID {
 		return true
 	}
-	if hasTag(assignee.Tags, "manager") {
-		return true
-	}
-	return false
+	return isInManagementChain(ctx, g, creator.ID, assignee)
 }
 
 func hasTag(tags []string, target string) bool {

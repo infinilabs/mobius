@@ -277,6 +277,10 @@ func (a *InternalLLMAdapter) recordToolCall(call ToolCall, result map[string]any
 }
 
 func (a *InternalLLMAdapter) routeToolCall(ctx context.Context, call ToolCall, agent *Employee, task *Task) map[string]any {
+	// Single authorization layer (plan 2.1): same policy table as chat and MCP.
+	if err := authorizeToolCall(ctx, a.pgClient, agent.ID, call.Name, call.Args, task.ID); err != nil {
+		return map[string]any{"error": err.Error()}
+	}
 	taskID := task.ID
 	switch call.Name {
 	case "delegate_task":
@@ -349,7 +353,7 @@ func (a *InternalLLMAdapter) routeToolCall(ctx context.Context, call ToolCall, a
 	case "get_employee":
 		return a.execGetEmployee(ctx, call.Args)
 	case "update_employee":
-		return a.execUpdateEmployee(ctx, call.Args)
+		return a.execUpdateEmployee(ctx, call.Args, agent)
 	case "list_projects":
 		return a.execListProjects(ctx)
 	case "create_project":

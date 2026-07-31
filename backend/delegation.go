@@ -30,6 +30,15 @@ func (h *APIHandler) executeToolCall(
 	agent *Employee,
 	conversationID string,
 ) map[string]any {
+	// Single authorization layer (plan 2.1): same policy table as the internal
+	// adapter and MCP paths. Chat has no task context, so no current-task
+	// fallback. Tools that need the DB fail inside their handler when pgClient
+	// is nil, so skipping the gate then does not widen access.
+	if h.pgClient != nil {
+		if err := authorizeToolCall(ctx, h.pgClient, agent.ID, call.Name, call.Args, ""); err != nil {
+			return map[string]any{"error": err.Error()}
+		}
+	}
 	switch call.Name {
 	case "delegate_task":
 		return h.execDelegateTask(ctx, call.Args, agent, conversationID)
@@ -66,7 +75,7 @@ func (h *APIHandler) executeToolCall(
 	case "update_project":
 		return h.execUpdateProjectTool(ctx, call.Args)
 	case "update_employee":
-		return h.execUpdateEmployeeTool(ctx, call.Args)
+		return h.execUpdateEmployeeTool(ctx, call.Args, agent)
 	case "list_skills":
 		return h.execListSkillsTool(ctx, call.Args)
 	case "assign_skill":
@@ -521,7 +530,7 @@ func (h *APIHandler) execUpdateProjectTool(ctx context.Context, args map[string]
 	return map[string]any{"status": "updated", "project_id": projectID}
 }
 
-func (h *APIHandler) execUpdateEmployeeTool(ctx context.Context, args map[string]any) map[string]any {
+func (h *APIHandler) execUpdateEmployeeTool(ctx context.Context, args map[string]any, actor *Employee) map[string]any {
 	if h.pgClient == nil {
 		return map[string]any{"error": "database not available"}
 	}
@@ -546,6 +555,11 @@ func (h *APIHandler) execUpdateEmployeeTool(ctx context.Context, args map[string
 				if s, ok := t.(string); ok {
 					tags = append(tags, s)
 				}
+			}
+			// Tags gate tool access and delegation authority; only a CEO may
+			// change the privileged subset (plan 2.2).
+			if err := validateTagChange(actor, emp.Tags, tags); err != nil {
+				return map[string]any{"error": err.Error()}
 			}
 			emp.Tags = tags
 		}
@@ -755,7 +769,7 @@ func (h *APIHandler) execDelegateTask(ctx context.Context, args map[string]any, 
 		return map[string]any{"error": "assignee not found: " + err.Error()}
 	}
 
-	if !canDelegate(creator, assignee) {
+	if !canDelegate(ctx, h.pgClient, creator, assignee) {
 		return map[string]any{"error": fmt.Sprintf("cannot delegate to %s: outside your team hierarchy", assignee.Name)}
 	}
 
@@ -804,13 +818,11 @@ func (h *APIHandler) execDelegateTask(ctx context.Context, args map[string]any, 
 	}
 }
 
+// Manager-only access is enforced by authorizeToolCall (authz.go) before this
+// executor runs.
 func (h *APIHandler) execHireEmployee(ctx context.Context, args map[string]any, manager *Employee) map[string]any {
 	if h.pgClient == nil {
 		return map[string]any{"error": "database not available"}
-	}
-
-	if !hasTag(manager.Tags, "manager") && manager.Role != "CEO" {
-		return map[string]any{"error": "only managers can hire employees"}
 	}
 
 	name, _ := args["name"].(string)
@@ -1059,7 +1071,7 @@ func (h *APIHandler) DelegateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !canDelegate(creator, assignee) {
+	if !canDelegate(r.Context(), h.pgClient, creator, assignee) {
 		writeError(w, fmt.Sprintf("cannot delegate to %s: outside team hierarchy", assignee.Name), http.StatusForbidden)
 		return
 	}

@@ -243,7 +243,17 @@ func (s *MCPServer) HandleMessage(ctx context.Context, msg []byte, caller MCPCal
 			return s.makeError(req.ID, -32601, "unknown tool: "+params.Name)
 		}
 
-		result, err, panicked := s.invokeTool(ctx, params.Name, handler, params.Arguments, caller)
+		// Single authorization layer (plan 2.1): object-level access is checked
+		// here, before any handler runs, from the same policy table the internal
+		// adapter and chat paths use.
+		var result any
+		var err error
+		var panicked bool
+		if aerr := authorizeToolCall(ctx, s.pgClient, caller.AgentID, params.Name, parseArgs(params.Arguments), caller.TaskID); aerr != nil {
+			err = aerr
+		} else {
+			result, err, panicked = s.invokeTool(ctx, params.Name, handler, params.Arguments, caller)
+		}
 		if panicked {
 			return s.makeError(req.ID, -32603, "internal error executing tool: "+params.Name)
 		}

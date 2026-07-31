@@ -114,7 +114,7 @@ func (bq *BQClient) EnsureTaggingInfra(ctx context.Context) error {
 		slog.Info("BigQuery creatives dataset created", "dataset", bq.creativesDataset)
 	}
 	stmt := fmt.Sprintf(
-		"CREATE MODEL IF NOT EXISTS %s REMOTE WITH CONNECTION `%s` OPTIONS(endpoint='%s')",
+		"CREATE OR REPLACE MODEL %s REMOTE WITH CONNECTION `%s` OPTIONS(endpoint='%s')",
 		bq.fq(bq.creativesDataset, bq.taggingModel), bq.connection, bq.taggingEndpoint)
 	if err := bq.RunStatement(ctx, stmt); err != nil {
 		return fmt.Errorf("ensure remote model (connection %q must exist with Vertex AI + GCS read roles — run `make bq-connection`): %w", bq.connection, err)
