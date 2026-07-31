@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -258,10 +259,10 @@ func (pg *PGClient) CreateTask(ctx context.Context, t *Task, depIDs []string) er
 	}
 
 	err = tx.QueryRow(ctx, `
-		INSERT INTO tasks (title, body, status, priority, assignee_id, creator_id, project_id, delegation_depth)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO tasks (title, body, status, priority, assignee_id, creator_id, project_id, delegation_depth, parent_task_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id, created_at, updated_at
-	`, t.Title, t.Body, status, priority, assigneeID, creatorID, t.ProjectID, t.DelegationDepth).Scan(
+	`, t.Title, t.Body, status, priority, assigneeID, creatorID, t.ProjectID, t.DelegationDepth, t.ParentTaskID).Scan(
 		&t.ID, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert task: %w", err)
@@ -392,6 +393,29 @@ func (pg *PGClient) CreateScheduledTask(ctx context.Context, t *Task) error {
 	t.Priority = priority
 	t.Dependencies = []string{}
 	return nil
+}
+
+// FindActiveChildTask returns the id of an existing non-failed, non-cancelled
+// child of parentID with the same assignee and title, or "" if none. Used to
+// make delegation idempotent: a retried parent run re-issues the same delegate
+// call, and the child its failed attempt already created must be reused, not
+// duplicated (plan 4.4; same state-based pattern as checkHireDuplicate).
+func (pg *PGClient) FindActiveChildTask(ctx context.Context, parentID, assigneeID, title string) (string, error) {
+	var id string
+	err := pg.pool.QueryRow(ctx, `
+		SELECT id FROM tasks
+		WHERE parent_task_id = $1 AND assignee_id = $2 AND title = $3
+		  AND status NOT IN ('failed', 'cancelled')
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, parentID, assigneeID, title).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("find child task: %w", err)
+	}
+	return id, nil
 }
 
 func (pg *PGClient) CreateChildTask(ctx context.Context, tx pgx.Tx, child *Task, parentID string) error {

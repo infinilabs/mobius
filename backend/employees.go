@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -49,6 +50,14 @@ type EmployeeSkill struct {
 
 // PG operations
 
+// rollbackTx is a defer-friendly rollback. pgx returns ErrTxClosed after a
+// successful Commit (the normal path); anything else is a real failure.
+func rollbackTx(ctx context.Context, tx pgx.Tx, op string) {
+	if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+		slog.Error("tx rollback failed", "op", op, "error", err)
+	}
+}
+
 func (pg *PGClient) ListEmployees(ctx context.Context) ([]Employee, error) {
 	rows, err := pg.pool.Query(ctx, `
 		SELECT e.id, e.name, e.title, e.role, e.backstory, e.avatar_url,
@@ -74,7 +83,11 @@ func (pg *PGClient) ListEmployees(ctx context.Context) ([]Employee, error) {
 			return nil, fmt.Errorf("scan employee: %w", err)
 		}
 		emp.AdapterConfig = make(map[string]any)
-		json.Unmarshal(adapterConfig, &emp.AdapterConfig)
+		if len(adapterConfig) > 0 {
+			if err := json.Unmarshal(adapterConfig, &emp.AdapterConfig); err != nil {
+				return nil, fmt.Errorf("decode adapter config for employee %s: %w", emp.ID, err)
+			}
+		}
 		emp.Models = []EmployeeModel{}
 		emp.Skills = []EmployeeSkill{}
 		emp.Tags = []string{}
@@ -207,7 +220,11 @@ func (pg *PGClient) GetEmployee(ctx context.Context, id string) (*Employee, erro
 		return nil, fmt.Errorf("get employee: %w", err)
 	}
 	emp.AdapterConfig = make(map[string]any)
-	json.Unmarshal(adapterConfig, &emp.AdapterConfig)
+	if len(adapterConfig) > 0 {
+		if err := json.Unmarshal(adapterConfig, &emp.AdapterConfig); err != nil {
+			return nil, fmt.Errorf("decode adapter config for employee %s: %w", emp.ID, err)
+		}
+	}
 
 	emp.Models = []EmployeeModel{}
 	emp.Skills = []EmployeeSkill{}
@@ -268,7 +285,7 @@ func (pg *PGClient) CreateEmployee(ctx context.Context, emp *Employee) error {
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackTx(ctx, tx, "create employee")
 
 	adapterType := emp.AdapterType
 	if adapterType == "" {
@@ -336,7 +353,7 @@ func (pg *PGClient) UpdateEmployee(ctx context.Context, id string, emp *Employee
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackTx(ctx, tx, "update employee")
 
 	adapterType := emp.AdapterType
 	if adapterType == "" {
@@ -358,15 +375,19 @@ func (pg *PGClient) UpdateEmployee(ctx context.Context, id string, emp *Employee
 		return fmt.Errorf("update employee: %w", err)
 	}
 
-	tx.Exec(ctx, "DELETE FROM employee_models WHERE employee_id=$1", id)
-	tx.Exec(ctx, "DELETE FROM employee_skills WHERE employee_id=$1", id)
-	tx.Exec(ctx, "DELETE FROM employee_tags WHERE employee_id=$1", id)
+	for _, table := range []string{"employee_models", "employee_skills", "employee_tags"} {
+		if _, err := tx.Exec(ctx, "DELETE FROM "+table+" WHERE employee_id=$1", id); err != nil {
+			return fmt.Errorf("clear %s: %w", table, err)
+		}
+	}
 
 	if err := pg.insertRelated(ctx, tx, id, emp.Models, emp.Skills, emp.Tags); err != nil {
 		return err
 	}
 
-	tx.Exec(ctx, "DELETE FROM employee_reporting WHERE employee_id=$1", id)
+	if _, err := tx.Exec(ctx, "DELETE FROM employee_reporting WHERE employee_id=$1", id); err != nil {
+		return fmt.Errorf("clear reporting: %w", err)
+	}
 	if emp.ManagerID != nil && *emp.ManagerID != "" {
 		if _, err := tx.Exec(ctx,
 			"INSERT INTO employee_reporting (employee_id, manager_id) VALUES ($1, $2)",
@@ -383,18 +404,25 @@ func (pg *PGClient) DeleteEmployee(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackTx(ctx, tx, "delete employee")
 
 	var managerID *string
-	tx.QueryRow(ctx, "SELECT manager_id FROM employee_reporting WHERE employee_id=$1", id).Scan(&managerID)
+	err = tx.QueryRow(ctx, "SELECT manager_id FROM employee_reporting WHERE employee_id=$1", id).Scan(&managerID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("load manager for %s: %w", id, err)
+	}
 
 	if managerID != nil {
-		tx.Exec(ctx, `
+		if _, err := tx.Exec(ctx, `
 			UPDATE employee_reporting SET manager_id=$1
 			WHERE manager_id=$2
-		`, *managerID, id)
+		`, *managerID, id); err != nil {
+			return fmt.Errorf("reassign reports: %w", err)
+		}
 	} else {
-		tx.Exec(ctx, "DELETE FROM employee_reporting WHERE manager_id=$1", id)
+		if _, err := tx.Exec(ctx, "DELETE FROM employee_reporting WHERE manager_id=$1", id); err != nil {
+			return fmt.Errorf("clear reports: %w", err)
+		}
 	}
 
 	_, err = tx.Exec(ctx, "DELETE FROM employees WHERE id=$1", id)
@@ -1659,7 +1687,7 @@ func (pg *PGClient) SeedDefaultEmployees(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("begin seed tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackTx(ctx, tx, "seed employees")
 
 	nameToID := make(map[string]string, len(defaults))
 

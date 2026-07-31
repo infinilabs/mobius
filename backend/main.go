@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -271,6 +272,11 @@ func main() {
 		}
 	}
 
+	// Context + WaitGroup for background goroutines so shutdown cancels and
+	// drains them instead of orphaning them.
+	syncCtx, syncCancel := context.WithCancel(context.Background())
+	var bgWG sync.WaitGroup
+
 	if pgClient != nil {
 		if err := pgClient.SeedDefaultEmployees(ctx); err != nil {
 			slog.Error("failed to seed default employees", "error", err)
@@ -279,14 +285,16 @@ func main() {
 			if err := pgClient.SeedDefaultSkillAssignments(ctx, esClient); err != nil {
 				slog.Error("failed to seed skill assignments", "error", err)
 			}
+			bgWG.Add(1)
 			go func() {
-				if err := esClient.BackfillEmployees(ctx, pgClient); err != nil {
+				defer bgWG.Done()
+				if err := esClient.BackfillEmployees(syncCtx, pgClient); err != nil {
 					slog.Error("ES backfill employees failed", "error", err)
 				}
-				if err := esClient.BackfillProjects(ctx, pgClient); err != nil {
+				if err := esClient.BackfillProjects(syncCtx, pgClient); err != nil {
 					slog.Error("ES backfill projects failed", "error", err)
 				}
-				if err := esClient.BackfillTasks(ctx, pgClient); err != nil {
+				if err := esClient.BackfillTasks(syncCtx, pgClient); err != nil {
 					slog.Error("ES backfill tasks failed", "error", err)
 				}
 			}()
@@ -487,8 +495,6 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	syncCtx, syncCancel := context.WithCancel(context.Background())
-
 	// Event pipeline goroutine
 	if eventPipeline != nil {
 		go eventPipeline.Start(syncCtx)
@@ -592,6 +598,8 @@ func main() {
 	slog.Info("Shutdown signal received", "signal", sig.String())
 
 	syncCancel()
+	bgWG.Wait()
+	slog.Info("background goroutines drained")
 
 	if eventPipeline != nil {
 		eventPipeline.Wait()

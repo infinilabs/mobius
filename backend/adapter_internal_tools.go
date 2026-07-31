@@ -66,6 +66,18 @@ func (a *InternalLLMAdapter) execDelegate(ctx context.Context, args map[string]a
 			currentTask.DelegationDepth, maxDelegationDepth)}
 	}
 
+	// A retried parent run re-issues the same delegate call; reuse the child a
+	// previous attempt already created instead of duplicating it.
+	existingID, err := a.pgClient.FindActiveChildTask(ctx, currentTask.ID, assignee.ID, title)
+	if err != nil {
+		return map[string]any{"error": "failed to check existing delegation: " + err.Error()}
+	}
+	if existingID != "" {
+		slog.Info("adapter: delegation deduped", "existing_task_id", existingID, "from", creator.Name, "to", assignee.Name)
+		return map[string]any{"status": "already_delegated", "task_id": existingID, "assignee": assignee.Name,
+			"note": "an identical delegation from this task already exists; not creating a duplicate"}
+	}
+
 	body := "## Goal\n" + goal
 	if taskContext != "" {
 		body += "\n\n## Context\n" + taskContext
@@ -81,6 +93,7 @@ func (a *InternalLLMAdapter) execDelegate(ctx context.Context, args map[string]a
 		Creator:         &EmployeeBrief{ID: creator.ID, Name: creator.Name, Title: creator.Title, Role: creator.Role},
 		Assignee:        &EmployeeBrief{ID: assignee.ID, Name: assignee.Name, Title: assignee.Title, Role: assignee.Role},
 		DelegationDepth: currentTask.DelegationDepth + 1,
+		ParentTaskID:    &currentTask.ID,
 	}
 	projectID, _ := args["project_id"].(string)
 	if projectID == "" && currentTask.ProjectID != nil {

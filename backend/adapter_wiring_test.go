@@ -112,3 +112,17 @@ func TestHTTPWebhookCompleteRunHandler(t *testing.T) {
 		t.Errorf("bad body: got %d, want 400", w.Code)
 	}
 }
+
+// Observe on a runID the adapter no longer tracks must report failure, not a
+// fabricated empty completion: a GC/timing anomaly would otherwise be recorded
+// as "the agent produced no output" and submitted for review (plan 4.3).
+func TestInternalObserve_UnknownRunFails(t *testing.T) {
+	a := &InternalLLMAdapter{}
+	obs, err := a.Observe(context.Background(), "no-such-run")
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if obs.Status != RunFailed || obs.ErrorMessage == "" {
+		t.Errorf("unknown run: got %+v, want RunFailed with error message", obs)
+	}
+}

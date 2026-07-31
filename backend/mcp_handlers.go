@@ -44,6 +44,7 @@ func (s *MCPServer) handleDelegateTask(ctx context.Context, raw json.RawMessage,
 	// Delegations from within a task run inherit the parent's chain depth so
 	// the bound in exceedsDelegationDepth holds across the MCP path too.
 	depth := 0
+	var parentTaskID *string
 	if caller.TaskID != "" {
 		parent, err := s.pgClient.GetTask(ctx, caller.TaskID)
 		if err != nil {
@@ -54,6 +55,18 @@ func (s *MCPServer) handleDelegateTask(ctx context.Context, raw json.RawMessage,
 				parent.DelegationDepth, maxDelegationDepth)
 		}
 		depth = parent.DelegationDepth + 1
+		parentTaskID = &parent.ID
+
+		// A retried parent run re-issues the same delegate call; reuse the child
+		// a previous attempt already created instead of duplicating it.
+		existingID, err := s.pgClient.FindActiveChildTask(ctx, parent.ID, assignee.ID, title)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check existing delegation: %w", err)
+		}
+		if existingID != "" {
+			return map[string]any{"status": "already_delegated", "task_id": existingID, "assignee": assignee.Name,
+				"note": "an identical delegation from this task already exists; not creating a duplicate"}, nil
+		}
 	}
 
 	body := "## Goal\n" + goal
@@ -71,6 +84,7 @@ func (s *MCPServer) handleDelegateTask(ctx context.Context, raw json.RawMessage,
 		Creator:         &EmployeeBrief{ID: creator.ID, Name: creator.Name, Title: creator.Title, Role: creator.Role},
 		Assignee:        &EmployeeBrief{ID: assignee.ID, Name: assignee.Name, Title: assignee.Title, Role: assignee.Role},
 		DelegationDepth: depth,
+		ParentTaskID:    parentTaskID,
 	}
 	if err := s.pgClient.CreateTask(ctx, t, nil); err != nil {
 		return nil, fmt.Errorf("failed to create task: %w", err)

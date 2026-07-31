@@ -90,7 +90,13 @@ func (a *InternalLLMAdapter) Start(ctx context.Context, hb HeartbeatContext) (st
 func (a *InternalLLMAdapter) Observe(_ context.Context, runID string) (RunObservation, error) {
 	val, ok := a.runs.Load(runID)
 	if !ok {
-		return RunObservation{Status: RunCompleted}, nil
+		// An untracked runID means the run entry was reclaimed (or never existed);
+		// reporting it completed-empty would silently submit "no output" as the
+		// agent's result. Fail instead so the dispatcher retries.
+		return RunObservation{
+			Status:       RunFailed,
+			ErrorMessage: fmt.Sprintf("unknown run %s: run state no longer tracked", runID),
+		}, nil
 	}
 	run := val.(*internalRun)
 	run.mu.Lock()
