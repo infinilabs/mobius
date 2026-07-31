@@ -53,8 +53,9 @@ func (a *InternalLLMAdapter) Start(ctx context.Context, hb HeartbeatContext) (st
 	// 2*staleTimeout that also cancels on shutdown (see executeAgentTask / H5).
 	// Detaching to Background here would leak wedged runs past that cap and
 	// ignore graceful shutdown. Callers that need the run to outlive a request
-	// must pass a non-request ctx, as the dispatcher already does.
-	runCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	// must pass a non-request ctx, as the dispatcher already does. The cap
+	// tracks the dispatcher's configurable run ceiling (plan 1.8).
+	runCtx, cancel := context.WithTimeout(ctx, a.config.RunTimeout())
 
 	run := &internalRun{cancel: cancel, status: RunActive}
 	a.runs.Store(runID, run)

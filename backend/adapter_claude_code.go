@@ -14,6 +14,7 @@ import (
 )
 
 type ClaudeCodeAdapter struct {
+	config        *Config
 	mcpServerAddr string
 	// mintToken issues a signed MCP session token for (agentID, taskID). When set
 	// (and mcpServerAddr is non-empty) the spawned claude CLI is given an MCP
@@ -33,8 +34,8 @@ type cliRun struct {
 	done   chan struct{}
 }
 
-func NewClaudeCodeAdapter(mcpAddr string, mintToken func(agentID, taskID string) string) *ClaudeCodeAdapter {
-	return &ClaudeCodeAdapter{mcpServerAddr: mcpAddr, mintToken: mintToken}
+func NewClaudeCodeAdapter(cfg *Config, mcpAddr string, mintToken func(agentID, taskID string) string) *ClaudeCodeAdapter {
+	return &ClaudeCodeAdapter{config: cfg, mcpServerAddr: mcpAddr, mintToken: mintToken}
 }
 
 // writeMCPConfig writes a temp Claude Code MCP config pointing the spawned CLI at
@@ -78,6 +79,14 @@ func (a *ClaudeCodeAdapter) writeMCPConfig(hb HeartbeatContext) string {
 func (a *ClaudeCodeAdapter) Type() AdapterType { return AdapterClaudeCode }
 
 func (a *ClaudeCodeAdapter) Start(ctx context.Context, hb HeartbeatContext) (string, error) {
+	// The claude CLI runs with permissions bypassed, so it is gated behind the
+	// same explicit sandbox opt-in as the other code-exec adapters. Note the CLI
+	// process itself still executes on the host (it needs its own credentials);
+	// containerizing it is tracked separately in the remediation plan.
+	if a.config == nil || !a.config.Sandbox.Enabled {
+		return "", fmt.Errorf("claude_code adapter requires the sandbox: enable sandbox in config (host execution is not permitted)")
+	}
+
 	runID := generateID()
 
 	prompt := fmt.Sprintf(

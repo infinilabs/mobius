@@ -94,12 +94,15 @@ func (c *ClaudeProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 		})
 	}
 
-	const maxToolRounds = 10
+	// Budgets aligned with the Gemini adapter (plan 1.8) so a Claude-backed
+	// agent isn't cut off after a fraction of the rounds its peers get.
+	const maxToolRounds = 40
+	const maxOutputTokens = 8192
 	var fullText string
 	for i := 0; i < maxToolRounds; i++ {
 		body := map[string]any{
 			"anthropic_version": "vertex-2023-10-16",
-			"max_tokens":       4096,
+			"max_tokens":       maxOutputTokens,
 			"messages":         messages,
 			"stream":           true,
 		}
@@ -122,11 +125,6 @@ func (c *ClaudeProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 		}
 
 		if len(toolCalls) == 0 {
-			break
-		}
-
-		if i == maxToolRounds-1 {
-			slog.Warn("claude: tool call loop limit reached", "model", req.Model, "rounds", maxToolRounds)
 			break
 		}
 
@@ -164,6 +162,39 @@ func (c *ClaudeProvider) ChatStream(ctx context.Context, req *LLMRequest) (strin
 		messages = append(messages, map[string]any{
 			"role": "user", "content": resultContent,
 		})
+
+		// Out of tool-call budget: this round's calls (including a final
+		// submit_task_result or file write) have already executed above. Do ONE
+		// final tool-less generation so the agent produces a textual result
+		// instead of leaving the run output empty (mirrors the Gemini adapter).
+		if i == maxToolRounds-1 {
+			slog.Warn("claude: tool call loop limit reached; forcing final summary",
+				"model", req.Model, "rounds", maxToolRounds)
+			messages = append(messages, map[string]any{
+				"role": "user",
+				"content": "You have reached your tool-call limit. Do not call any more tools. " +
+					"Write your final result now as plain text: what you produced, where the files/assets live, and anything still incomplete.",
+			})
+			graceBody := map[string]any{
+				"anthropic_version": "vertex-2023-10-16",
+				"max_tokens":        maxOutputTokens,
+				"messages":          messages,
+				"stream":            true,
+			}
+			if req.SystemPrompt != "" {
+				graceBody["system"] = req.SystemPrompt
+			}
+			roundStart := time.Now()
+			text, _, graceUsage, err := c.doStream(ctx, req.Model, graceBody, req.OnText)
+			if err != nil {
+				return fullText, err
+			}
+			fullText += text
+			if req.OnUsage != nil && graceUsage != nil {
+				graceUsage.LatencyMs = time.Since(roundStart).Milliseconds()
+				req.OnUsage(*graceUsage)
+			}
+		}
 	}
 
 	return fullText, nil

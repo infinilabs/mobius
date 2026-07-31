@@ -871,11 +871,7 @@ func (h *APIHandler) execSubmitResult(ctx context.Context, args map[string]any) 
 		return map[string]any{"error": "task_id and result are required"}
 	}
 
-	if err := h.pgClient.UpdateTask(ctx, taskID, nil, nil, nil, nil, &result); err != nil {
-		return map[string]any{"error": "failed to update result: " + err.Error()}
-	}
-
-	if err := h.pgClient.UpdateTaskStatus(ctx, taskID, "needs_review", ""); err != nil {
+	if err := h.pgClient.SubmitTaskResult(ctx, taskID, result); err != nil {
 		return map[string]any{"error": "failed to submit for review: " + err.Error()}
 	}
 

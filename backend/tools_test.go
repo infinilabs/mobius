@@ -22,8 +22,37 @@ func makeEmployee(role string, tags []string, managerID *string, reports []Emplo
 func TestCanDelegate_CEOToAnyone(t *testing.T) {
 	ceo := makeEmployee("CEO", []string{"executive"}, nil, nil)
 	worker := makeEmployee("Custom", []string{}, strPtr("other-mgr"), nil)
+	worker.ID = "emp-002"
 	if !canDelegate(ceo, worker) {
 		t.Error("CEO should be able to delegate to anyone")
+	}
+}
+
+// Self-delegation is a task loop that never converges: the same agent keeps
+// re-receiving its own work (plan 1.1). Refused for every role, CEO included.
+func TestCanDelegate_RefusesSelfDelegation(t *testing.T) {
+	ceo := makeEmployee("CEO", []string{"executive"}, nil, nil)
+	if canDelegate(ceo, ceo) {
+		t.Error("CEO should NOT delegate to themselves")
+	}
+	mgr := makeEmployee("PM", []string{"manager"}, nil, nil)
+	if canDelegate(mgr, mgr) {
+		t.Error("manager should NOT delegate to themselves")
+	}
+}
+
+// The depth bound is what stops an A→B→A delegation ping-pong: each hop
+// increments the child's depth, so the chain dies at maxDelegationDepth even
+// though each individual hop looks legitimate (plan 1.1).
+func TestExceedsDelegationDepth(t *testing.T) {
+	if exceedsDelegationDepth(0) {
+		t.Error("root task (depth 0) should be allowed to delegate")
+	}
+	if exceedsDelegationDepth(maxDelegationDepth - 1) {
+		t.Error("delegating up to the max depth should be allowed")
+	}
+	if !exceedsDelegationDepth(maxDelegationDepth) {
+		t.Errorf("delegating past depth %d should be refused", maxDelegationDepth)
 	}
 }
 
@@ -39,6 +68,7 @@ func TestCanDelegate_ManagerToDirectReport(t *testing.T) {
 func TestCanDelegate_ManagerToPeerManager(t *testing.T) {
 	mgr1 := makeEmployee("PM", []string{"manager"}, nil, nil)
 	mgr2 := makeEmployee("Engineer", []string{"manager"}, strPtr("ceo-001"), nil)
+	mgr2.ID = "emp-002"
 	if !canDelegate(mgr1, mgr2) {
 		t.Error("manager should delegate to peer manager")
 	}

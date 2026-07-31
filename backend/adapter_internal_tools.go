@@ -57,6 +57,11 @@ func (a *InternalLLMAdapter) execDelegate(ctx context.Context, args map[string]a
 	if !canDelegate(creator, assignee) {
 		return map[string]any{"error": fmt.Sprintf("cannot delegate to %s: outside team hierarchy", assignee.Name)}
 	}
+	if exceedsDelegationDepth(currentTask.DelegationDepth) {
+		return map[string]any{"error": fmt.Sprintf(
+			"delegation chain too deep (depth %d, max %d): do the work yourself or report back to your manager",
+			currentTask.DelegationDepth, maxDelegationDepth)}
+	}
 
 	body := "## Goal\n" + goal
 	if taskContext != "" {
@@ -67,11 +72,12 @@ func (a *InternalLLMAdapter) execDelegate(ctx context.Context, args map[string]a
 	}
 
 	t := &Task{
-		Title:    title,
-		Body:     body,
-		Priority: priority,
-		Creator:  &EmployeeBrief{ID: creator.ID, Name: creator.Name, Title: creator.Title, Role: creator.Role},
-		Assignee: &EmployeeBrief{ID: assignee.ID, Name: assignee.Name, Title: assignee.Title, Role: assignee.Role},
+		Title:           title,
+		Body:            body,
+		Priority:        priority,
+		Creator:         &EmployeeBrief{ID: creator.ID, Name: creator.Name, Title: creator.Title, Role: creator.Role},
+		Assignee:        &EmployeeBrief{ID: assignee.ID, Name: assignee.Name, Title: assignee.Title, Role: assignee.Role},
+		DelegationDepth: currentTask.DelegationDepth + 1,
 	}
 	projectID, _ := args["project_id"].(string)
 	if projectID == "" && currentTask.ProjectID != nil {
@@ -183,10 +189,7 @@ func (a *InternalLLMAdapter) execSubmit(ctx context.Context, args map[string]any
 	if taskID != currentTask.ID {
 		return map[string]any{"error": "can only submit your own task"}
 	}
-	if err := a.pgClient.UpdateTask(ctx, taskID, nil, nil, nil, nil, &result); err != nil {
-		return map[string]any{"error": "failed to update result: " + err.Error()}
-	}
-	if err := a.pgClient.UpdateTaskStatus(ctx, taskID, "needs_review", ""); err != nil {
+	if err := a.pgClient.SubmitTaskResult(ctx, taskID, result); err != nil {
 		return map[string]any{"error": "failed to submit: " + err.Error()}
 	}
 
@@ -431,6 +434,10 @@ func (a *InternalLLMAdapter) execRunProjectCommand(ctx context.Context, args map
 		slog.Warn("blocked dangerous command", "task_id", task.ID, "command", command, "reason", err)
 		return map[string]any{"error": "command rejected: " + err.Error()}
 	}
+	// Code execution is sandbox-only: never fall back to running on the host.
+	if a.config == nil || !a.config.Sandbox.Enabled {
+		return map[string]any{"error": "command execution requires the sandbox: enable sandbox in config (host execution is not permitted)"}
+	}
 
 	project, err := a.pgClient.GetProject(ctx, *task.ProjectID)
 	if err != nil {
@@ -441,14 +448,7 @@ func (a *InternalLLMAdapter) execRunProjectCommand(ctx context.Context, args map
 	defer cancel()
 
 	workdir := project.RootDir(a.config)
-	var out, errOut string
-	var exitCode int
-	var execErr error
-	if a.config != nil && a.config.Sandbox.Enabled {
-		out, errOut, exitCode, execErr = runSandboxedCommand(cmdCtx, a.config.Sandbox, workdir, command, nil)
-	} else {
-		out, errOut, exitCode, execErr = runHostCommand(cmdCtx, workdir, command, nil)
-	}
+	out, errOut, exitCode, execErr := runSandboxedCommand(cmdCtx, a.config.Sandbox, workdir, command, nil)
 	if execErr != nil {
 		return map[string]any{"error": "command execution failed: " + execErr.Error()}
 	}

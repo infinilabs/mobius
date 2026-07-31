@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -21,6 +22,7 @@ type TaskDispatcher struct {
 	events         *EventPipeline
 	maxConcurrency int
 	staleTimeout   time.Duration
+	runTimeout     time.Duration
 	sem            chan struct{}
 	wg             sync.WaitGroup
 }
@@ -38,6 +40,7 @@ func NewTaskDispatcher(pg *PGClient, es *ESClient, tp *TokenPipeline, adapters *
 		events:         events,
 		maxConcurrency: maxConcurrency,
 		staleTimeout:   5 * time.Minute,
+		runTimeout:     cfg.RunTimeout(),
 		sem:            make(chan struct{}, maxConcurrency),
 	}
 }
@@ -184,9 +187,33 @@ func (d *TaskDispatcher) processEventByID(ctx context.Context, eventID int64) {
 			CreatorEmployeeID string `json:"creator_employee_id"`
 		}
 		if json.Unmarshal(payload, &evt) == nil && evt.TaskID != "" {
-			slog.Info("interaction resolved, task may re-wake", "task_id", evt.TaskID)
+			d.resumeBlockedTask(ctx, evt.TaskID)
 		}
 	}
+}
+
+// resumeBlockedTask flips a task that ask_user parked in 'blocked' back to
+// 'ready' once its interaction is resolved, so dispatch re-triggers without a
+// manual status flip (plan 1.3). The answer itself reaches the agent via
+// buildInteractionContext on the next run. Tasks in any other state are left
+// alone — an interaction can be resolved after the task already moved on.
+func (d *TaskDispatcher) resumeBlockedTask(ctx context.Context, taskID string) {
+	var status string
+	if err := d.pgClient.pool.QueryRow(ctx,
+		"SELECT status FROM tasks WHERE id = $1", taskID).Scan(&status); err != nil {
+		slog.Warn("interaction resolved: task lookup failed", "task_id", taskID, "error", err)
+		return
+	}
+	if status != "blocked" {
+		return
+	}
+	// UpdateTaskStatus re-validates the transition under FOR UPDATE, resets the
+	// failure counter (fresh start), and fires the task_ready dispatch trigger.
+	if err := d.pgClient.UpdateTaskStatus(ctx, taskID, "ready", ""); err != nil {
+		slog.Warn("interaction resolved: failed to unblock task", "task_id", taskID, "error", err)
+		return
+	}
+	slog.Info("interaction resolved: task unblocked", "task_id", taskID)
 }
 
 func (d *TaskDispatcher) dispatchSingleTask(ctx context.Context, taskID string) {
@@ -196,10 +223,15 @@ func (d *TaskDispatcher) dispatchSingleTask(ctx context.Context, taskID string) 
 	}
 	defer tx.Rollback(ctx)
 
+	// Keep this predicate in sync with claimReadyTasks: the retry_after guard
+	// (plan 1.2) is what makes a failed task's backoff window hold on the
+	// reactive path too — without it a task_ready notification re-runs the task
+	// immediately, defeating the backoff entirely.
 	var id string
 	err = tx.QueryRow(ctx, `
 		SELECT id FROM tasks
 		WHERE id = $1 AND status = 'ready' AND assignee_id IS NOT NULL
+		  AND (retry_after IS NULL OR retry_after <= NOW())
 		FOR UPDATE SKIP LOCKED
 	`, taskID).Scan(&id)
 	if err != nil {
@@ -389,14 +421,18 @@ func (d *TaskDispatcher) claimReviewTasks(ctx context.Context) ([]Task, error) {
 	}
 	defer tx.Rollback(ctx)
 
+	// rejection_count gate (plan 1.6): once a task has been auto-rejected
+	// maxAutoRejections times, stop arming its creator as reviewer — the task
+	// stays in needs_review for a human instead of burning reviewer runs forever.
 	rows, err := tx.Query(ctx, `
 		SELECT id FROM tasks
 		WHERE status = 'needs_review'
 		  AND creator_id IS NOT NULL
+		  AND rejection_count < $2
 		  AND (retry_after IS NULL OR retry_after <= NOW())
 		FOR UPDATE SKIP LOCKED
 		LIMIT $1
-	`, d.maxConcurrency)
+	`, d.maxConcurrency, maxAutoRejections)
 	if err != nil {
 		return nil, fmt.Errorf("query review tasks: %w", err)
 	}
@@ -415,7 +451,7 @@ func (d *TaskDispatcher) claimReviewTasks(ctx context.Context) ([]Task, error) {
 		return nil, nil
 	}
 
-	debounce := time.Now().Add(2 * d.staleTimeout)
+	debounce := time.Now().Add(d.runTimeout)
 	if _, err := tx.Exec(ctx,
 		"UPDATE tasks SET retry_after = $1 WHERE id = ANY($2)", debounce, taskIDs); err != nil {
 		return nil, fmt.Errorf("debounce review tasks: %w", err)
@@ -480,7 +516,7 @@ func (d *TaskDispatcher) executeReviewTask(parentCtx context.Context, t Task) {
 	startedAt := time.Now()
 	rowID := d.openRun(t.ID, creator.ID, string(adapterType), startedAt)
 
-	runCtx, cancel := context.WithTimeout(parentCtx, 2*d.staleTimeout)
+	runCtx, cancel := context.WithTimeout(parentCtx, d.runTimeout)
 	defer cancel()
 
 	runID, err := adapter.Start(runCtx, hb)
@@ -541,9 +577,10 @@ func (d *TaskDispatcher) executeAgentTask(parentCtx context.Context, t Task) {
 	rowID := d.openRun(t.ID, assignee.ID, string(adapterType), startedAt)
 
 	// Cap the run so a wedged adapter that never returns a terminal Observe
-	// cannot hold its concurrency slot forever. On expiry monitorRun stops the
-	// run, finalizes the row, and the stale-task reclaimer re-queues the DB row.
-	runCtx, cancel := context.WithTimeout(parentCtx, 2*d.staleTimeout)
+	// cannot hold its concurrency slot forever. The cap is configurable via
+	// dispatcher.run_timeout_minutes (plan 1.8). On expiry monitorRun stops the
+	// run and salvages any partial output to review (plan 1.5).
+	runCtx, cancel := context.WithTimeout(parentCtx, d.runTimeout)
 	defer cancel()
 
 	runID, err := adapter.Start(runCtx, hb)
@@ -748,6 +785,19 @@ func (d *TaskDispatcher) monitorRun(ctx context.Context, adapter Adapter, runID 
 			obs, _ := adapter.Observe(context.Background(), runID)
 			adapter.Stop(ctx, runID)
 			d.finishRun(rowID, RunCancelled, obs.Output, "run cancelled (shutdown or time cap)", obs.TokenUsage)
+			// A run killed by the time cap (not shutdown) may hold real partial
+			// work: salvage it to needs_review instead of discarding it and
+			// re-running from zero (plan 1.5). On shutdown the task is left
+			// in_progress for the stale reclaimer, preserving the old behavior.
+			// Detached ctx: the run ctx is already dead.
+			if !isReview && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				bg, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				updated, gerr := d.pgClient.GetTask(bg, t.ID)
+				if gerr == nil && updated.Status == "in_progress" {
+					d.salvageOrFail(bg, t.ID, obs.Output)
+				}
+				cancel()
+			}
 			return
 		}
 	}
@@ -1071,16 +1121,10 @@ func (d *TaskDispatcher) salvageOrFail(ctx context.Context, taskID, output strin
 		d.failTask(ctx, taskID, "agent finished without calling submit_task_result and produced no output")
 		return
 	}
-	if err := d.pgClient.UpdateTask(ctx, taskID, nil, nil, nil, nil, &res); err != nil {
-		slog.Error("salvage: UpdateTask(result) failed",
+	if err := d.pgClient.SubmitTaskResult(ctx, taskID, res); err != nil {
+		slog.Error("salvage: SubmitTaskResult failed",
 			"task_id", taskID, "error", err, "result_len", len(res))
-		d.failTask(ctx, taskID, "salvage failed (UpdateTask): "+err.Error())
-		return
-	}
-	if err := d.pgClient.UpdateTaskStatus(ctx, taskID, "needs_review", ""); err != nil {
-		slog.Error("salvage: UpdateTaskStatus(needs_review) failed",
-			"task_id", taskID, "error", err, "result_len", len(res))
-		d.failTask(ctx, taskID, "salvage failed (UpdateTaskStatus): "+err.Error())
+		d.failTask(ctx, taskID, "salvage failed: "+err.Error())
 		return
 	}
 	d.pgClient.AddTaskComment(ctx, taskID, "",
@@ -1089,28 +1133,47 @@ func (d *TaskDispatcher) salvageOrFail(ctx context.Context, taskID, output strin
 	d.pgClient.reindexTask(ctx, taskID)
 }
 
-func (d *TaskDispatcher) failTask(ctx context.Context, taskID, reason string) {
-	slog.Error("task failed, scheduling retry", "task_id", taskID, "reason", reason)
+// failTransition returns the state a failing in-flight task moves to. ok is
+// false when the task is no longer in_progress: a late provider error must not
+// overwrite a submitted result (needs_review/done), and a task the reclaimer
+// already re-queued (ready/blocked) must not be double-penalized (plan 1.4).
+func failTransition(currentStatus string, failures int) (next string, ok bool) {
+	if currentStatus != "in_progress" {
+		return "", false
+	}
+	if failures >= 3 {
+		return "blocked", true
+	}
+	return "ready", true
+}
 
+func (d *TaskDispatcher) failTask(ctx context.Context, taskID, reason string) {
 	tx, err := d.pgClient.pool.Begin(ctx)
 	if err != nil {
 		return
 	}
 	defer tx.Rollback(ctx)
 
+	// FOR UPDATE: the status check and the failure_count increment must see a
+	// consistent row, or two concurrent failers could both count the same failure.
+	var currentStatus string
 	var failures int
-	if err := tx.QueryRow(ctx, "SELECT failure_count FROM tasks WHERE id = $1", taskID).Scan(&failures); err != nil {
+	if err := tx.QueryRow(ctx,
+		"SELECT status, failure_count FROM tasks WHERE id = $1 FOR UPDATE", taskID,
+	).Scan(&currentStatus, &failures); err != nil {
 		slog.Error("failTask: task not found", "task_id", taskID, "error", err)
 		return
 	}
 	failures++
 
-	status := "ready"
-	blocked := false
-	if failures >= 3 {
-		status = "blocked"
-		blocked = true
+	status, ok := failTransition(currentStatus, failures)
+	if !ok {
+		slog.Warn("failTask: task no longer in_progress, leaving untouched",
+			"task_id", taskID, "status", currentStatus, "reason", reason)
+		return
 	}
+	blocked := status == "blocked"
+	slog.Error("task failed, scheduling retry", "task_id", taskID, "reason", reason)
 
 	backoffSecs := 15 * (1 << min(uint(failures), 10))
 	retryAfter := time.Now().Add(time.Duration(backoffSecs) * time.Second)

@@ -114,6 +114,21 @@ func (s *MCPServer) handleDelegateTask(ctx context.Context, raw json.RawMessage,
 		return nil, fmt.Errorf("cannot delegate to %s: outside team hierarchy", assignee.Name)
 	}
 
+	// Delegations from within a task run inherit the parent's chain depth so
+	// the bound in exceedsDelegationDepth holds across the MCP path too.
+	depth := 0
+	if caller.TaskID != "" {
+		parent, err := s.pgClient.GetTask(ctx, caller.TaskID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load parent task: %w", err)
+		}
+		if exceedsDelegationDepth(parent.DelegationDepth) {
+			return nil, fmt.Errorf("delegation chain too deep (depth %d, max %d): do the work yourself or report back to your manager",
+				parent.DelegationDepth, maxDelegationDepth)
+		}
+		depth = parent.DelegationDepth + 1
+	}
+
 	body := "## Goal\n" + goal
 	if taskContext != "" {
 		body += "\n\n## Context\n" + taskContext
@@ -123,11 +138,12 @@ func (s *MCPServer) handleDelegateTask(ctx context.Context, raw json.RawMessage,
 	}
 
 	t := &Task{
-		Title:    title,
-		Body:     body,
-		Priority: priority,
-		Creator:  &EmployeeBrief{ID: creator.ID, Name: creator.Name, Title: creator.Title, Role: creator.Role},
-		Assignee: &EmployeeBrief{ID: assignee.ID, Name: assignee.Name, Title: assignee.Title, Role: assignee.Role},
+		Title:           title,
+		Body:            body,
+		Priority:        priority,
+		Creator:         &EmployeeBrief{ID: creator.ID, Name: creator.Name, Title: creator.Title, Role: creator.Role},
+		Assignee:        &EmployeeBrief{ID: assignee.ID, Name: assignee.Name, Title: assignee.Title, Role: assignee.Role},
+		DelegationDepth: depth,
 	}
 	if err := s.pgClient.CreateTask(ctx, t, nil); err != nil {
 		return nil, fmt.Errorf("failed to create task: %w", err)
@@ -195,10 +211,7 @@ func (s *MCPServer) handleSubmitResult(ctx context.Context, raw json.RawMessage,
 	if _, err := s.requireTaskAccess(ctx, caller, taskID); err != nil {
 		return nil, err
 	}
-	if err := s.pgClient.UpdateTask(ctx, taskID, nil, nil, nil, nil, &result); err != nil {
-		return nil, fmt.Errorf("failed to update result: %w", err)
-	}
-	if err := s.pgClient.UpdateTaskStatus(ctx, taskID, "needs_review", ""); err != nil {
+	if err := s.pgClient.SubmitTaskResult(ctx, taskID, result); err != nil {
 		return nil, fmt.Errorf("failed to submit: %w", err)
 	}
 	return map[string]any{"status": "submitted_for_review", "task_id": taskID}, nil
@@ -431,6 +444,10 @@ func (s *MCPServer) handleRunCommand(ctx context.Context, raw json.RawMessage, c
 	if err := validateCommand(command); err != nil {
 		return nil, err
 	}
+	// Code execution is sandbox-only: never fall back to running on the host.
+	if s.config == nil || !s.config.Sandbox.Enabled {
+		return nil, fmt.Errorf("command execution requires the sandbox: enable sandbox in config (host execution is not permitted)")
+	}
 
 	task, _ := s.pgClient.GetTask(ctx, caller.TaskID)
 	if task == nil || task.ProjectID == nil {
@@ -445,14 +462,7 @@ func (s *MCPServer) handleRunCommand(ctx context.Context, raw json.RawMessage, c
 	defer cancel()
 
 	workdir := project.RootDir(s.config)
-	var out, errOut string
-	var exitCode int
-	var execErr error
-	if s.config != nil && s.config.Sandbox.Enabled {
-		out, errOut, exitCode, execErr = runSandboxedCommand(cmdCtx, s.config.Sandbox, workdir, command, nil)
-	} else {
-		out, errOut, exitCode, execErr = runHostCommand(cmdCtx, workdir, command, nil)
-	}
+	out, errOut, exitCode, execErr := runSandboxedCommand(cmdCtx, s.config.Sandbox, workdir, command, nil)
 	if execErr != nil {
 		return nil, execErr
 	}

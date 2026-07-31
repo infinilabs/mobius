@@ -40,6 +40,13 @@ func (a *BashAdapter) Start(ctx context.Context, hb HeartbeatContext) (string, e
 	if command == "" {
 		return "", fmt.Errorf("bash adapter requires a command in ModelID")
 	}
+	// Code execution is sandbox-only: never fall back to running on the host.
+	if a.config == nil || !a.config.Sandbox.Enabled {
+		return "", fmt.Errorf("bash adapter requires the sandbox: enable sandbox in config (host execution is not permitted)")
+	}
+	if _, lookErr := exec.LookPath("docker"); lookErr != nil {
+		return "", fmt.Errorf("sandbox enabled but docker not found: install Docker and run `make build-sandbox`")
+	}
 
 	runID := generateID()
 
@@ -67,23 +74,10 @@ func (a *BashAdapter) Start(ctx context.Context, hb HeartbeatContext) (string, e
 
 	run := &bashRun{status: RunActive, done: make(chan struct{}), tempDir: tempDir}
 
-	if a.config != nil && a.config.Sandbox.Enabled {
-		if _, lookErr := exec.LookPath("docker"); lookErr != nil {
-			if tempDir != "" {
-				os.RemoveAll(tempDir)
-			}
-			return "", fmt.Errorf("sandbox enabled but docker not found: install Docker and run `make build-sandbox`")
-		}
-		run.containerName = "mobius-bash-" + runID
-		args := a.config.Sandbox.dockerRunArgs(workdir, run.containerName, env)
-		args = append(args, "sh", "-c", command)
-		run.cmd = exec.CommandContext(ctx, "docker", args...)
-	} else {
-		run.cmd = exec.CommandContext(ctx, "sh", "-c", command)
-		run.cmd.Dir = workdir
-		run.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		run.cmd.Env = append(os.Environ(), env...)
-	}
+	run.containerName = "mobius-bash-" + runID
+	args := a.config.Sandbox.dockerRunArgs(workdir, run.containerName, env)
+	args = append(args, "sh", "-c", command)
+	run.cmd = exec.CommandContext(ctx, "docker", args...)
 	run.cmd.Stdout = &run.stdout
 	run.cmd.Stderr = &run.stderr
 

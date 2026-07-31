@@ -5,11 +5,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
 	"runtime"
 	"sync/atomic"
-	"syscall"
 )
 
 // SandboxConfig controls how host-executing commands (run_command, the bash
@@ -107,7 +105,7 @@ func runSandboxedCommand(ctx context.Context, sb SandboxConfig, workdir, command
 	case ProviderDocker:
 		return runDockerCommand(ctx, sb, workdir, command, env)
 	default:
-		return runHostCommand(ctx, workdir, command, env)
+		return "", "", -1, fmt.Errorf("sandbox provider %q cannot execute commands: configure provider \"docker\" or \"nsjail\" (host execution is not permitted)", provider)
 	}
 }
 
@@ -135,39 +133,6 @@ func runDockerCommand(ctx context.Context, sb SandboxConfig, workdir, command st
 	return outBuf.String(), errBuf.String(), 0, nil
 }
 
-// runHostCommand is the legacy unsandboxed path: `sh -c <command>` directly on
-// the host, used only when the sandbox is disabled in config.
-func runHostCommand(ctx context.Context, workdir, command string, env []string) (stdout, stderr string, exitCode int, err error) {
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
-	cmd.Dir = workdir
-	cmd.Env = append(os.Environ(), "PATH=/usr/local/bin:/usr/bin:/bin")
-	cmd.Env = append(cmd.Env, env...)
-
-	// Run sh in its own process group and, on ctx timeout/cancel, kill the whole
-	// group — otherwise CommandContext only signals sh and leaves its children
-	// (e.g. a spawned `npm`/`go build`) orphaned and still running.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process != nil {
-			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
-		return nil
-	}
-
-	var outBuf, errBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &errBuf
-
-	runErr := cmd.Run()
-	if runErr != nil {
-		if exitErr, ok := runErr.(*exec.ExitError); ok {
-			return outBuf.String(), errBuf.String(), exitErr.ExitCode(), nil
-		}
-		return outBuf.String(), errBuf.String(), -1, fmt.Errorf("command execution failed: %w", runErr)
-	}
-	return outBuf.String(), errBuf.String(), 0, nil
-}
-
 // runSandboxedArgv runs a command directly via argv inside a sandbox
 func runSandboxedArgv(ctx context.Context, sb SandboxConfig, workdir string, argv []string, env []string) (stdout, stderr string, exitCode int, err error) {
 	provider := sb.Provider
@@ -188,7 +153,7 @@ func runSandboxedArgv(ctx context.Context, sb SandboxConfig, workdir string, arg
 	case ProviderDocker:
 		return runDockerArgv(ctx, sb, workdir, argv, env)
 	default:
-		return runHostArgv(ctx, workdir, argv, env)
+		return "", "", -1, fmt.Errorf("sandbox provider %q cannot execute commands: configure provider \"docker\" or \"nsjail\" (host execution is not permitted)", provider)
 	}
 }
 
@@ -211,37 +176,6 @@ func runDockerArgv(ctx context.Context, sb SandboxConfig, workdir string, argv [
 			return outBuf.String(), errBuf.String(), exitErr.ExitCode(), nil
 		}
 		return outBuf.String(), errBuf.String(), -1, fmt.Errorf("sandbox execution failed: %w", runErr)
-	}
-	return outBuf.String(), errBuf.String(), 0, nil
-}
-
-func runHostArgv(ctx context.Context, workdir string, argv []string, env []string) (stdout, stderr string, exitCode int, err error) {
-	if len(argv) == 0 {
-		return "", "", -1, fmt.Errorf("empty argv")
-	}
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Dir = workdir
-	cmd.Env = append(os.Environ(), "PATH=/usr/local/bin:/usr/bin:/bin")
-	cmd.Env = append(cmd.Env, env...)
-
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process != nil {
-			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
-		return nil
-	}
-
-	var outBuf, errBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &errBuf
-
-	runErr := cmd.Run()
-	if runErr != nil {
-		if exitErr, ok := runErr.(*exec.ExitError); ok {
-			return outBuf.String(), errBuf.String(), exitErr.ExitCode(), nil
-		}
-		return outBuf.String(), errBuf.String(), -1, fmt.Errorf("command execution failed: %w", runErr)
 	}
 	return outBuf.String(), errBuf.String(), 0, nil
 }

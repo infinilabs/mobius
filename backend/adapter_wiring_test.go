@@ -15,7 +15,7 @@ import (
 // header — that is the entire mechanism by which an external claude agent gains
 // authenticated access to mobius tools.
 func TestClaudeCodeWriteMCPConfig(t *testing.T) {
-	a := NewClaudeCodeAdapter("ws://localhost:1983/mcp", func(agentID, taskID string) string {
+	a := NewClaudeCodeAdapter(nil, "ws://localhost:1983/mcp", func(agentID, taskID string) string {
 		return "tok-" + agentID + "-" + taskID
 	})
 	path := a.writeMCPConfig(HeartbeatContext{AgentID: "ag1", TaskID: "tk1"})
@@ -56,12 +56,12 @@ func TestClaudeCodeWriteMCPConfig(t *testing.T) {
 // With no minter or no address, MCP wiring is disabled and no config is written
 // (the CLI then runs with no mobius tools rather than a broken/unauth config).
 func TestClaudeCodeWriteMCPConfig_Disabled(t *testing.T) {
-	if p := NewClaudeCodeAdapter("ws://x/mcp", nil).writeMCPConfig(HeartbeatContext{}); p != "" {
+	if p := NewClaudeCodeAdapter(nil, "ws://x/mcp", nil).writeMCPConfig(HeartbeatContext{}); p != "" {
 		os.Remove(p)
 		t.Errorf("nil minter should produce no config, got %q", p)
 	}
 	mint := func(_, _ string) string { return "t" }
-	if p := NewClaudeCodeAdapter("", mint).writeMCPConfig(HeartbeatContext{}); p != "" {
+	if p := NewClaudeCodeAdapter(nil, "", mint).writeMCPConfig(HeartbeatContext{}); p != "" {
 		os.Remove(p)
 		t.Errorf("empty addr should produce no config, got %q", p)
 	}

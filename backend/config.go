@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -226,11 +227,18 @@ type Config struct {
 
 	Server struct {
 		Port          int    `yaml:"port" json:"port"`
+		Host          string `yaml:"host" json:"host"`
+		APIToken      string `yaml:"api_token" json:"-"`
 		Mode          string `yaml:"mode" json:"mode"`
 		LogMaxSizeMB  int    `yaml:"log_max_size_mb" json:"log_max_size_mb"`
 		LogMaxBackups int    `yaml:"log_max_backups" json:"log_max_backups"`
 		LogMaxAgeDays int    `yaml:"log_max_age_days" json:"log_max_age_days"`
 	} `yaml:"server" json:"server"`
+
+	Dispatcher struct {
+		// RunTimeoutMinutes caps a single agent run (plan 1.8). 0 = default (10).
+		RunTimeoutMinutes int `yaml:"run_timeout_minutes,omitempty" json:"run_timeout_minutes,omitempty"`
+	} `yaml:"dispatcher,omitempty" json:"dispatcher,omitempty"`
 
 	Postgres      PostgresConfig      `yaml:"postgres" json:"postgres"`
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch" json:"elasticsearch"`
@@ -264,6 +272,16 @@ type SettingsData struct {
 	Upload            UploadConfig        `json:"chat_upload"`
 	Sandbox           SandboxConfig       `json:"sandbox"`
 	EffectiveProvider string              `json:"effective_provider"`
+}
+
+// RunTimeout is the wall-clock cap for a single agent run (plan 1.8),
+// configurable via dispatcher.run_timeout_minutes. Nil-safe so tests and
+// adapters constructed without a config get the default.
+func (c *Config) RunTimeout() time.Duration {
+	if c == nil || c.Dispatcher.RunTimeoutMinutes <= 0 {
+		return 10 * time.Minute
+	}
+	return time.Duration(c.Dispatcher.RunTimeoutMinutes) * time.Minute
 }
 
 func (c *Config) MaxUploadBytes() int64 {

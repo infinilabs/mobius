@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -319,7 +321,12 @@ func main() {
 		})
 	}
 
-	h := func(f http.HandlerFunc) http.Handler { return logMW(f) }
+	auth := newAPIAuth(cfg.Server.APIToken)
+	if !auth.enabled() {
+		slog.Warn("API authentication disabled: set server.api_token or MOBIUS_API_TOKEN to require a token on /api/* routes")
+	}
+
+	h := func(f http.HandlerFunc) http.Handler { return logMW(auth.middleware(f)) }
 
 	// Config & settings
 	mux.Handle("/api/health", h(api.HealthCheck))
@@ -455,8 +462,17 @@ func main() {
 	if port == 0 {
 		port = 1983
 	}
+	host := cfg.Server.Host
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	if !isLoopbackHost(host) && !auth.enabled() {
+		fmt.Fprintf(os.Stderr, "FATAL: refusing to bind %s without authentication: set server.api_token or MOBIUS_API_TOKEN\n", host)
+		os.Exit(1)
+	}
 
 	slog.Info("Starting Mobius",
+		slog.String("host", host),
 		slog.Int("port", port),
 		slog.String("mode", cfg.Server.Mode),
 		slog.String("log_format", map[bool]string{true: "text", false: "json"}[debug]),
@@ -464,7 +480,7 @@ func main() {
 	)
 
 	server := &http.Server{
-		Addr:         fmt.Sprintf(":%d", port),
+		Addr:         net.JoinHostPort(host, strconv.Itoa(port)),
 		Handler:      mux,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 120 * time.Second,
@@ -506,7 +522,7 @@ func main() {
 		claudeMintSession = mcpServer.MintSession
 	}
 	adapterRegistry.Register(AdapterClaudeCode, NewClaudeCodeAdapter(
-		fmt.Sprintf("ws://localhost:%d/mcp", port), claudeMintSession,
+		cfg, fmt.Sprintf("ws://localhost:%d/mcp", port), claudeMintSession,
 	))
 	adapterRegistry.Register(AdapterBash, NewBashAdapter(cfg))
 	httpWebhookAdapter := NewHTTPWebhookAdapter()

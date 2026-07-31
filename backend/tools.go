@@ -946,7 +946,24 @@ func managerDirectives() string {
 		"Reuse your existing team members across multiple tasks."
 }
 
+// maxDelegationDepth bounds delegation chains (plan 1.1). A delegated task
+// carries its parent's depth + 1, so a runaway delegate spiral — including an
+// A→B→A ping-pong, which depth alone cannot distinguish from a legitimate
+// chain — terminates instead of recursing forever.
+const maxDelegationDepth = 5
+
+// exceedsDelegationDepth reports whether delegating from a task at parentDepth
+// would push the chain past maxDelegationDepth.
+func exceedsDelegationDepth(parentDepth int) bool {
+	return parentDepth+1 > maxDelegationDepth
+}
+
 func canDelegate(creator, assignee *Employee) bool {
+	// Delegating to yourself creates a task loop that never converges: the same
+	// agent keeps re-receiving its own work. Refused for everyone, CEO included.
+	if creator.ID == assignee.ID {
+		return false
+	}
 	if creator.Role == "CEO" {
 		return true
 	}

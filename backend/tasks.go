@@ -22,6 +22,9 @@ type Task struct {
 	Creator      *EmployeeBrief `json:"creator"`
 	Result       string         `json:"result"`
 	FailureCount int            `json:"failure_count"`
+	// DelegationDepth counts hops from the root task (plan 1.1). Populated by
+	// GetTask; list queries leave it zero since only delegation paths need it.
+	DelegationDepth int `json:"delegation_depth"`
 	Dependencies []string       `json:"dependencies"`
 	IsScheduled  bool           `json:"is_scheduled"`
 	CronExpr     string         `json:"cron_expr,omitempty"`
@@ -169,7 +172,7 @@ func (pg *PGClient) GetTask(ctx context.Context, id string) (*Task, error) {
 
 	err := pg.pool.QueryRow(ctx, `
 		SELECT t.id, t.title, t.body, t.status, t.priority, t.result,
-		       t.failure_count, t.created_at, t.updated_at, t.completed_at,
+		       t.failure_count, t.delegation_depth, t.created_at, t.updated_at, t.completed_at,
 		       t.assignee_id, a.name, a.title, a.role,
 		       t.creator_id, c.name, c.title, c.role,
 		       t.is_scheduled, COALESCE(t.cron_expr, '') AS cron_expr, t.next_run_at, t.repeat_times, t.parent_task_id,
@@ -181,7 +184,7 @@ func (pg *PGClient) GetTask(ctx context.Context, id string) (*Task, error) {
 		WHERE t.id = $1
 	`, id).Scan(
 		&t.ID, &t.Title, &t.Body, &t.Status, &t.Priority, &t.Result,
-		&t.FailureCount, &t.CreatedAt, &t.UpdatedAt, &t.CompletedAt,
+		&t.FailureCount, &t.DelegationDepth, &t.CreatedAt, &t.UpdatedAt, &t.CompletedAt,
 		&assigneeID, &assigneeName, &assigneeTitle, &assigneeRole,
 		&creatorID, &creatorName, &creatorTitle, &creatorRole,
 		&t.IsScheduled, &t.CronExpr, &t.NextRunAt, &t.RepeatTimes, &t.ParentTaskID,
@@ -255,10 +258,10 @@ func (pg *PGClient) CreateTask(ctx context.Context, t *Task, depIDs []string) er
 	}
 
 	err = tx.QueryRow(ctx, `
-		INSERT INTO tasks (title, body, status, priority, assignee_id, creator_id, project_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO tasks (title, body, status, priority, assignee_id, creator_id, project_id, delegation_depth)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id, created_at, updated_at
-	`, t.Title, t.Body, status, priority, assigneeID, creatorID, t.ProjectID).Scan(
+	`, t.Title, t.Body, status, priority, assigneeID, creatorID, t.ProjectID, t.DelegationDepth).Scan(
 		&t.ID, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert task: %w", err)
@@ -503,6 +506,11 @@ func (pg *PGClient) UpdateSchedule(ctx context.Context, id string, cronExpr *str
 	return nil
 }
 
+// maxAutoRejections caps the autonomous review loop (plan 1.6): once a task has
+// been rejected this many times, the dispatcher stops re-arming its creator as
+// reviewer and the task sits in needs_review for a human to resolve.
+const maxAutoRejections = 3
+
 var validTransitions = map[string]map[string]bool{
 	"todo":         {"ready": true, "blocked": true},
 	"ready":        {"in_progress": true, "blocked": true},
@@ -571,12 +579,29 @@ func (pg *PGClient) UpdateTaskStatus(ctx context.Context, id, newStatus, actorID
 		// re-blocks the moment it fails once more.
 		sets = "status = $1, updated_at = NOW(), failure_count = 0, retry_after = NULL"
 	case newStatus == "ready" && currentStatus == "needs_review":
-		sets = "status = $1, updated_at = NOW(), result = ''"
+		sets = "status = $1, updated_at = NOW(), result = '', rejection_count = rejection_count + 1"
 	}
 
 	_, err = tx.Exec(ctx, fmt.Sprintf("UPDATE tasks SET %s WHERE id = $2", sets), args...)
 	if err != nil {
 		return fmt.Errorf("update status: %w", err)
+	}
+
+	// On the rejection that reaches the cap, leave an audit trail: from now on
+	// the dispatcher will no longer arm an automatic reviewer for this task
+	// (see claimReviewTasks), so a human has to pick it up.
+	if newStatus == "ready" && currentStatus == "needs_review" {
+		var rejections int
+		if err := tx.QueryRow(ctx, "SELECT rejection_count FROM tasks WHERE id = $1", id).Scan(&rejections); err != nil {
+			return fmt.Errorf("read rejection_count: %w", err)
+		}
+		if rejections == maxAutoRejections {
+			if _, err := tx.Exec(ctx,
+				"INSERT INTO task_comments (task_id, author_id, content) VALUES ($1, NULL, $2)",
+				id, fmt.Sprintf("System: Rejected %d times. Automatic review is paused; the next submission needs human review.", rejections)); err != nil {
+				return fmt.Errorf("insert rejection-cap comment: %w", err)
+			}
+		}
 	}
 
 	// Persist actor feedback (e.g. a reviewer's rejection reason) as a task
@@ -614,6 +639,42 @@ func (pg *PGClient) UpdateTaskStatus(ctx context.Context, id, newStatus, actorID
 		pg.reindexTask(ctx, cid)
 	}
 
+	return nil
+}
+
+// SubmitTaskResult writes a task's result and flips it to needs_review in a
+// single transaction (plan 1.7): there is no window where the result is set
+// but the status is still in_progress for a concurrent reclaimer or reviewer
+// to act on, and a failed status flip cannot strand a half-written result.
+func (pg *PGClient) SubmitTaskResult(ctx context.Context, id, result string) error {
+	if result == "" {
+		return fmt.Errorf("cannot submit an empty result")
+	}
+
+	tx, err := pg.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var currentStatus string
+	if err := tx.QueryRow(ctx, "SELECT status FROM tasks WHERE id = $1 FOR UPDATE", id).Scan(&currentStatus); err != nil {
+		return fmt.Errorf("get task status: %w", err)
+	}
+	if allowed, ok := validTransitions[currentStatus]; !ok || !allowed["needs_review"] {
+		return fmt.Errorf("invalid transition from %s to needs_review", currentStatus)
+	}
+
+	if _, err := tx.Exec(ctx,
+		"UPDATE tasks SET result = $1, status = 'needs_review', updated_at = NOW() WHERE id = $2",
+		result, id); err != nil {
+		return fmt.Errorf("submit result: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	pg.reindexTask(ctx, id)
 	return nil
 }
 
