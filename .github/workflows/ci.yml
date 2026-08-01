@@ -1,0 +1,56 @@
+# CI (plan 5.4): every push/PR must pass the same gate as local `make sanity`
+# — go vet, go build, go test -race (with a real Postgres so the DB-backed
+# dispatcher/state-machine tests run instead of skipping), tsc, eslint.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  sanity:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: mobius
+          POSTGRES_PASSWORD: mobius
+          POSTGRES_DB: mobius
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mobius"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # make sanity runs tsc/eslint via npx; install frontend deps first.
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Sanity gate (vet + build + race tests + tsc + eslint)
+        run: make sanity
+
+      - name: Go coverage report (target ≥ 40%)
+        run: |
+          go test -count=1 -coverprofile=cover.out ./...
+          go tool cover -func=cover.out | tail -1
+        working-directory: backend
