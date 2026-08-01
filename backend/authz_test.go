@@ -233,6 +233,40 @@ func TestAuthorizeToolCall(t *testing.T) {
 		}
 	})
 
+	t.Run("update_task_status on foreign task refused", func(t *testing.T) {
+		err := authorizeToolCall(ctx, s, "worker-b1", "update_task_status",
+			map[string]any{"task_id": "t1", "status": "blocked"}, "")
+		if err == nil {
+			t.Error("stranger flipping another team's task status must be refused")
+		}
+	})
+
+	t.Run("add_task_comment scoped to task participants", func(t *testing.T) {
+		err := authorizeToolCall(ctx, s, "worker-b1", "add_task_comment",
+			map[string]any{"task_id": "t1", "content": "hi"}, "")
+		if err == nil {
+			t.Error("stranger commenting on another team's task must be refused")
+		}
+		err = authorizeToolCall(ctx, s, "worker-a1", "add_task_comment",
+			map[string]any{"task_id": "t1", "content": "hi"}, "")
+		if err != nil {
+			t.Errorf("assignee commenting on own task should be allowed: %v", err)
+		}
+	})
+
+	t.Run("assign_skill scoped to self or managed", func(t *testing.T) {
+		err := authorizeToolCall(ctx, s, "worker-b1", "assign_skill",
+			map[string]any{"employee_id": "worker-a1", "skill_id": "s1"}, "")
+		if err == nil {
+			t.Error("assigning a skill to an employee outside your subtree must be refused")
+		}
+		err = authorizeToolCall(ctx, s, "worker-b1", "assign_skill",
+			map[string]any{"employee_id": "worker-b1", "skill_id": "s1"}, "")
+		if err != nil {
+			t.Errorf("self skill assignment should be allowed: %v", err)
+		}
+	})
+
 	t.Run("reassignment requires delegation authority", func(t *testing.T) {
 		// worker-a1 owns t1 but is not worker-b1's manager: handing the task to
 		// worker-b1 would be delegation without canDelegate.
