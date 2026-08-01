@@ -91,7 +91,7 @@ func TestClaimReadyTasks_SkipsLockedRows(t *testing.T) {
 	worker := newTestEmployee(t, pg, "Worker", "Engineer")
 	id := newTestTask(t, pg, "locked elsewhere", "ready", worker, "")
 
-	tx, err := pg.pool.Begin(ctx)
+	tx, err := pg.Pool().Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin locking tx: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestSweepScheduledTasks(t *testing.T) {
 
 	childCount := func(parent string) int {
 		var n int
-		if err := pg.pool.QueryRow(ctx,
+		if err := pg.Pool().QueryRow(ctx,
 			"SELECT COUNT(*) FROM tasks WHERE parent_task_id = $1", parent).Scan(&n); err != nil {
 			t.Fatalf("count children: %v", err)
 		}
@@ -224,7 +224,7 @@ func TestSweepScheduledTasks(t *testing.T) {
 			row.IsScheduled, row.NextRunAt)
 	}
 	var childStatus, childAssignee string
-	if err := pg.pool.QueryRow(ctx,
+	if err := pg.Pool().QueryRow(ctx,
 		"SELECT status, assignee_id FROM tasks WHERE parent_task_id = $1", interval,
 	).Scan(&childStatus, &childAssignee); err != nil {
 		t.Fatalf("read child: %v", err)
@@ -272,7 +272,7 @@ func TestSweepScheduledTasks_RepeatExhaustion(t *testing.T) {
 		t.Errorf("exhausted template must deactivate, got scheduled=%v next=%v", row.IsScheduled, row.NextRunAt)
 	}
 	var n int
-	if err := pg.pool.QueryRow(ctx, "SELECT COUNT(*) FROM tasks WHERE parent_task_id = $1", id).Scan(&n); err != nil {
+	if err := pg.Pool().QueryRow(ctx, "SELECT COUNT(*) FROM tasks WHERE parent_task_id = $1", id).Scan(&n); err != nil {
 		t.Fatalf("count children: %v", err)
 	}
 	if n != 1 {

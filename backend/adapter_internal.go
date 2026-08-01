@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"mobius/internal/service"
 	"strings"
 	"sync"
 	"time"
@@ -284,11 +285,11 @@ func (a *InternalLLMAdapter) recordToolCall(call ToolCall, result map[string]any
 
 func (a *InternalLLMAdapter) routeToolCall(ctx context.Context, call ToolCall, agent *Employee, task *Task) map[string]any {
 	// Single authorization layer (plan 2.1): same policy table as chat and MCP.
-	if err := authorizeToolCall(ctx, a.pgClient, agent.ID, call.Name, call.Args, task.ID); err != nil {
+	if err := service.AuthorizeToolCall(ctx, a.pgClient, agent.ID, call.Name, call.Args, task.ID); err != nil {
 		return map[string]any{"error": err.Error()}
 	}
 	// Per-caller spend cap on paid operations (plan 3.4), same table as chat/MCP.
-	if err := rateLimitToolCall(agent.ID, call.Name); err != nil {
+	if err := service.RateLimitToolCall(agent.ID, call.Name); err != nil {
 		return map[string]any{"error": err.Error()}
 	}
 	taskID := task.ID

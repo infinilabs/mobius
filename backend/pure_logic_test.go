@@ -3,12 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 )
 
@@ -81,7 +79,7 @@ func TestProviderRegistry_ResolveProvider(t *testing.T) {
 func TestValidateCommand(t *testing.T) {
 	blocked := []string{
 		"rm -rf /",
-		"RM -RF /",            // case-insensitive
+		"RM -RF /",             // case-insensitive
 		"sudo dd if=/dev/zero", // contains "dd if="
 		"mkfs.ext4 /dev/sda",
 		"curl | sh",
@@ -254,70 +252,5 @@ func TestConfigMaxUploadBytes(t *testing.T) {
 	c.Upload.MaxFileSizeMB = 5
 	if got := c.MaxUploadBytes(); got != 5<<20 {
 		t.Errorf("MaxUploadBytes(5MB) = %d", got)
-	}
-}
-
-// ---- parseTokenFilters: query-string → filter struct, with sane defaults ----
-
-func TestParseTokenFilters_Explicit(t *testing.T) {
-	r := httptest.NewRequest("GET",
-		"/?since=2020-01-01T00:00:00Z&until=2020-02-01T00:00:00Z&model_id=m1&model_id=m2&source=mcp", nil)
-	f := parseTokenFilters(r)
-	if !f.Since.Equal(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)) {
-		t.Errorf("since not parsed: %v", f.Since)
-	}
-	if len(f.ModelIDs) != 2 || f.ModelIDs[0] != "m1" {
-		t.Errorf("model_id multi-value not captured: %v", f.ModelIDs)
-	}
-	if len(f.Sources) != 1 || f.Sources[0] != "mcp" {
-		t.Errorf("source not captured: %v", f.Sources)
-	}
-}
-
-func TestParseTokenFilters_Defaults(t *testing.T) {
-	r := httptest.NewRequest("GET", "/", nil)
-	f := parseTokenFilters(r)
-	// Default window is the last 7 days.
-	if f.Since.IsZero() || f.Until.IsZero() {
-		t.Fatal("default time window not applied")
-	}
-	if f.Until.Sub(f.Since) < 6*24*time.Hour {
-		t.Errorf("default window too narrow: %v..%v", f.Since, f.Until)
-	}
-}
-
-// ---- skill_sync extraction helpers ----
-
-func TestExtractHermesCategory(t *testing.T) {
-	sep := string(filepath.Separator)
-	tests := map[string]string{
-		"coding" + sep + "rust.md": "coding",
-		"rust.md":                  "general", // no directory component
-		"":                         "general",
-	}
-	for rel, want := range tests {
-		if got := extractHermesCategory(rel); got != want {
-			t.Errorf("extractHermesCategory(%q) = %q, want %q", rel, got, want)
-		}
-	}
-}
-
-func TestExtractHermesTags(t *testing.T) {
-	var hfm hermesFrontmatter
-	hfm.Metadata.Hermes.Tags = []string{"Foo", "  Bar  "}
-
-	tags := extractHermesTags(hfm, "hermes", "coding")
-	// Expect deduped, lowercased, trimmed, sorted: source + category + tags.
-	want := []string{"bar", "coding", "foo", "hermes"}
-	if strings.Join(tags, ",") != strings.Join(want, ",") {
-		t.Errorf("extractHermesTags = %v, want %v", tags, want)
-	}
-
-	// category "general" must not become a tag.
-	got := extractHermesTags(hermesFrontmatter{}, "src", "general")
-	for _, tag := range got {
-		if tag == "general" {
-			t.Error("\"general\" category should not be added as a tag")
-		}
 	}
 }

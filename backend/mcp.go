@@ -9,6 +9,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"log/slog"
+	"mobius/internal/service"
+	"mobius/internal/tools"
 	"os"
 	"runtime/debug"
 	"strings"
@@ -126,39 +128,39 @@ func (s *MCPServer) registerCoreTools() {
 	}
 
 	bindings := []toolBinding{
-		{delegateTaskToolDef, s.handleDelegateTask},
-		{hireEmployeeToolDef, s.handleHireEmployee},
-		{submitTaskResultToolDef, s.handleSubmitResult},
-		{reviewTaskToolDef, s.handleReviewTask},
-		{verifyDeliverableToolDef, s.handleVerifyDeliverable},
-		{listTeamToolDef, s.handleListTeam},
-		{storeMemoryToolDef, s.handleStoreMemory},
-		{forgetMemoryToolDef, s.handleForgetMemory},
-		{writeFileToolDef, s.handleWriteFile},
-		{readFileToolDef, s.handleReadFile},
-		{searchAssetsToolDef, s.handleSearchAssets},
-		{listAssetsToolDef, s.handleListAssets},
-		{runCommandToolDef, s.handleRunCommand},
-		{listTasksToolDef, s.handleListTasks},
-		{getTaskToolDef, s.handleGetTask},
-		{updateTaskToolDef, s.handleUpdateTask},
-		{updateTaskStatusToolDef, s.handleUpdateTaskStatus},
-		{addTaskCommentToolDef, s.handleAddTaskComment},
-		{listEmployeesToolDef, s.handleListEmployees},
-		{getEmployeeToolDef, s.handleGetEmployee},
-		{updateEmployeeToolDef, s.handleUpdateEmployee},
-		{listProjectsToolDef, s.handleListProjects},
-		{createProjectToolDef, s.handleCreateProject},
-		{updateProjectToolDef, s.handleUpdateProject},
-		{listPromptsToolDef, s.handleListPrompts},
-		{createPromptToolDef, s.handleCreatePrompt},
-		{updatePromptToolDef, s.handleUpdatePrompt},
-		{deletePromptToolDef, s.handleDeletePrompt},
-		{listSkillsToolDef, s.handleListSkills},
-		{assignSkillToolDef, s.handleAssignSkill},
-		{unassignSkillToolDef, s.handleUnassignSkill},
-		{askUserToolDef, s.handleAskUser},
-		{suggestTasksToolDef, s.handleSuggestTasks},
+		{tools.DelegateTaskToolDef, s.handleDelegateTask},
+		{tools.HireEmployeeToolDef, s.handleHireEmployee},
+		{tools.SubmitTaskResultToolDef, s.handleSubmitResult},
+		{tools.ReviewTaskToolDef, s.handleReviewTask},
+		{tools.VerifyDeliverableToolDef, s.handleVerifyDeliverable},
+		{tools.ListTeamToolDef, s.handleListTeam},
+		{tools.StoreMemoryToolDef, s.handleStoreMemory},
+		{tools.ForgetMemoryToolDef, s.handleForgetMemory},
+		{tools.WriteFileToolDef, s.handleWriteFile},
+		{tools.ReadFileToolDef, s.handleReadFile},
+		{tools.SearchAssetsToolDef, s.handleSearchAssets},
+		{tools.ListAssetsToolDef, s.handleListAssets},
+		{tools.RunCommandToolDef, s.handleRunCommand},
+		{tools.ListTasksToolDef, s.handleListTasks},
+		{tools.GetTaskToolDef, s.handleGetTask},
+		{tools.UpdateTaskToolDef, s.handleUpdateTask},
+		{tools.UpdateTaskStatusToolDef, s.handleUpdateTaskStatus},
+		{tools.AddTaskCommentToolDef, s.handleAddTaskComment},
+		{tools.ListEmployeesToolDef, s.handleListEmployees},
+		{tools.GetEmployeeToolDef, s.handleGetEmployee},
+		{tools.UpdateEmployeeToolDef, s.handleUpdateEmployee},
+		{tools.ListProjectsToolDef, s.handleListProjects},
+		{tools.CreateProjectToolDef, s.handleCreateProject},
+		{tools.UpdateProjectToolDef, s.handleUpdateProject},
+		{tools.ListPromptsToolDef, s.handleListPrompts},
+		{tools.CreatePromptToolDef, s.handleCreatePrompt},
+		{tools.UpdatePromptToolDef, s.handleUpdatePrompt},
+		{tools.DeletePromptToolDef, s.handleDeletePrompt},
+		{tools.ListSkillsToolDef, s.handleListSkills},
+		{tools.AssignSkillToolDef, s.handleAssignSkill},
+		{tools.UnassignSkillToolDef, s.handleUnassignSkill},
+		{tools.AskUserToolDef, s.handleAskUser},
+		{tools.SuggestTasksToolDef, s.handleSuggestTasks},
 	}
 
 	s.mu.Lock()
@@ -249,9 +251,9 @@ func (s *MCPServer) HandleMessage(ctx context.Context, msg []byte, caller MCPCal
 		var result any
 		var err error
 		var panicked bool
-		if aerr := authorizeToolCall(ctx, s.pgClient, caller.AgentID, params.Name, parseArgs(params.Arguments), caller.TaskID); aerr != nil {
+		if aerr := service.AuthorizeToolCall(ctx, s.pgClient, caller.AgentID, params.Name, parseArgs(params.Arguments), caller.TaskID); aerr != nil {
 			err = aerr
-		} else if rerr := rateLimitToolCall(caller.AgentID, params.Name); rerr != nil {
+		} else if rerr := service.RateLimitToolCall(caller.AgentID, params.Name); rerr != nil {
 			// Per-caller spend cap on paid operations (plan 3.4).
 			err = rerr
 		} else {

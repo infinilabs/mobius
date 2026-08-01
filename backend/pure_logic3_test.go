@@ -1,6 +1,8 @@
 package main
 
 import (
+	"mobius/internal/domain"
+	"mobius/internal/seed"
 	"testing"
 )
 
@@ -37,9 +39,9 @@ func TestNewEvent(t *testing.T) {
 // skillIDFromName must be deterministic (the same skill name always maps to the
 // same id) and collision-distinct for different names — ids key skill storage.
 func TestSkillIDFromName(t *testing.T) {
-	a1 := skillIDFromName("frontend-design")
-	a2 := skillIDFromName("frontend-design")
-	b := skillIDFromName("backend-design")
+	a1 := domain.SkillIDFromName("frontend-design")
+	a2 := domain.SkillIDFromName("frontend-design")
+	b := domain.SkillIDFromName("backend-design")
 	if a1 != a2 {
 		t.Errorf("non-deterministic: %q != %q", a1, a2)
 	}
@@ -54,7 +56,10 @@ func TestSkillIDFromName(t *testing.T) {
 // The seed roster must include a CEO — bootstrap assigns the CEO as the root of
 // the management chain; an empty/CEO-less roster would break first-run setup.
 func TestDefaultEmployees_HasCEO(t *testing.T) {
-	emps := defaultEmployees()
+	emps, err := seed.DefaultEmployees()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(emps) == 0 {
 		t.Fatal("default employee roster is empty")
 	}
@@ -72,11 +77,15 @@ func TestDefaultEmployees_HasCEO(t *testing.T) {
 // Every founder named in founderSkillDefaults must exist in the seed roster —
 // otherwise a skill default references an employee that is never created.
 func TestFounderSkillDefaults_ReferToSeededEmployees(t *testing.T) {
+	emps, err := seed.DefaultEmployees()
+	if err != nil {
+		t.Fatal(err)
+	}
 	names := map[string]bool{}
-	for _, e := range defaultEmployees() {
+	for _, e := range emps {
 		names[e.Name] = true
 	}
-	for founder := range founderSkillDefaults() {
+	for founder := range seed.FounderSkillDefaults() {
 		if !names[founder] {
 			t.Errorf("founderSkillDefaults references %q which is not a seeded employee", founder)
 		}

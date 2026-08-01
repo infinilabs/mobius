@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"mobius/internal/service"
 	"os"
 	"path/filepath"
 	"time"
 )
 
 // Object-level authorization for MCP tool calls is enforced centrally by
-// authorizeToolCall (see authz.go), invoked from HandleMessage before a
+// service.AuthorizeToolCall (see authz.go), invoked from HandleMessage before a
 // handler runs — handlers here must NOT re-implement per-handler checks.
 
 func (s *MCPServer) handleDelegateTask(ctx context.Context, raw json.RawMessage, caller MCPCaller) (any, error) {
@@ -25,7 +26,7 @@ func (s *MCPServer) handleDelegateTask(ctx context.Context, raw json.RawMessage,
 	if assigneeID == "" || title == "" || goal == "" {
 		return nil, fmt.Errorf("assignee_id, title, and goal are required")
 	}
-	if err := validateDelegateArgs(title, goal, taskContext); err != nil {
+	if err := service.ValidateDelegateArgs(title, goal, taskContext); err != nil {
 		return nil, err
 	}
 
@@ -37,12 +38,12 @@ func (s *MCPServer) handleDelegateTask(ctx context.Context, raw json.RawMessage,
 	if err != nil {
 		return nil, fmt.Errorf("assignee not found")
 	}
-	if !canDelegate(ctx, s.pgClient, creator, assignee) {
+	if !service.CanDelegate(ctx, s.pgClient, creator, assignee) {
 		return nil, fmt.Errorf("cannot delegate to %s: outside team hierarchy", assignee.Name)
 	}
 
 	// Delegations from within a task run inherit the parent's chain depth so
-	// the bound in exceedsDelegationDepth holds across the MCP path too.
+	// the bound in service.ExceedsDelegationDepth holds across the MCP path too.
 	depth := 0
 	var parentTaskID *string
 	if caller.TaskID != "" {
@@ -50,9 +51,9 @@ func (s *MCPServer) handleDelegateTask(ctx context.Context, raw json.RawMessage,
 		if err != nil {
 			return nil, fmt.Errorf("failed to load parent task: %w", err)
 		}
-		if exceedsDelegationDepth(parent.DelegationDepth) {
+		if service.ExceedsDelegationDepth(parent.DelegationDepth) {
 			return nil, fmt.Errorf("delegation chain too deep (depth %d, max %d): do the work yourself or report back to your manager",
-				parent.DelegationDepth, maxDelegationDepth)
+				parent.DelegationDepth, service.MaxDelegationDepth)
 		}
 		depth = parent.DelegationDepth + 1
 		parentTaskID = &parent.ID
@@ -113,7 +114,7 @@ func (s *MCPServer) handleHireEmployee(ctx context.Context, raw json.RawMessage,
 	if name == "" || title == "" || backstory == "" {
 		return nil, fmt.Errorf("name, title, and backstory are required")
 	}
-	if err := validateHireArgs(name, title, backstory); err != nil {
+	if err := service.ValidateHireArgs(name, title, backstory); err != nil {
 		return nil, err
 	}
 
@@ -125,7 +126,7 @@ func (s *MCPServer) handleHireEmployee(ctx context.Context, raw json.RawMessage,
 		Name: name, Title: title, Role: "Custom", Backstory: backstory,
 		AdapterConfig: map[string]any{},
 		Models:        []EmployeeModel{}, Skills: []EmployeeSkill{}, Tags: []string{},
-		ManagerID:     &manager.ID,
+		ManagerID: &manager.ID,
 	}
 	if llm := argStr(args, "primary_llm"); llm != "" {
 		emp.Models = append(emp.Models, EmployeeModel{ModelID: llm, Purpose: "primary_llm"})
@@ -270,7 +271,7 @@ func (s *MCPServer) handleWriteFile(ctx context.Context, raw json.RawMessage, ca
 		return nil, fmt.Errorf("project not found")
 	}
 
-	fullPath, err := resolveWithinRoot(project.RootDir(s.config), path)
+	fullPath, err := resolveWithinRoot(project.RootDir(projectsBaseDir(s.config)), path)
 	if err != nil {
 		return nil, err
 	}
@@ -318,7 +319,7 @@ func (s *MCPServer) handleReadFile(ctx context.Context, raw json.RawMessage, cal
 	if err != nil {
 		return nil, fmt.Errorf("project not found")
 	}
-	fullPath, err := resolveWithinRoot(project.RootDir(s.config), path)
+	fullPath, err := resolveWithinRoot(project.RootDir(projectsBaseDir(s.config)), path)
 	if err != nil {
 		return nil, err
 	}
@@ -396,7 +397,7 @@ func (s *MCPServer) handleRunCommand(ctx context.Context, raw json.RawMessage, c
 	cmdCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	workdir := project.RootDir(s.config)
+	workdir := project.RootDir(projectsBaseDir(s.config))
 	out, errOut, exitCode, execErr := runSandboxedCommand(cmdCtx, s.config.Sandbox, workdir, command, nil)
 	if execErr != nil {
 		return nil, execErr
@@ -569,7 +570,7 @@ func (s *MCPServer) handleCreateProject(ctx context.Context, raw json.RawMessage
 		Name:        name,
 		Description: argStr(args, "description"),
 		OwnerID:     caller.AgentID,
-	}, s.config)
+	}, projectsBaseDir(s.config), s.config.Projects.TemplateDirs)
 	if err != nil {
 		return nil, err
 	}
@@ -785,4 +786,3 @@ func (s *MCPServer) handleSuggestTasks(ctx context.Context, raw json.RawMessage,
 		"task_count":     len(tasks),
 	}, nil
 }
-

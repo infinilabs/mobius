@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"mobius/internal/service"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -165,7 +166,7 @@ func (d *TaskDispatcher) processEventByID(ctx context.Context, eventID int64) {
 
 	var channel string
 	var payload json.RawMessage
-	err := d.pgClient.pool.QueryRow(ctx,
+	err := d.pgClient.Pool().QueryRow(ctx,
 		"SELECT channel, payload FROM dispatch_events WHERE id = $1", eventID,
 	).Scan(&channel, &payload)
 	if err != nil {
@@ -199,7 +200,7 @@ func (d *TaskDispatcher) processEventByID(ctx context.Context, eventID int64) {
 // alone — an interaction can be resolved after the task already moved on.
 func (d *TaskDispatcher) resumeBlockedTask(ctx context.Context, taskID string) {
 	var status string
-	if err := d.pgClient.pool.QueryRow(ctx,
+	if err := d.pgClient.Pool().QueryRow(ctx,
 		"SELECT status FROM tasks WHERE id = $1", taskID).Scan(&status); err != nil {
 		slog.Warn("interaction resolved: task lookup failed", "task_id", taskID, "error", err)
 		return
@@ -217,7 +218,7 @@ func (d *TaskDispatcher) resumeBlockedTask(ctx context.Context, taskID string) {
 }
 
 func (d *TaskDispatcher) dispatchSingleTask(ctx context.Context, taskID string) {
-	tx, err := d.pgClient.pool.Begin(ctx)
+	tx, err := d.pgClient.Pool().Begin(ctx)
 	if err != nil {
 		return
 	}
@@ -278,7 +279,7 @@ func (d *TaskDispatcher) dispatchSingleTask(ctx context.Context, taskID string) 
 
 func (d *TaskDispatcher) pruneOldEvents(ctx context.Context) {
 	cutoff := time.Now().Add(-7 * 24 * time.Hour)
-	result, err := d.pgClient.pool.Exec(ctx,
+	result, err := d.pgClient.Pool().Exec(ctx,
 		"DELETE FROM dispatch_events WHERE created_at < $1", cutoff)
 	if err != nil {
 		slog.Error("dispatch event retention cleanup failed", "error", err)
@@ -319,7 +320,7 @@ func (d *TaskDispatcher) sweepAndDispatch(ctx context.Context) {
 }
 
 func (d *TaskDispatcher) claimReadyTasks(ctx context.Context) ([]Task, error) {
-	tx, err := d.pgClient.pool.Begin(ctx)
+	tx, err := d.pgClient.Pool().Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -415,7 +416,7 @@ func (d *TaskDispatcher) sweepReviewTasks(ctx context.Context) {
 // in flight at a time and a crashed reviewer is retried after the window. The
 // reviewer's review_task call is what finally moves the task off needs_review.
 func (d *TaskDispatcher) claimReviewTasks(ctx context.Context) ([]Task, error) {
-	tx, err := d.pgClient.pool.Begin(ctx)
+	tx, err := d.pgClient.Pool().Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -553,7 +554,7 @@ func (d *TaskDispatcher) executeAgentTask(parentCtx context.Context, t Task) {
 	}
 
 	if assignee.MonthlyBudget != nil && *assignee.MonthlyBudget > 0 {
-		if d.budgetExceeded(parentCtx, assignee) {
+		if service.BudgetExceeded(parentCtx, d.pgClient, assignee) {
 			d.failTask(parentCtx, t.ID, "agent paused: monthly budget exceeded")
 			return
 		}
@@ -665,7 +666,7 @@ func (d *TaskDispatcher) buildHeartbeatContext(ctx context.Context, assignee *Em
 	if t.ProjectID != nil {
 		project, perr := d.pgClient.GetProject(ctx, *t.ProjectID)
 		if perr == nil {
-			projectDir = project.RootDir(d.config)
+			projectDir = project.RootDir(projectsBaseDir(d.config))
 			projectName = project.Name
 		}
 	}
@@ -731,7 +732,7 @@ func (d *TaskDispatcher) monitorRun(ctx context.Context, adapter Adapter, runID 
 
 			// Mid-run token ceiling.
 			if budgetTokens > 0 {
-				if used, qerr := d.monthTokens(ctx, assignee.ID); qerr == nil && used >= budgetTokens {
+				if used, qerr := d.pgClient.MonthTokens(ctx, assignee.ID); qerr == nil && used >= budgetTokens {
 					slog.Warn("run stopped: budget exceeded mid-run", "task_id", t.ID,
 						"agent_id", assignee.ID, "used_tokens", used, "budget_tokens", budgetTokens)
 					adapter.Stop(ctx, runID)
@@ -860,24 +861,9 @@ func (d *TaskDispatcher) finishRun(rowID string, status RunStatus, output, errMs
 // monthTokens sums an agent's total_tokens recorded in heartbeat_runs since the
 // start of the current month. Shared by the pre-flight gate and the mid-run
 // ceiling so both read the same ledger.
-func (d *TaskDispatcher) monthTokens(ctx context.Context, agentID string) (int64, error) {
-	now := time.Now()
-	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
-	var total int64
-	err := d.pgClient.pool.QueryRow(ctx, `
-		SELECT COALESCE(SUM(
-			CASE WHEN token_usage->>'total_tokens' ~ '^[0-9]+$'
-			     THEN (token_usage->>'total_tokens')::bigint
-			     ELSE 0 END
-		), 0)
-		FROM heartbeat_runs
-		WHERE agent_id = $1 AND started_at >= $2
-	`, agentID, monthStart).Scan(&total)
-	return total, err
-}
 
 func (d *TaskDispatcher) reclaimStaleTasks(ctx context.Context) {
-	tx, err := d.pgClient.pool.Begin(ctx)
+	tx, err := d.pgClient.Pool().Begin(ctx)
 	if err != nil {
 		slog.Error("reclaimer: begin tx failed", "error", err)
 		return
@@ -944,7 +930,7 @@ func (d *TaskDispatcher) reclaimStaleTasks(ctx context.Context) {
 	// comment claiming a reclaim that never happened.
 	for _, id := range staleIDs {
 		d.pgClient.AddTaskComment(ctx, id, "", "System: Task reclaimed — execution stalled or server crashed.")
-		d.pgClient.reindexTask(ctx, id)
+		d.pgClient.ReindexTask(ctx, id)
 	}
 }
 
@@ -962,7 +948,7 @@ func (d *TaskDispatcher) sweepScheduledTasks(ctx context.Context) {
 		ProjectID   *string
 	}
 
-	rows, err := d.pgClient.pool.Query(ctx, `
+	rows, err := d.pgClient.Pool().Query(ctx, `
 		SELECT id, title, body, priority, assignee_id, creator_id,
 		       cron_expr, repeat_times, next_run_at, project_id
 		FROM tasks
@@ -1006,7 +992,7 @@ func (d *TaskDispatcher) processTemplate(ctx context.Context,
 	cronExpr string, repeatTimes *int,
 	nextRunAt time.Time, projectID *string, now time.Time) {
 
-	tx, err := d.pgClient.pool.Begin(ctx)
+	tx, err := d.pgClient.Pool().Begin(ctx)
 	if err != nil {
 		slog.Error("scheduler: begin tx failed", "template_id", id, "error", err)
 		return
@@ -1104,7 +1090,7 @@ func (d *TaskDispatcher) processTemplate(ctx context.Context,
 }
 
 func (d *TaskDispatcher) touchTask(ctx context.Context, taskID string) {
-	d.pgClient.pool.Exec(ctx,
+	d.pgClient.Pool().Exec(ctx,
 		"UPDATE tasks SET updated_at = NOW() WHERE id = $1 AND status = 'in_progress'", taskID)
 }
 
@@ -1130,7 +1116,7 @@ func (d *TaskDispatcher) salvageOrFail(ctx context.Context, taskID, output strin
 	d.pgClient.AddTaskComment(ctx, taskID, "",
 		"System: Agent ended without calling submit_task_result; its run output was auto-submitted for review.")
 	slog.Warn("auto-submitted run output for review (missing submit_task_result)", "task_id", taskID)
-	d.pgClient.reindexTask(ctx, taskID)
+	d.pgClient.ReindexTask(ctx, taskID)
 }
 
 // failTransition returns the state a failing in-flight task moves to. ok is
@@ -1148,7 +1134,7 @@ func failTransition(currentStatus string, failures int) (next string, ok bool) {
 }
 
 func (d *TaskDispatcher) failTask(ctx context.Context, taskID, reason string) {
-	tx, err := d.pgClient.pool.Begin(ctx)
+	tx, err := d.pgClient.Pool().Begin(ctx)
 	if err != nil {
 		return
 	}
@@ -1197,27 +1183,5 @@ func (d *TaskDispatcher) failTask(ctx context.Context, taskID, reason string) {
 		d.pgClient.AddTaskComment(ctx, taskID, "", "System: Max retries exceeded. Task blocked.")
 	}
 
-	d.pgClient.reindexTask(ctx, taskID)
+	d.pgClient.ReindexTask(ctx, taskID)
 }
-
-func (d *TaskDispatcher) budgetExceeded(ctx context.Context, agent *Employee) bool {
-	if agent.MonthlyBudget == nil || *agent.MonthlyBudget <= 0 {
-		return false
-	}
-
-	totalTokens, err := d.monthTokens(ctx, agent.ID)
-	if err != nil {
-		slog.Warn("budget check failed, allowing execution", "agent_id", agent.ID, "error", err)
-		return false
-	}
-
-	budgetTokens := int64(*agent.MonthlyBudget) * 1000
-	if totalTokens >= budgetTokens {
-		slog.Warn("agent budget exceeded",
-			"agent_id", agent.ID, "agent_name", agent.Name,
-			"used_tokens", totalTokens, "budget_tokens", budgetTokens)
-		return true
-	}
-	return false
-}
-

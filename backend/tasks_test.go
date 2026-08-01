@@ -166,7 +166,7 @@ func TestPromoteDependents(t *testing.T) {
 	waiting := newTestTask(t, pg, "still waiting on other", "todo", worker, "")
 
 	for _, dep := range [][2]string{{ripe, done}, {waiting, done}, {waiting, other}} {
-		if _, err := pg.pool.Exec(ctx,
+		if _, err := pg.Pool().Exec(ctx,
 			"INSERT INTO task_dependencies (task_id, depends_on) VALUES ($1, $2)", dep[0], dep[1]); err != nil {
 			t.Fatalf("insert dependency: %v", err)
 		}
@@ -242,7 +242,7 @@ func TestUpdateTaskStatus_UnblockWithOpenDepsGoesTodo(t *testing.T) {
 
 	dep := newTestTask(t, pg, "unfinished dep", "ready", worker, "")
 	id := newTestTask(t, pg, "blocked with dep", "blocked", worker, "")
-	if _, err := pg.pool.Exec(ctx,
+	if _, err := pg.Pool().Exec(ctx,
 		"INSERT INTO task_dependencies (task_id, depends_on) VALUES ($1, $2)", id, dep); err != nil {
 		t.Fatalf("insert dependency: %v", err)
 	}

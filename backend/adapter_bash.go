@@ -75,7 +75,7 @@ func (a *BashAdapter) Start(ctx context.Context, hb HeartbeatContext) (string, e
 	run := &bashRun{status: RunActive, done: make(chan struct{}), tempDir: tempDir}
 
 	run.containerName = "mobius-bash-" + runID
-	args := a.config.Sandbox.dockerRunArgs(workdir, run.containerName, env)
+	args := dockerRunArgs(a.config.Sandbox, workdir, run.containerName, env)
 	args = append(args, "sh", "-c", command)
 	run.cmd = exec.CommandContext(ctx, "docker", args...)
 	run.cmd.Stdout = &run.stdout

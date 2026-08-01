@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mobius/internal/httpapi"
+	"mobius/internal/skills"
 	"net"
 	"net/http"
 	"os"
@@ -80,7 +82,7 @@ func main() {
 	probeNsJail(cfg.Sandbox)
 
 	ctx := context.Background()
-	vertexClient, geminiClient, err := NewGenAIClients(ctx, cfg)
+	vertexClient, geminiClient, err := httpapi.NewGenAIClients(ctx, cfg)
 	if err != nil {
 		slog.Error("failed to init GenAI clients", "error", err)
 		slog.Warn("GenAI features will be unavailable until config is fixed")
@@ -135,7 +137,11 @@ func main() {
 		}
 		// Wire the ES mirror so task-status mutations keep ES in sync at the PG
 		// layer, regardless of which caller (HTTP, agent, MCP, delegation) drives them.
-		pgClient.SetESClient(esClient)
+		// Guard the nil case: storage takes an interface, and a typed-nil would
+		// defeat its internal nil checks.
+		if esClient != nil {
+			pgClient.SetIndexer(esClient)
+		}
 	}
 
 	skillsDir := "skills"
@@ -148,7 +154,7 @@ func main() {
 		var studioModels map[string]bool
 		if geminiClient != vertexClient {
 			slog.Info("listing AI Studio models for dynamic routing...")
-			studioModels = ListAvailableModels(ctx, geminiClient)
+			studioModels = httpapi.ListAvailableModels(ctx, geminiClient)
 			slog.Info("AI Studio models discovered", "count", len(studioModels))
 		}
 		providers.Register("gemini", NewGeminiProvider(vertexClient, geminiClient, studioModels))
@@ -170,7 +176,7 @@ func main() {
 			"batch", cfg.Elasticsearch.Events.BatchSize)
 	}
 
-	api := NewAPIHandler(cfg, configPath, vertexClient, esClient, gcsClient, pgClient, bqClient, skillsDir, providers, eventPipeline)
+	api := httpapi.NewAPIHandler(cfg, configPath, vertexClient, esClient, gcsClient, pgClient, bqClient, skillsDir, providers, eventPipeline)
 
 	// Skill sync sources
 	hermesPath := cfg.SkillSync.HermesPath
@@ -178,7 +184,7 @@ func main() {
 		hermesPath = "../hermes-agent"
 	}
 	if _, err := os.Stat(hermesPath); err == nil {
-		api.syncSources = append(api.syncSources, NewHermesSource(hermesPath))
+		api.AddSyncSource(httpapi.NewHermesSource(hermesPath))
 		slog.Info("skill sync source configured", "source", "hermes", "path", hermesPath)
 	}
 
@@ -199,7 +205,7 @@ func main() {
 	}
 	for _, r := range defaultRepos {
 		if _, err := os.Stat(r.path); err == nil {
-			api.syncSources = append(api.syncSources, &GitRepoSource{
+			api.AddSyncSource(&httpapi.GitRepoSource{
 				SourceName: r.name,
 				BasePath:   r.path,
 				Category:   r.category,
@@ -216,7 +222,7 @@ func main() {
 			if len(dirs) == 0 {
 				dirs = []string{"skills"}
 			}
-			api.syncSources = append(api.syncSources, &GitRepoSource{
+			api.AddSyncSource(&httpapi.GitRepoSource{
 				SourceName: r.Name,
 				BasePath:   r.Path,
 				Category:   r.Category,
@@ -227,7 +233,7 @@ func main() {
 	}
 
 	if esClient != nil {
-		if err := hydrateConversations(ctx, esClient, api.conversations); err != nil {
+		if err := hydrateConversations(ctx, esClient, api.Conversations()); err != nil {
 			slog.Error("failed to hydrate conversations from ES", "error", err)
 		}
 
@@ -236,7 +242,7 @@ func main() {
 			if merr == nil {
 				for _, m := range metas {
 					if m.ProjectID != nil {
-						api.conversations.SetProjectID(m.ID, *m.ProjectID)
+						api.Conversations().SetProjectID(m.ID, *m.ProjectID)
 					}
 				}
 				slog.Info("conversation project_ids backfilled from PG", "count", len(metas))
@@ -248,12 +254,12 @@ func main() {
 			promptsDir = "../prompts"
 		}
 		if _, err := os.Stat(promptsDir); err == nil {
-			if err := seedPrompts(ctx, esClient, promptsDir); err != nil {
+			if err := httpapi.SeedPrompts(ctx, esClient, promptsDir); err != nil {
 				slog.Error("failed to seed prompts", "error", err)
 			}
 		}
 
-		for _, src := range api.syncSources {
+		for _, src := range api.SyncSources() {
 			a, u, syncErr := src.Sync(ctx, skillsDir)
 			if syncErr != nil {
 				slog.Warn("startup upstream sync failed", "source", src.Name(), "error", syncErr)
@@ -263,7 +269,7 @@ func main() {
 		}
 
 		if _, err := os.Stat(skillsDir); err == nil {
-			added, updated, syncErr := syncSkillsFromDisk(ctx, esClient, pgClient, skillsDir)
+			added, updated, syncErr := skills.SyncFromDisk(ctx, esClient, pgClient, skillsDir)
 			if syncErr != nil {
 				slog.Error("failed to sync skills from disk", "error", syncErr)
 			} else if added+updated > 0 {
@@ -329,12 +335,12 @@ func main() {
 		})
 	}
 
-	auth := newAPIAuth(cfg.Server.APIToken)
-	if !auth.enabled() {
+	auth := httpapi.NewAuth(cfg.Server.APIToken)
+	if !auth.Enabled() {
 		slog.Warn("API authentication disabled: set server.api_token or MOBIUS_API_TOKEN to require a token on /api/* routes")
 	}
 
-	h := func(f http.HandlerFunc) http.Handler { return logMW(auth.middleware(f)) }
+	h := func(f http.HandlerFunc) http.Handler { return logMW(auth.Middleware(f)) }
 
 	// Config & settings
 	mux.Handle("/api/health", h(api.HealthCheck))
@@ -474,7 +480,7 @@ func main() {
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	if !isLoopbackHost(host) && !auth.enabled() {
+	if !httpapi.IsLoopbackHost(host) && !auth.Enabled() {
 		fmt.Fprintf(os.Stderr, "FATAL: refusing to bind %s without authentication: set server.api_token or MOBIUS_API_TOKEN\n", host)
 		os.Exit(1)
 	}
@@ -501,8 +507,8 @@ func main() {
 	}
 
 	// Token usage pipeline goroutine
-	if api.tokenPipeline != nil {
-		go api.tokenPipeline.Start(syncCtx)
+	if api.TokenPipeline() != nil {
+		go api.TokenPipeline().Start(syncCtx)
 	}
 
 	// Event archiver (GCS + ES pruning)
@@ -521,7 +527,7 @@ func main() {
 	// Agent adapter registry
 	adapterRegistry := NewAdapterRegistry()
 	adapterRegistry.Register(AdapterInternal, NewInternalLLMAdapter(
-		providers, pgClient, esClient, bqClient, gcsClient, cfg, api.tokenPipeline, eventPipeline,
+		providers, pgClient, esClient, bqClient, gcsClient, cfg, api.TokenPipeline(), eventPipeline,
 	))
 	var claudeMintSession func(agentID, taskID string) string
 	if mcpServer != nil {
@@ -538,7 +544,7 @@ func main() {
 
 	// Background task dispatcher
 	if pgClient != nil {
-		dispatcher := NewTaskDispatcher(pgClient, esClient, api.tokenPipeline, adapterRegistry, 5, cfg, eventPipeline)
+		dispatcher := NewTaskDispatcher(pgClient, esClient, api.TokenPipeline(), adapterRegistry, 5, cfg, eventPipeline)
 		go dispatcher.Start(syncCtx)
 	}
 
@@ -550,7 +556,7 @@ func main() {
 			for {
 				select {
 				case <-ticker.C:
-					added, updated, err := syncSkillsFromDisk(syncCtx, esClient, pgClient, skillsDir)
+					added, updated, err := skills.SyncFromDisk(syncCtx, esClient, pgClient, skillsDir)
 					if err != nil {
 						slog.Error("disk sync failed", "error", err)
 					} else if added+updated > 0 {
@@ -575,7 +581,7 @@ func main() {
 				select {
 				case <-timer.C:
 					slog.Info("running scheduled upstream skill sync")
-					api.runFullSync(syncCtx)
+					api.RunFullSync(syncCtx)
 				case <-syncCtx.Done():
 					timer.Stop()
 					return
@@ -606,8 +612,8 @@ func main() {
 		slog.Info("event pipeline drained")
 	}
 
-	if api.tokenPipeline != nil {
-		api.tokenPipeline.Wait()
+	if api.TokenPipeline() != nil {
+		api.TokenPipeline().Wait()
 		slog.Info("token pipeline drained")
 	}
 
