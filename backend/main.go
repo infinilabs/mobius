@@ -454,6 +454,7 @@ func main() {
 	// Events
 	mux.Handle("GET /api/events", h(api.ListEvents))
 	mux.Handle("GET /api/events/stats", h(api.EventStats))
+	mux.Handle("GET /api/events/ws", h(eventsWSHandler(eventPipeline)))
 
 	// Chat
 	mux.Handle("POST /api/chat", h(api.Chat))
@@ -464,6 +465,13 @@ func main() {
 	// Playable Previews
 	mux.HandleFunc("GET /playable-preview/{pipeline_id}", api.PlayablePreviewRedirect)
 	mux.Handle("GET /playable-preview/{pipeline_id}/{path...}", h(api.PlayablePreviewHandler))
+
+	// Observability (plan 7.5): top-level unauthenticated probes + metrics.
+	// Registered without logMW so per-few-seconds orchestrator probes don't
+	// flood the access log.
+	mux.HandleFunc("GET /live", liveHandler)
+	mux.Handle("GET /ready", readyHandler(pgClient))
+	mux.Handle("GET /metrics", metricsHandler(eventPipeline))
 
 	// Static files
 	staticDir := "backend/static"

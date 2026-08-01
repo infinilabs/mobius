@@ -12,6 +12,8 @@ import (
 	"log/slog"
 	"mobius/internal/config"
 	"mobius/internal/domain"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -54,6 +56,15 @@ type EventPipeline struct {
 	bqClient StreamSink
 	cfg      config.EventConfig
 	done     chan struct{}
+
+	// dropped counts events discarded because the queue was full (plan 7.6);
+	// exposed via Dropped() for the /metrics endpoint.
+	dropped atomic.Int64
+
+	// Live subscribers (plan 7.3): Publish fans each event out to WebSocket
+	// listeners in addition to the batched sink flush.
+	subMu sync.Mutex
+	subs  map[chan *Event]struct{}
 }
 
 func NewEventPipeline(es Sink, bq StreamSink, cfg config.EventConfig) *EventPipeline {
@@ -77,9 +88,47 @@ func (ep *EventPipeline) Publish(evt *Event) {
 	select {
 	case ep.queue <- evt:
 	default:
+		ep.dropped.Add(1)
 		slog.Error("event pipeline queue full, event dropped",
-			"event_type", evt.EventType, "queue_len", len(ep.queue))
+			"event_type", evt.EventType, "queue_len", len(ep.queue),
+			"dropped_total", ep.dropped.Load())
 	}
+
+	// Fan out to live subscribers. Sends are non-blocking: a slow subscriber
+	// misses events rather than stalling Publish (the UI refresh it drives is
+	// idempotent).
+	ep.subMu.Lock()
+	for ch := range ep.subs {
+		select {
+		case ch <- evt:
+		default:
+		}
+	}
+	ep.subMu.Unlock()
+}
+
+const subscriberBuffer = 64
+
+// Subscribe registers a live listener. The returned cancel func must be called
+// to release the subscription; it closes the channel.
+func (ep *EventPipeline) Subscribe() (<-chan *Event, func()) {
+	ch := make(chan *Event, subscriberBuffer)
+	ep.subMu.Lock()
+	if ep.subs == nil {
+		ep.subs = make(map[chan *Event]struct{})
+	}
+	ep.subs[ch] = struct{}{}
+	ep.subMu.Unlock()
+
+	cancel := func() {
+		ep.subMu.Lock()
+		defer ep.subMu.Unlock()
+		if _, ok := ep.subs[ch]; ok {
+			delete(ep.subs, ch)
+			close(ch)
+		}
+	}
+	return ch, cancel
 }
 
 func (ep *EventPipeline) Start(ctx context.Context) {
@@ -254,4 +303,9 @@ func archiveEvents(ctx context.Context, es ArchiveSource, gcs ArchiveStore, rete
 // health reporting).
 func (ep *EventPipeline) QueueStats() (length, capacity int) {
 	return len(ep.queue), cap(ep.queue)
+}
+
+// Dropped reports how many events were discarded because the queue was full.
+func (ep *EventPipeline) Dropped() int64 {
+	return ep.dropped.Load()
 }

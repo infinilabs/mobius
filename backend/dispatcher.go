@@ -705,6 +705,7 @@ func (d *TaskDispatcher) buildHeartbeatContext(ctx context.Context, assignee *Em
 // stays away while this monitor is alive; the monitor itself owns stall/budget
 // kills so a still-running goroutine is never re-queued underneath it.
 func (d *TaskDispatcher) monitorRun(ctx context.Context, adapter Adapter, runID string, t *Task, assignee *Employee, rowID string, startedAt time.Time, isReview bool) {
+	defer func() { recordDispatchDuration(time.Since(startedAt)) }()
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 

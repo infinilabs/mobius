@@ -1,8 +1,10 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { LayoutDashboard, Kanban, Activity, ArrowRight } from 'lucide-react';
 import { listTasks, listEmployees, listEvents } from '../api';
 import RefreshButton from '../components/RefreshButton';
-import type { Task, Employee, Event } from '../types';
+import { useLiveRefresh } from '../hooks/useLiveRefresh';
+import type { Task } from '../types';
 import { eventIcon, activityVerb, activityTimeAgo as timeAgo } from '../activity';
 
 const STATUS_STYLES: Record<Task['status'], string> = {
@@ -18,21 +20,18 @@ const STATUS_STYLES: Record<Task['status'], string> = {
 export default function DashboardPage({ onOpenTask }: {
   onOpenTask: (taskId: string) => void;
 }) {
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [employees, setEmployees] = useState<Employee[]>([]);
-  const [events, setEvents] = useState<Event[]>([]);
+  const queryClient = useQueryClient();
+  const { data: tasks = [] } = useQuery({ queryKey: ['tasks'], queryFn: () => listTasks() });
+  const { data: employees = [] } = useQuery({ queryKey: ['employees'], queryFn: listEmployees });
+  const { data: events = [] } = useQuery({ queryKey: ['events', 12], queryFn: () => listEvents({ limit: 12 }) });
 
   const refresh = useCallback(() => {
-    listTasks().then(setTasks).catch(() => {});
-    listEvents({ limit: 12 }).then(setEvents).catch(() => {});
-  }, []);
+    queryClient.invalidateQueries({ queryKey: ['tasks'] });
+    queryClient.invalidateQueries({ queryKey: ['events'] });
+  }, [queryClient]);
 
-  useEffect(() => {
-    listEmployees().then(setEmployees).catch(() => {});
-    refresh();
-    const id = setInterval(refresh, 15000);
-    return () => clearInterval(id);
-  }, [refresh]);
+  // Live-refresh on backend events (poll fallback while the socket is down).
+  useLiveRefresh(refresh);
 
   const empName = useMemo(() => {
     const m = new Map<string, string>();
