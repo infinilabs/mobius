@@ -44,11 +44,13 @@ export function subscribeEvents(
       }
     };
     ws.onclose = () => {
+      // After unsubscribe, the browser still fires onclose asynchronously —
+      // notifying then would restart the caller's poll fallback in a dead
+      // effect closure (unclearable timer leak).
+      if (closed) return;
       onStatus?.(false);
-      if (!closed) {
-        retryTimer = setTimeout(connect, retryMs);
-        retryMs = Math.min(retryMs * 2, 30000);
-      }
+      retryTimer = setTimeout(connect, retryMs);
+      retryMs = Math.min(retryMs * 2, 30000);
     };
     ws.onerror = () => {
       ws?.close();
