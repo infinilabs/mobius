@@ -63,6 +63,12 @@ func liveHandler(w http.ResponseWriter, r *http.Request) {
 // do useful work without its primary store.
 func readyHandler(pg *PGClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// main keeps serving with pg == nil when Postgres init fails at
+		// startup — exactly the condition this probe must report.
+		if pg == nil {
+			http.Error(w, "postgres unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		if err := pg.Ping(ctx); err != nil {

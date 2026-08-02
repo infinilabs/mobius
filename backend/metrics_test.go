@@ -49,6 +49,16 @@ func TestMetricsHandler_ExposesCounters(t *testing.T) {
 	}
 }
 
+// main keeps serving with a nil PG client when Postgres init fails at
+// startup; the probe must answer 503, not panic.
+func TestReadyHandler_NilClient503(t *testing.T) {
+	rec := httptest.NewRecorder()
+	readyHandler(nil)(rec, httptest.NewRequest("GET", "/ready", nil))
+	if rec.Code != 503 {
+		t.Fatalf("ready with nil client returned %d, want 503", rec.Code)
+	}
+}
+
 // Readiness must track Postgres: 200 while it answers, 503 once it doesn't.
 func TestReadyHandler_TracksPostgres(t *testing.T) {
 	pg := testPG(t)
