@@ -53,7 +53,12 @@ func eventsWSHandler(ep *EventPipeline) http.HandlerFunc {
 
 		for {
 			select {
-			case evt := <-sub:
+			case evt, ok := <-sub:
+				if !ok {
+					// Channel closed (nothing does this today, but a future
+					// pipeline-side close must not become a busy loop).
+					return
+				}
 				msg, err := json.Marshal(evt)
 				if err != nil {
 					slog.Warn("events WebSocket marshal failed", "error", err)
