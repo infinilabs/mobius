@@ -1,6 +1,8 @@
 package bq
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -10,8 +12,110 @@ func taggingTestClient() *Client {
 		projectID:        "du-hast-mich",
 		creativesDataset: "mobius_creatives",
 		connection:       "us.mobius_conn",
-		taggingEndpoint:  "gemini-2.5-flash",
+		taggingEndpoint:  "gemini-3.6-flash",
 		taggingModel:     "tagging_gemini",
+	}
+}
+
+func TestTaggingEndpointFor(t *testing.T) {
+	ctx := t.Context()
+
+	// Unpinned + resolver → the auto-discovered endpoint wins.
+	bq := taggingTestClient()
+	bq.SetTaggingEndpointResolver(func(context.Context) (string, error) { return "gemini-9.9-flash", nil })
+	if got := bq.taggingEndpointFor(ctx); got != "gemini-9.9-flash" {
+		t.Errorf("unpinned: got %q, want auto-discovered gemini-9.9-flash", got)
+	}
+
+	// Pinned via conf.yaml → the configured endpoint is used verbatim, no discovery.
+	pinned := taggingTestClient()
+	pinned.endpointPinned = true
+	pinned.taggingEndpoint = "gemini-2.5-flash"
+	pinned.SetTaggingEndpointResolver(func(context.Context) (string, error) {
+		t.Error("resolver must not be called when the endpoint is pinned")
+		return "", nil
+	})
+	if got := pinned.taggingEndpointFor(ctx); got != "gemini-2.5-flash" {
+		t.Errorf("pinned: got %q, want configured gemini-2.5-flash", got)
+	}
+
+	// Discovery failure → fall back to the built-in default.
+	failing := taggingTestClient()
+	failing.SetTaggingEndpointResolver(func(context.Context) (string, error) { return "", fmt.Errorf("boom") })
+	if got := failing.taggingEndpointFor(ctx); got != "gemini-3.6-flash" {
+		t.Errorf("fallback: got %q, want default gemini-3.6-flash", got)
+	}
+
+	// No resolver wired (e.g. Vertex client unavailable) → default.
+	if got := taggingTestClient().taggingEndpointFor(ctx); got != "gemini-3.6-flash" {
+		t.Errorf("no resolver: got %q, want default gemini-3.6-flash", got)
+	}
+}
+
+func TestTaggingEndpointURL(t *testing.T) {
+	// Newer Flash models exist only behind multi-regional endpoints; a bare
+	// name lets BigQuery route to us-central1 where they don't exist
+	// ("Publisher model ... not found" — the exact failure from the field).
+	bq := taggingTestClient()
+	cases := []struct {
+		name       string
+		connection string
+		endpoint   string
+		want       string
+	}{
+		{"us multi-region expands", "us.mobius_conn", "gemini-3.6-flash",
+			"https://aiplatform.us.rep.googleapis.com/v1/projects/du-hast-mich/locations/us/publishers/google/models/gemini-3.6-flash"},
+		{"eu multi-region expands", "eu.mobius_conn", "gemini-3.6-flash",
+			"https://aiplatform.eu.rep.googleapis.com/v1/projects/du-hast-mich/locations/eu/publishers/google/models/gemini-3.6-flash"},
+		{"global expands", "global.mobius_conn", "gemini-3.6-flash",
+			"https://aiplatform.googleapis.com/v1/projects/du-hast-mich/locations/global/publishers/google/models/gemini-3.6-flash"},
+		{"single region passes through", "us-central1.mobius_conn", "gemini-2.5-flash", "gemini-2.5-flash"},
+		{"full URL passes through", "us.mobius_conn", "https://example.com/v1/x", "https://example.com/v1/x"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			bq.connection = c.connection
+			if got := bq.taggingEndpointURL(c.endpoint); got != c.want {
+				t.Errorf("got %q\nwant %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestTopTagsSQL_Shape(t *testing.T) {
+	bq := taggingTestClient()
+	sql := bq.topTagsSQL("summer_sale_a1b2c3d4_tags", 10)
+	for _, frag := range []string{
+		"FROM `du-hast-mich.mobius_creatives.summer_sale_a1b2c3d4_tags`",
+		"UNNEST(labels)",
+		"GROUP BY tag",
+		"ORDER BY n DESC",
+		"LIMIT 10",
+	} {
+		if !strings.Contains(sql, frag) {
+			t.Errorf("topTagsSQL missing %q\nSQL:\n%s", frag, sql)
+		}
+	}
+}
+
+func TestMergeRepoSQL_Shape(t *testing.T) {
+	bq := taggingTestClient()
+	sql := bq.mergeRepoSQL("summer_sale_a1b2c3d4_tags")
+
+	mustContain := []string{
+		"MERGE `du-hast-mich.mobius_creatives.creative_repo` T",
+		"FROM `du-hast-mich.mobius_creatives.summer_sale_a1b2c3d4_tags`",
+		"IFNULL(status, '') = ''", // failed rows never reach the repo
+		"ON T.uri = S.uri",        // upsert key: re-adding a job cannot duplicate
+		"@source_path",
+		"@job_id",
+		"WHEN MATCHED THEN UPDATE",
+		"WHEN NOT MATCHED THEN INSERT",
+	}
+	for _, frag := range mustContain {
+		if !strings.Contains(sql, frag) {
+			t.Errorf("mergeRepoSQL missing %q\nSQL:\n%s", frag, sql)
+		}
 	}
 }
 

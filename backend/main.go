@@ -118,6 +118,26 @@ func main() {
 			bqClient = nil
 		}
 	}
+	// Keep the tagging remote model on the newest Gemini Flash. Only consulted
+	// when tagging_model_endpoint is NOT set in conf.yaml (a configured value
+	// is pinned and used verbatim).
+	if bqClient != nil && vertexClient != nil {
+		bqClient.SetTaggingEndpointResolver(func(ctx context.Context) (string, error) {
+			return latestFlashEndpoint(ctx, vertexClient)
+		})
+	}
+	// Stand up the whole tagging stack (connection → IAM → dataset + remote
+	// model) at boot so tag_media never trips over missing infra mid-task.
+	// Async: BQ DDL takes seconds and must not delay serving.
+	if bqClient != nil {
+		go func() {
+			if err := bqClient.EnsureTaggingSetup(ctx); err != nil {
+				slog.Error("media tagging setup incomplete; tag_media will fail until fixed", "error", err)
+			} else {
+				slog.Info("media tagging stack ready (connection, IAM, dataset, remote model)")
+			}
+		}()
+	}
 
 	var pgClient *PGClient
 	pgClient, err = NewPGClient(ctx, cfg.Postgres)

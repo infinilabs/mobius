@@ -45,7 +45,42 @@ const (
 // uses it verbatim).
 const labelArrayDirective = "\n\n---\nOUTPUT OVERRIDE: Return ONLY the labels that apply, as an array of label-name strings (the `labels` field). Omit any label that does not apply. Do not return an object keyed by every label."
 
-var identRe = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+var (
+	identRe    = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+	nonIdentRe = regexp.MustCompile(`[^a-z0-9_]+`)
+)
+
+// tableBaseName derives the shared name prefix for one tagging job's tables
+// from the deepest non-wildcard GCS folder plus a short job-id suffix, so the
+// object and tags tables sort together and are recognizable in the dataset:
+// gs://bucket/summer_sale/* → summer_sale_a1b2c3d4_objects / ..._tags.
+func tableBaseName(gcsPath, jobID string) string {
+	short := strings.ReplaceAll(jobID, "-", "")
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	var seg string
+	parts := strings.Split(strings.TrimPrefix(gcsPath, "gs://"), "/")
+	for i := len(parts) - 1; i >= 0; i-- {
+		p := parts[i]
+		if p == "" || strings.ContainsAny(p, "*?[") {
+			continue
+		}
+		if i == len(parts)-1 && strings.Contains(p, ".") {
+			continue // trailing filename, not a folder
+		}
+		seg = p // deepest folder, else the bucket
+		break
+	}
+	san := strings.Trim(nonIdentRe.ReplaceAllString(strings.ToLower(seg), "_"), "_")
+	if san == "" {
+		san = "creatives"
+	}
+	if len(san) > 30 {
+		san = san[:30]
+	}
+	return san + "_" + short
+}
 
 // defaultTaxonomyPromptID mirrors seedPrompts (prompts.go): id = sha256(name)[:8]
 // for the "video_label_tagging.md" template.
@@ -92,8 +127,9 @@ func ExecTagMediaTool(ctx context.Context, bq *bq.Client, es *search.Client, eve
 	}
 
 	jobID := domain.NewID()
-	objTable := "obj_" + jobID
-	tagsTable := "tags_" + jobID
+	base := tableBaseName(gcsPath, jobID)
+	objTable := base + "_objects"
+	tagsTable := base + "_tags"
 
 	if err := bq.CreateObjectTable(ctx, objTable, gcsPath); err != nil {
 		return map[string]any{"error": "create object table: " + err.Error()}
@@ -123,32 +159,62 @@ func ExecTagMediaTool(ctx context.Context, bq *bq.Client, es *search.Client, eve
 		}))
 	}
 	slog.Info("media tagging completed", "job_id", jobID, "assets", count, "table", tagsTable)
-	return map[string]any{
-		"status":      "completed",
-		"job_id":      jobID,
-		"asset_count": count,
-		"tags_table":  fmt.Sprintf("%s.%s", bq.CreativesDataset(), tagsTable),
-		"dataset":     bq.CreativesDataset(),
+	result := map[string]any{
+		"status":       "completed",
+		"job_id":       jobID,
+		"asset_count":  count,
+		"object_table": fmt.Sprintf("%s.%s", bq.CreativesDataset(), objTable),
+		"tags_table":   fmt.Sprintf("%s.%s", bq.CreativesDataset(), tagsTable),
+		"dataset":      bq.CreativesDataset(),
 	}
+	// Best-effort top-10 summary so the chat can present results without
+	// another tool round-trip; the full data stays in the tags table.
+	if top, err := bq.TopTags(ctx, tagsTable, 10); err == nil {
+		result["top_tags"] = top
+	} else {
+		slog.Warn("top tags summary failed", "table", tagsTable, "error", err)
+	}
+	return result
 }
 
-func taggingTableName(jobID, tagsTable string) (string, error) {
-	if strings.TrimSpace(tagsTable) != "" {
-		name := tagsTable
-		if i := strings.LastIndex(name, "."); i >= 0 {
-			name = name[i+1:] // drop any dataset/project prefix; we scope to creativesDataset
-		}
-		name = strings.TrimSpace(name)
-		if !identRe.MatchString(name) {
-			return "", fmt.Errorf("invalid tags_table %q", tagsTable)
-		}
-		return name, nil
+// normalizeTagsTable validates a caller-supplied tags table name, dropping any
+// dataset/project prefix (we scope to creativesDataset).
+func normalizeTagsTable(tagsTable string) (string, error) {
+	name := tagsTable
+	if i := strings.LastIndex(name, "."); i >= 0 {
+		name = name[i+1:]
 	}
-	j := strings.TrimSpace(jobID)
-	if !identRe.MatchString(j) {
+	name = strings.TrimSpace(name)
+	if !identRe.MatchString(name) {
+		return "", fmt.Errorf("invalid tags_table %q", tagsTable)
+	}
+	return name, nil
+}
+
+// jobToken normalizes a tag_media job id (UUID) to the short token embedded in
+// the job's table names by tableBaseName.
+func jobToken(jobID string) (string, error) {
+	tok := strings.ReplaceAll(strings.TrimSpace(jobID), "-", "")
+	if len(tok) > 8 {
+		tok = tok[:8]
+	}
+	if tok == "" || !identRe.MatchString(tok) {
 		return "", fmt.Errorf("invalid or missing job_id")
 	}
-	return "tags_" + j, nil
+	return tok, nil
+}
+
+// resolveTagsTable turns (job_id | tags_table) tool args into a validated
+// table name inside the creatives dataset. tags_table wins when both are set.
+func resolveTagsTable(ctx context.Context, bqc *bq.Client, jobID, tagsTable string) (string, error) {
+	if strings.TrimSpace(tagsTable) != "" {
+		return normalizeTagsTable(tagsTable)
+	}
+	tok, err := jobToken(jobID)
+	if err != nil {
+		return "", err
+	}
+	return bqc.FindTagsTable(ctx, tok)
 }
 
 func ExecGetTagResultsTool(ctx context.Context, bq *bq.Client, args map[string]any) map[string]any {
@@ -159,7 +225,7 @@ func ExecGetTagResultsTool(ctx context.Context, bq *bq.Client, args map[string]a
 	tagsTable, _ := args["tags_table"].(string)
 	assetID, _ := args["asset_id"].(string)
 
-	table, err := taggingTableName(jobID, tagsTable)
+	table, err := resolveTagsTable(ctx, bq, jobID, tagsTable)
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
@@ -209,6 +275,45 @@ func guardSelect(sql, dataset string) (string, error) {
 	}
 	// Hard row cap regardless of any inner LIMIT (§11).
 	return fmt.Sprintf("SELECT * FROM (\n%s\n) LIMIT %d", s, maxQueryTagsLimit), nil
+}
+
+// ExecAddToCreativeRepoTool upserts one tagging job's successful rows into the
+// durable creative_repo table. Called only after the user confirms in chat.
+func ExecAddToCreativeRepoTool(ctx context.Context, bqc *bq.Client, events *evbus.EventPipeline, agentID string, args map[string]any) map[string]any {
+	if bqc == nil {
+		return map[string]any{"error": "BigQuery is not configured"}
+	}
+	jobID, _ := args["job_id"].(string)
+	tagsTable, _ := args["tags_table"].(string)
+	sourcePath, _ := args["gcs_path"].(string)
+
+	table, err := resolveTagsTable(ctx, bqc, jobID, tagsTable)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	if err := bqc.EnsureCreativeRepo(ctx); err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	merged, err := bqc.MergeIntoCreativeRepo(ctx, table, sourcePath, jobID)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+
+	if events != nil {
+		var aid *string
+		if agentID != "" {
+			aid = &agentID
+		}
+		events.Publish(evbus.New("creatives_added_to_repo", aid, nil, nil, map[string]any{
+			"tags_table": table, "assets_merged": merged, "job_id": jobID,
+		}))
+	}
+	slog.Info("creatives added to repo", "tags_table", table, "assets_merged", merged)
+	return map[string]any{
+		"status":        "completed",
+		"assets_merged": merged,
+		"repo_table":    fmt.Sprintf("%s.%s", bqc.CreativesDataset(), bqc.CreativeRepoTable()),
+	}
 }
 
 func ExecQueryTagsTool(ctx context.Context, bq *bq.Client, args map[string]any) map[string]any {

@@ -11,6 +11,10 @@ func FounderSkillDefaults() map[string][]string {
 			"spec-driven-development",
 			"shipping-and-launch",
 			"one-three-one-rule",
+			// Routing manual only: media-tagging TOOLS stay gated on the
+			// media_tagger tag. The CEO needs the batch-vs-single-upload
+			// routing rules (Creative Tagger vs AI Engineer) to delegate right.
+			"video-tagging",
 		},
 		"Steve": {
 			"writing-plans",
@@ -20,6 +24,8 @@ func FounderSkillDefaults() map[string][]string {
 			"interview-me",
 			"documentation-and-adrs",
 			"frontend-design",
+			// Routing manual only (see Elong): Steve owns the Creative Tagger.
+			"video-tagging",
 		},
 		"Linas": {
 			"systematic-debugging",

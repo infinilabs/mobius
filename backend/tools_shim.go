@@ -28,6 +28,7 @@ var (
 	execTagMediaTool                  = tools.ExecTagMediaTool
 	execGetTagResultsTool             = tools.ExecGetTagResultsTool
 	execQueryTagsTool                 = tools.ExecQueryTagsTool
+	execAddToCreativeRepoTool         = tools.ExecAddToCreativeRepoTool
 	execWatermarkAssetsTool           = tools.ExecWatermarkAssetsTool
 	execVerifyWatermarkTool           = tools.ExecVerifyWatermarkTool
 	resolvePlayableProjectID          = tools.ResolvePlayableProjectID

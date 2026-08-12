@@ -21,4 +21,5 @@ var (
 	NewProviderRegistry = llm.NewProviderRegistry
 	NewGeminiProvider   = llm.NewGeminiProvider
 	NewClaudeProvider   = llm.NewClaudeProvider
+	latestFlashEndpoint = llm.LatestFlashEndpoint
 )

@@ -567,9 +567,12 @@ var SuggestTasksToolDef = llm.ToolDef{
 
 var TagMediaToolDef = llm.ToolDef{
 	Name: "tag_media",
-	Description: "Batch-tag video/image media under a GCS path using BigQuery multimodal AI. " +
-		"Creates an object table over the media, runs schema-enforced tagging, and stores a tags table. " +
-		"Collect gcs_path (and bq_dataset if non-default) from the user before calling; ask if unknown.",
+	Description: "Batch-tag video/image media under a GCS path using BigQuery multimodal AI: " +
+		"creates an object table over the media, runs the taxonomy-prompt tagging SQL, and stores a tags table " +
+		"(both share a name prefix derived from the GCS folder). " +
+		"Collect gcs_path from the user before calling; ask if unknown. " +
+		"The result includes top_tags (top 10 label counts) — summarize them in chat (one mobius-viz bar block " +
+		"straight from top_tags) and point the user at tags_table for the full data. No further tool calls needed.",
 	Parameters: map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -588,13 +591,27 @@ var TagMediaToolDef = llm.ToolDef{
 
 var GetTagResultsToolDef = llm.ToolDef{
 	Name:        "get_tag_results",
-	Description: "Fetch per-asset labels for a completed tagging job. Provide job_id (or tags_table); optionally asset_id.",
+	Description: "Fetch per-asset labels for a completed tagging job. Provide tags_table (preferred) or job_id; optionally asset_id.",
 	Parameters: map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"job_id":     map[string]any{"type": "string", "description": "Job ID returned by tag_media"},
-			"tags_table": map[string]any{"type": "string", "description": "Tags table name (alternative to job_id)"},
+			"tags_table": map[string]any{"type": "string", "description": "Tags table returned by tag_media (preferred)"},
+			"job_id":     map[string]any{"type": "string", "description": "Job ID returned by tag_media (alternative to tags_table)"},
 			"asset_id":   map[string]any{"type": "string", "description": "Optional: filter to a single asset"},
+		},
+	},
+}
+
+var AddToCreativeRepoToolDef = llm.ToolDef{
+	Name: "add_to_creative_repo",
+	Description: "Add a completed tagging job's creatives (uri + labels) to the durable creative_repo table " +
+		"in the creatives dataset. Call ONLY after the user confirms. Upserts by uri, so re-adding is safe.",
+	Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"tags_table": map[string]any{"type": "string", "description": "Tags table returned by tag_media (preferred)"},
+			"job_id":     map[string]any{"type": "string", "description": "Job ID returned by tag_media (alternative to tags_table)"},
+			"gcs_path":   map[string]any{"type": "string", "description": "Source GCS path of the tagged media; stored with each row"},
 		},
 	},
 }
@@ -836,7 +853,7 @@ func BuildAgentTools(agent *domain.Employee, task *domain.Task) []llm.ToolDef {
 	// Media tagging is gated on the media_tagger tag (not project context): the
 	// Creative Tagger employee batch-tags GCS prefixes and answers tag analytics.
 	if domain.HasTag(agent.Tags, "media_tagger") {
-		tools = append(tools, TagMediaToolDef, GetTagResultsToolDef, QueryTagsToolDef)
+		tools = append(tools, TagMediaToolDef, GetTagResultsToolDef, QueryTagsToolDef, AddToCreativeRepoToolDef)
 	}
 
 	if domain.HasTag(agent.Tags, "media_watermarker") {

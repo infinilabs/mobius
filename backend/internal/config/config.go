@@ -244,7 +244,9 @@ type BigQueryConfig struct {
 	// Media tagging (video_tagging.md §4.1). Business data lives in a DEDICATED
 	// dataset (mobius_creatives), never the system `Dataset` above. Empty fields
 	// fall back to the defaults in bq.go (mobius_creatives / us.mobius_conn /
-	// gemini-2.5-flash / tagging_gemini).
+	// gemini-3.6-flash / tagging_gemini). TaggingModelEndpoint left EMPTY enables
+	// auto-discovery of the newest Gemini Flash at tagging time; a set value is
+	// pinned and used verbatim.
 	CreativesDataset     string `yaml:"creatives_dataset,omitempty" json:"creatives_dataset,omitempty"`
 	Connection           string `yaml:"connection,omitempty" json:"connection,omitempty"`
 	TaggingModelEndpoint string `yaml:"tagging_model_endpoint,omitempty" json:"tagging_model_endpoint,omitempty"`

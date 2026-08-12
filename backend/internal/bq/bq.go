@@ -26,6 +26,13 @@ type Client struct {
 	connection       string
 	taggingEndpoint  string
 	taggingModel     string
+
+	// endpointPinned is true when tagging_model_endpoint was set explicitly in
+	// conf.yaml: the configured endpoint is used verbatim and auto-discovery is
+	// skipped. When unpinned, resolveEndpoint (if wired) picks the newest Gemini
+	// Flash at tagging time, falling back to taggingEndpoint on failure.
+	endpointPinned  bool
+	resolveEndpoint func(context.Context) (string, error)
 }
 
 func New(ctx context.Context, cfg *config.Config) (*Client, error) {
@@ -60,9 +67,10 @@ func New(ctx context.Context, cfg *config.Config) (*Client, error) {
 	if connection == "" {
 		connection = "us.mobius_conn"
 	}
+	endpointPinned := gc.BigQuery.TaggingModelEndpoint != ""
 	taggingEndpoint := gc.BigQuery.TaggingModelEndpoint
 	if taggingEndpoint == "" {
-		taggingEndpoint = "gemini-2.5-flash"
+		taggingEndpoint = "gemini-3.6-flash"
 	}
 	taggingModel := gc.BigQuery.TaggingModelName
 	if taggingModel == "" {
@@ -74,6 +82,7 @@ func New(ctx context.Context, cfg *config.Config) (*Client, error) {
 		dataset: gc.BigQuery.Dataset, table: table, tokenTable: tokenTable,
 		creativesDataset: creativesDataset, connection: connection,
 		taggingEndpoint: taggingEndpoint, taggingModel: taggingModel,
+		endpointPinned: endpointPinned,
 	}
 
 	if err := bq.EnsureDataset(ctx); err != nil {

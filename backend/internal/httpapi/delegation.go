@@ -158,6 +158,9 @@ var chatToolRegistry = map[string]chatToolFunc{
 	"query_tags": func(h *APIHandler, ctx context.Context, args map[string]any, agent *domain.Employee, conversationID string) map[string]any {
 		return tools.ExecQueryTagsTool(ctx, h.bqClient, args)
 	},
+	"add_to_creative_repo": func(h *APIHandler, ctx context.Context, args map[string]any, agent *domain.Employee, conversationID string) map[string]any {
+		return tools.ExecAddToCreativeRepoTool(ctx, h.bqClient, h.events, agent.ID, args)
+	},
 	"watermark_assets": func(h *APIHandler, ctx context.Context, args map[string]any, agent *domain.Employee, conversationID string) map[string]any {
 		return tools.ExecWatermarkAssetsTool(ctx, h.pgClient, h.gcsClient, h.config, h.events, agent.ID, args)
 	},

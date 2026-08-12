@@ -18,6 +18,9 @@ func TestTaggingTools_NilBQ(t *testing.T) {
 	if _, ok := tools.ExecQueryTagsTool(ctx, nil, map[string]any{"sql": "SELECT 1"})["error"]; !ok {
 		t.Error("query_tags should error with nil bqClient")
 	}
+	if _, ok := tools.ExecAddToCreativeRepoTool(ctx, nil, nil, "emp", map[string]any{"tags_table": "x_tags"})["error"]; !ok {
+		t.Error("add_to_creative_repo should error with nil bqClient")
+	}
 }
 
 func TestCreativeTaggerHasVideoTaggingSkill(t *testing.T) {
@@ -36,5 +39,24 @@ func TestCreativeTaggerHasVideoTaggingSkill(t *testing.T) {
 	if !found {
 		t.Errorf("Creative Tagger default skills must include video-tagging, got %v",
 			seed.EmployeeSkillDefaults()["Creative Tagger"])
+	}
+}
+
+func TestRoutersHaveVideoTaggingManual(t *testing.T) {
+	// Elong (CEO) and Steve route tagging requests: batch/GCS → Creative Tagger,
+	// single chat upload → AI Engineer. That routing rule lives in the
+	// video-tagging SKILL.md, so both founders need it assigned (manual only —
+	// the tools remain gated on the media_tagger tag).
+	for _, founder := range []string{"Elong", "Steve"} {
+		var found bool
+		for _, s := range seed.FounderSkillDefaults()[founder] {
+			if s == "video-tagging" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s default skills must include video-tagging for routing, got %v",
+				founder, seed.FounderSkillDefaults()[founder])
+		}
 	}
 }

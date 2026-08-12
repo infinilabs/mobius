@@ -227,7 +227,7 @@ func assertNotContains(t *testing.T, m map[string]bool, key, msg string) {
 func TestBuildAgentTools_MediaTagger(t *testing.T) {
 	tagger := specEmployee("Custom", []string{"media_tagger"}, specStrPtr("mgr-001"), nil)
 	names := toolNames(BuildAgentTools(tagger, nil))
-	for _, required := range []string{"tag_media", "get_tag_results", "query_tags"} {
+	for _, required := range []string{"tag_media", "get_tag_results", "query_tags", "add_to_creative_repo"} {
 		assertContains(t, names, required, "media_tagger should have "+required)
 	}
 }
@@ -235,7 +235,7 @@ func TestBuildAgentTools_MediaTagger(t *testing.T) {
 func TestBuildAgentTools_NonTaggerHasNoTaggingTools(t *testing.T) {
 	worker := specEmployee("Custom", []string{}, specStrPtr("mgr-001"), nil)
 	names := toolNames(BuildAgentTools(worker, nil))
-	for _, forbidden := range []string{"tag_media", "get_tag_results", "query_tags"} {
+	for _, forbidden := range []string{"tag_media", "get_tag_results", "query_tags", "add_to_creative_repo"} {
 		assertNotContains(t, names, forbidden, "worker without media_tagger should NOT have "+forbidden)
 	}
 	// A CEO without the tag also must not get tagging tools (capability, not seniority).

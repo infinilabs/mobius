@@ -43,24 +43,21 @@ func TestGuardSelect(t *testing.T) {
 	}
 }
 
-func TestTaggingTableName(t *testing.T) {
+func TestNormalizeTagsTable(t *testing.T) {
 	cases := []struct {
 		name      string
-		jobID     string
 		tagsTable string
 		want      string
 		wantErr   bool
 	}{
-		{"from job id", "abc123", "", "tags_abc123", false},
-		{"from table", "", "tags_abc123", "tags_abc123", false},
-		{"strip dataset prefix", "", "mobius_creatives.tags_abc123", "tags_abc123", false},
-		{"reject injection", "", "tags_x; DROP TABLE y", "", true},
-		{"reject empty", "", "", "", true},
-		{"reject bad job", "a b", "", "", true},
+		{"plain table", "summer_sale_a1b2c3d4_tags", "summer_sale_a1b2c3d4_tags", false},
+		{"strip dataset prefix", "mobius_creatives.summer_sale_a1b2c3d4_tags", "summer_sale_a1b2c3d4_tags", false},
+		{"reject injection", "tags_x; DROP TABLE y", "", true},
+		{"reject empty", "", "", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := taggingTableName(c.jobID, c.tagsTable)
+			got, err := normalizeTagsTable(c.tagsTable)
 			if c.wantErr {
 				if err == nil {
 					t.Errorf("expected error, got %q", got)
@@ -72,6 +69,63 @@ func TestTaggingTableName(t *testing.T) {
 			}
 			if got != c.want {
 				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestJobToken(t *testing.T) {
+	// tag_media job ids are UUIDs; the token must match the short id embedded
+	// in the job's table names (dash-free, 8 chars) or get_tag_results by
+	// job_id cannot find the tables.
+	cases := []struct {
+		name    string
+		jobID   string
+		want    string
+		wantErr bool
+	}{
+		{"uuid", "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d", "a1b2c3d4", false},
+		{"already short", "abc123", "abc123", false},
+		{"reject empty", "", "", true},
+		{"reject junk", "a b;", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := jobToken(c.jobID)
+			if c.wantErr {
+				if err == nil {
+					t.Errorf("expected error, got %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestTableBaseName(t *testing.T) {
+	// The object and tags tables must share a human-recognizable prefix derived
+	// from the GCS folder, so a user can find a run's tables in the dataset.
+	job := "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+	cases := []struct {
+		name    string
+		gcsPath string
+		want    string
+	}{
+		{"folder glob", "gs://bucket/summer_sale/*", "summer_sale_a1b2c3d4"},
+		{"nested folder with ext glob", "gs://bucket/2026/Summer-Sale/*.mp4", "summer_sale_a1b2c3d4"},
+		{"bucket-only glob", "gs://my-bucket/*", "my_bucket_a1b2c3d4"},
+		{"trailing filename skipped", "gs://bucket/ads/video.mp4", "ads_a1b2c3d4"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := tableBaseName(c.gcsPath, job); got != c.want {
+				t.Errorf("tableBaseName(%q) = %q, want %q", c.gcsPath, got, c.want)
 			}
 		})
 	}

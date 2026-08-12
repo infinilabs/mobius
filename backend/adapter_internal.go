@@ -395,6 +395,8 @@ func (a *InternalLLMAdapter) routeToolCall(ctx context.Context, call ToolCall, a
 		return execGetTagResultsTool(ctx, a.bqClient, call.Args)
 	case "query_tags":
 		return execQueryTagsTool(ctx, a.bqClient, call.Args)
+	case "add_to_creative_repo":
+		return execAddToCreativeRepoTool(ctx, a.bqClient, a.events, agent.ID, call.Args)
 	case "watermark_assets":
 		return execWatermarkAssetsTool(ctx, a.pgClient, a.gcsClient, a.config, a.events, agent.ID, call.Args)
 	case "verify_watermark":
